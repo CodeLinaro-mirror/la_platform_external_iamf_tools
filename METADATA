@@ -1,0 +1,24 @@
+# proto-file: devtools/metadata/metadata.proto
+# proto-message: MetaData
+
+name: "iamf_tools"
+description:
+  "The Immersive Audio Model and Formats (IAMF) tools repository."
+  " "
+  "This directory contains software tools for the "
+  "AOM Immersive Audio Model and Formats (IAMF)."
+
+third_party {
+  homepage: "https://aomediacodec.github.io/iamf/"
+  identifier {
+    type: "Git"
+    value: "https://github.com/AOMediaCodec/iamf-tools"
+    primary_source: true
+    version: "064e5b423440a42376e4494db889e92d8d4398c6"
+  }
+  version: "064e5b423440a42376e4494db889e92d8d4398c6"
+  last_upgrade_date { year: 2025 month: 1 day: 16 }
+  license_type: BY_EXCEPTION_ONLY
+  license_note: "Alliance for Open Media Patent License and BSD 3-Clause Clear License as described in iamf_tools/LICENSE and iamf_tools/PATENTS and in the headers for all code files in iamf_tools/iamf/, such as iamf_tools/iamf/common/read_bit_buffer.h."
+}
+
