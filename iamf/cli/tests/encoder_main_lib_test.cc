@@ -108,7 +108,7 @@ TEST(EncoderMainLibTest, ConfigureOutputWavFileBitDepthOverrideSucceeds) {
               IsOk());
 }
 
-TEST(EncoderMainLibTest, ConfigureOutputWavFileBitDepthOverrideTooHighFails) {
+TEST(EncoderMainLibTest, ConfigureOutputWavFileBitDepthOverrideHighSucceeds) {
   // Initialize prerequisites.
   iamf_tools_cli_proto::UserMetadata user_metadata;
   AddIaSequenceHeader(user_metadata);
@@ -119,8 +119,10 @@ TEST(EncoderMainLibTest, ConfigureOutputWavFileBitDepthOverrideTooHighFails) {
   user_metadata.mutable_test_vector_metadata()
       ->set_output_wav_file_bit_depth_override(kBitDepthTooHigh);
 
-  EXPECT_FALSE(
-      TestMain(user_metadata, "", std::string(kIgnoredOutputPath)).ok());
+  // If wav writing was enabled then the configuration would be clamped to a
+  // 32-bit file.
+  EXPECT_THAT(TestMain(user_metadata, "", std::string(kIgnoredOutputPath)),
+              IsOk());
 }
 
 TEST(EncoderMainLibTest, SettingPrefixOutputsFile) {
@@ -564,6 +566,9 @@ INSTANTIATE_TEST_SUITE_P(ExtensionsInIaSequenceHeader, TestVector,
 
 INSTANTIATE_TEST_SUITE_P(MultipleFramesTrimmedAtEnd, TestVector,
                          testing::Values("test_000135.textproto"));
+
+INSTANTIATE_TEST_SUITE_P(InvalidInconsistentParamDefinitions, TestVector,
+                         testing::Values("test_000136.textproto"));
 
 // ---- Test Set 2 -----
 

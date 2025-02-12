@@ -13,23 +13,24 @@
 
 #include "iamf/cli/renderer/audio_element_renderer_passthrough.h"
 
-#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/any_invocable.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "iamf/cli/channel_label.h"
-#include "iamf/cli/proto/mix_presentation.pb.h"
-#include "iamf/cli/proto/test_vector_metadata.pb.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/map_utils.h"
+#include "iamf/common/utils/sample_processing_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/types.h"
@@ -158,7 +159,7 @@ absl::StatusOr<ChannelAudioLayerConfig> FindEquivalentLayer(
 std::unique_ptr<AudioElementRendererPassThrough>
 AudioElementRendererPassThrough::CreateFromScalableChannelLayoutConfig(
     const ScalableChannelLayoutConfig& scalable_channel_layout_config,
-    const Layout& playback_layout) {
+    const Layout& playback_layout, size_t num_samples_per_frame) {
   const auto& equivalent_layer =
       FindEquivalentLayer(scalable_channel_layout_config, playback_layout);
   if (!equivalent_layer.ok()) {
@@ -172,22 +173,24 @@ AudioElementRendererPassThrough::CreateFromScalableChannelLayoutConfig(
     return nullptr;
   }
 
-  return absl::WrapUnique(new AudioElementRendererPassThrough(*ordered_labels));
+  return absl::WrapUnique(new AudioElementRendererPassThrough(
+      *ordered_labels, num_samples_per_frame));
 }
 
 absl::Status AudioElementRendererPassThrough::RenderSamples(
-    const std::vector<std::vector<InternalSampleType>>& samples_to_render,
+    absl::Span<const std::vector<InternalSampleType>> samples_to_render,
     std::vector<InternalSampleType>& rendered_samples) {
   // Flatten the (time, channel) axes into interleaved samples.
-  absl::MutexLock lock(&mutex_);
-  auto rendered_samples_iter = rendered_samples.begin();
-  for (const auto& samples_at_time : samples_to_render) {
-    // Skip applying the identity matrix and just copy values over.
-    std::copy(samples_at_time.begin(), samples_at_time.end(),
-              rendered_samples_iter);
-    rendered_samples_iter += num_output_channels_;
-  }
-  return absl::OkStatus();
+  const absl::AnyInvocable<absl::Status(InternalSampleType, InternalSampleType&)
+                               const>
+      kIdentityTransform =
+          [](InternalSampleType input, InternalSampleType& output) {
+            output = input;
+            return absl::OkStatus();
+          };
+
+  return ConvertTimeChannelToInterleaved(samples_to_render, kIdentityTransform,
+                                         rendered_samples);
 }
 
 }  // namespace iamf_tools

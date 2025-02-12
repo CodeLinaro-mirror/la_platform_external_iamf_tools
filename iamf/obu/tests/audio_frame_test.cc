@@ -19,9 +19,10 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
@@ -292,26 +293,28 @@ TEST_F(AudioFrameObuTest, ValidateAndWriteObuFailsWithIllegalRedundantCopy) {
 
 // --- Begin CreateFromBuffer tests ---
 TEST(CreateFromBuffer, ValidAudioFrameWithExplicitId) {
-  std::vector<uint8_t> source = {// `explicit_audio_substream_id`
+  std::vector<uint8_t> source = {// `explicit_audio_substream_id`, arbitrary.
                                  18,
-                                 // `audio_frame`.
+                                 // `audio_frame`, arbitrary values.
                                  8, 6, 24, 55, 11};
-  ReadBitBuffer buffer(1024, &source);
-  ObuHeader header = {.obu_type = kObuIaAudioFrame};
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrame};  // Requires explicit ID.
   const int64_t obu_payload_size = 6;
-  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, buffer);
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->GetSubstreamId(), 18);
   EXPECT_EQ(obu->audio_frame_, std::vector<uint8_t>({8, 6, 24, 55, 11}));
 }
 
 TEST(CreateFromBuffer, ValidAudioFrameWithImplicitId) {
-  std::vector<uint8_t> source = {// `audio_frame`.
+  std::vector<uint8_t> source = {// `audio_frame`, arbitrary values.
                                  8, 6, 24, 55, 11};
-  ReadBitBuffer buffer(1024, &source);
-  ObuHeader header = {.obu_type = kObuIaAudioFrameId0};
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrameId0};  // ID from OBU type.
   int64_t obu_payload_size = 5;
-  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, buffer);
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
   EXPECT_THAT(obu, IsOk());
   // audio_substream_id is set implicitly to the value of `obu_type`
   AudioFrameObu expected_obu =
@@ -322,14 +325,53 @@ TEST(CreateFromBuffer, ValidAudioFrameWithImplicitId) {
 }
 
 TEST(CreateFromBuffer, FailsWithPayloadSizeTooLarge) {
-  std::vector<uint8_t> source = {// `explicit_audio_substream_id`
+  std::vector<uint8_t> source = {// `explicit_audio_substream_id`, arbitrary.
                                  18,
-                                 // `audio_frame`.
+                                 // `audio_frame`, arbitrary values.
                                  8, 6, 24, 55, 11};
-  ReadBitBuffer buffer(1024, &source);
-  ObuHeader header = {.obu_type = kObuIaAudioFrame};
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrame};  // Requires explicit ID.
   int64_t obu_payload_size = 7;
-  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, buffer);
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
+  EXPECT_FALSE(obu.ok());
+}
+
+TEST(CreateFromBuffer, FailsWithPayloadSizeZero) {
+  // With one byte used by the substream ID, a payload size of 0 is not valid.
+  std::vector<uint8_t> source = {// `explicit_audio_substream_id`, arbitrary.
+                                 18,
+                                 // `audio_frame`, arbitrary values.
+                                 8, 6, 24, 55, 11};
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrame};  // Requires explicit ID.
+  int64_t obu_payload_size = 0;
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
+  EXPECT_FALSE(obu.ok());
+}
+
+TEST(CreateFromBuffer, FailsWithPayloadSizeLessThanSizeUsedById) {
+  // With three bytes used by the ID, a payload size of 2 is not valid.
+  std::vector<uint8_t> source = {
+      0x80, 0x80, 0x1,           // `explicit_audio_substream_id`, 3 byte ULEB.
+      8,    6,    24,  55, 11};  // `audio_frame`, arbitrary values.
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrame};  // Requires explicit ID.
+  int64_t obu_payload_size = 2;  // Less than the 3 used for the ID.
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
+  EXPECT_FALSE(obu.ok());
+}
+
+TEST(CreateFromBuffer, FailsWithNegativePayloadSize) {
+  std::vector<uint8_t> source = {// `audio_frame`, arbitrary values.
+                                 8, 6, 24, 55, 11};
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
+  ObuHeader header = {.obu_type = kObuIaAudioFrameId0};  // ID from OBU type.
+  int64_t obu_payload_size = -1;
+  auto obu = AudioFrameObu::CreateFromBuffer(header, obu_payload_size, *buffer);
   EXPECT_FALSE(obu.ok());
 }
 

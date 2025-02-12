@@ -1,3 +1,7 @@
+# Until we have migrated all deps out of WORKSPACE file, we need to continue to use it.
+# Starting with bazel 8, this flag flips to default false.
+common --enable_workspace
+
 # Runfiles are needed by several tests. Typically these are defaulted on for
 # non-Windows platforms.
 build --enable_runfiles
@@ -5,7 +9,6 @@ build --enable_runfiles
 # Use the default C++ toolchain to build the tools used during the
 # build.
 build --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
-build --enable_bzlmod=false
 build --enable_platform_specific_config
 
 # Platform specific configuration.

@@ -1,29 +1,4 @@
-cc_test(
-    name = "audio_element_handler_test",
-    srcs = ["audio_element_handler_test.cc"],
-    deps = [
-        "//iamf/cli/adm_to_user_metadata/iamf:audio_element_handler",
-        "//iamf/cli/adm_to_user_metadata/iamf:iamf_input_layout",
-        "//iamf/cli/proto:audio_element_cc_proto",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "audio_frame_handler_test",
-    srcs = ["audio_frame_handler_test.cc"],
-    deps = [
-        "//iamf/cli:channel_label",
-        "//iamf/cli/adm_to_user_metadata/iamf:audio_frame_handler",
-        "//iamf/cli/adm_to_user_metadata/iamf:iamf_input_layout",
-        "//iamf/cli/proto:audio_frame_cc_proto",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
+# keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
 cc_test(
     name = "ia_sequence_header_obu_metadata_handler_test",
     srcs = ["ia_sequence_header_obu_metadata_handler_test.cc"],
@@ -41,19 +16,8 @@ cc_test(
     deps = [
         "//iamf/cli/adm_to_user_metadata/adm:xml_to_adm",
         "//iamf/cli/adm_to_user_metadata/iamf",
-        "//iamf/cli/adm_to_user_metadata/iamf:iamf_input_layout",
+        "//iamf/cli/user_metadata_builder:iamf_input_layout",
         "@com_google_absl//absl/base:no_destructor",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings:string_view",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "iamf_input_layout_test",
-    srcs = ["iamf_input_layout_test.cc"],
-    deps = [
-        "//iamf/cli/adm_to_user_metadata/iamf:iamf_input_layout",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
@@ -105,3 +69,5 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# keep-sorted end

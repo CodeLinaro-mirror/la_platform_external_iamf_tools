@@ -20,14 +20,29 @@ namespace iamf_tools {
  */
 inline constexpr int kMaxLeb128Size = 8;
 
+/*!\brief IAMF spec requires an entire OBU to be <= 2 MB.
+ */
+constexpr uint32_t kEntireObuSizeMaxTwoMegabytes = (1 << 21);
+
 /*!\brief Decoded `leb128` in IAMF. */
 typedef uint32_t DecodedUleb128;
 
 /*!\brief Decoded `sleb128` in IAMF. */
 typedef int32_t DecodedSleb128;
 
-/*!\brief Type of audio samples for internal computation. */
+/*!\brief Type of audio samples for internal computation.
+ *
+ * Typically this should be used as a value in the range of [-1.0, 1.0].
+ */
 typedef double InternalSampleType;
+
+/*!\brief Timestamp for use in internal computations.
+ *
+ * Typically this represents a duration of ticks, based on the sample rate used
+ * for timing purposes in an IA Sequence. I.e. if the sample rate is 48 kHz,
+ * then a timestamp of 1000 represents `1000/48000Hz ~= .02083s`.
+ */
+typedef int32_t InternalTimestamp;
 
 }  // namespace iamf_tools
 
