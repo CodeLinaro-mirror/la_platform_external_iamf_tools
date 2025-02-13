@@ -30,6 +30,7 @@
 #include "iamf/cli/adm_to_user_metadata/iamf/mix_presentation_handler.h"
 #include "iamf/cli/adm_to_user_metadata/iamf/test_vector_metadata_handler.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
+#include "iamf/cli/user_metadata_builder/audio_frame_metadata_builder.h"
 #include "iamf/cli/user_metadata_builder/codec_config_obu_metadata_builder.h"
 #include "iamf/obu/types.h"
 
@@ -68,6 +69,7 @@ absl::Status UserMetadataGenerator::WriteUserMetadataToFile(
 
 absl::StatusOr<iamf_tools_cli_proto::UserMetadata>
 UserMetadataGenerator::GenerateUserMetadata(
+    iamf_tools_cli_proto::ProfileVersion profile_version,
     absl::string_view file_prefix) const {
   std::vector<std::string> audio_pack_format_ids;
   audio_pack_format_ids.reserve(adm_.audio_objects.size());
@@ -75,8 +77,8 @@ UserMetadataGenerator::GenerateUserMetadata(
     audio_pack_format_ids.push_back(audio_object.audio_pack_format_id_refs[0]);
   }
 
-  auto iamf = IAMF::Create(file_prefix, adm_, max_frame_duration_,
-                           format_info_.samples_per_sec);
+  auto iamf =
+      IAMF::Create(adm_, max_frame_duration_, format_info_.samples_per_sec);
   if (!iamf.ok()) {
     return iamf.status();
   }
@@ -87,8 +89,8 @@ UserMetadataGenerator::GenerateUserMetadata(
                             *user_metadata.mutable_test_vector_metadata());
 
   // Generate ia sequence header metadata.
-  PopulateBaseProfileIaSequenceHeaderObuMetadata(
-      *user_metadata.add_ia_sequence_header_metadata());
+  PopulateIaSequenceHeaderObuMetadata(
+      profile_version, *user_metadata.add_ia_sequence_header_metadata());
 
   // Generate codec config obu metadata.
   user_metadata.mutable_codec_config_metadata()->Add(
@@ -100,8 +102,8 @@ UserMetadataGenerator::GenerateUserMetadata(
   constexpr int32_t kFirstAudioElementId = 0;
   if (adm_.audio_programmes.empty()) {
     if (const auto status =
-            iamf->audio_element_handler_.PopulateAudioElementMetadata(
-                kFirstAudioElementId, iamf->input_layouts_[0],
+            iamf->audio_element_metadata_builder_.PopulateAudioElementMetadata(
+                kFirstAudioElementId, kCodecConfigId, iamf->input_layouts_[0],
                 *user_metadata.add_audio_element_metadata());
         !status.ok()) {
       return status;
@@ -110,9 +112,11 @@ UserMetadataGenerator::GenerateUserMetadata(
     for (const auto& [unused_audio_object_id, audio_element_id] :
          iamf->audio_object_to_audio_element_) {
       if (const auto status =
-              iamf->audio_element_handler_.PopulateAudioElementMetadata(
-                  audio_element_id, iamf->input_layouts_[audio_element_id],
-                  *user_metadata.add_audio_element_metadata());
+              iamf->audio_element_metadata_builder_
+                  .PopulateAudioElementMetadata(
+                      audio_element_id, kCodecConfigId,
+                      iamf->input_layouts_[audio_element_id],
+                      *user_metadata.add_audio_element_metadata());
           !status.ok()) {
         return status;
       }
@@ -156,8 +160,10 @@ UserMetadataGenerator::GenerateUserMetadata(
     static const absl::string_view kFirstFileSuffix = "1";
 
     if (const auto& status =
-            iamf->audio_frame_handler_.PopulateAudioFrameMetadata(
-                kFirstFileSuffix, kFirstAudioElementId, iamf->input_layouts_[0],
+            AudioFrameMetadataBuilder::PopulateAudioFrameMetadata(
+                absl::StrCat(file_prefix, "_converted", kFirstFileSuffix,
+                             ".wav"),
+                kFirstAudioElementId, iamf->input_layouts_[0],
                 *user_metadata.add_audio_frame_metadata());
         !status.ok()) {
       return status;
@@ -167,11 +173,11 @@ UserMetadataGenerator::GenerateUserMetadata(
     for (const auto& [unused_audio_object_id, audio_element_id] :
          iamf->audio_object_to_audio_element_) {
       // The output files have suffixes starting from 1.
-      const std::string file_suffix = absl::StrCat(audio_pack_index + 1);
-
+      const std::string wav_file_name =
+          absl::StrCat(file_prefix, "_converted", audio_pack_index + 1, ".wav");
       if (const auto& status =
-              iamf->audio_frame_handler_.PopulateAudioFrameMetadata(
-                  file_suffix, audio_element_id,
+              AudioFrameMetadataBuilder::PopulateAudioFrameMetadata(
+                  wav_file_name, audio_element_id,
                   iamf->input_layouts_[audio_pack_index++],
                   *user_metadata.add_audio_frame_metadata());
           !status.ok()) {

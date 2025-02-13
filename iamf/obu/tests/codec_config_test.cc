@@ -22,9 +22,10 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
@@ -614,11 +615,13 @@ TEST(CreateFromBuffer, OpusDecoderConfig) {
                                       0, 0,
                                       // `mapping_family`.
                                       OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   ObuHeader header;
 
   absl::StatusOr<CodecConfigObu> obu =
-      CodecConfigObu::CreateFromBuffer(header, source_data.size(), buffer);
+      CodecConfigObu::CreateFromBuffer(header, payload_size, *buffer);
   EXPECT_THAT(obu, IsOk());
 
   EXPECT_EQ(obu->GetCodecConfigId(), kCodecConfigId);
@@ -718,11 +721,13 @@ TEST(CreateFromBuffer, AacLcDecoderConfig) {
       // `depends_on_core_coder`, `extension_flag`.
       kLowerByteSerializedSamplingFrequencyIndex64000 |
           kChannelConfigurationAndGaSpecificConfigMask};
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   ObuHeader header;
 
   absl::StatusOr<CodecConfigObu> obu =
-      CodecConfigObu::CreateFromBuffer(header, source_data.size(), buffer);
+      CodecConfigObu::CreateFromBuffer(header, payload_size, *buffer);
   EXPECT_THAT(obu, IsOk());
 
   EXPECT_EQ(obu->GetCodecConfigId(), kCodecConfigId);
@@ -818,11 +823,13 @@ TEST(CreateFromBuffer, ValidLpcmDecoderConfig) {
                                       kSampleSize,
                                       // `sample_rate`.
                                       0, 0, 0xbb, 0x80};
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   ObuHeader header;
 
   absl::StatusOr<CodecConfigObu> obu =
-      CodecConfigObu::CreateFromBuffer(header, source_data.size(), buffer);
+      CodecConfigObu::CreateFromBuffer(header, payload_size, *buffer);
 
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->GetCodecConfigId(), kCodecConfigId);
@@ -872,7 +879,7 @@ TEST(CreateFromBuffer, ValidFlacDecoderConfig) {
       0x0b, 0xb8,
       (0 << 4) |
           // `number_of_channels` (3 bits) and `bits_per_sample` (5 bits).
-          FlacMetaBlockStreamInfo::kNumberOfChannels << 1,
+          FlacStreamInfoConstraints::kNumberOfChannels << 1,
       7 << 4 |
           // `total_samples_in_stream` (36 bits).
           0,
@@ -880,11 +887,13 @@ TEST(CreateFromBuffer, ValidFlacDecoderConfig) {
       // MD5 sum.
       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
       0x00, 0x00, 0x00, 0x00};
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   ObuHeader header;
 
   absl::StatusOr<CodecConfigObu> obu =
-      CodecConfigObu::CreateFromBuffer(header, source_data.size(), buffer);
+      CodecConfigObu::CreateFromBuffer(header, payload_size, *buffer);
 
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->GetCodecConfigId(), kCodecConfigId);
@@ -911,10 +920,11 @@ TEST(CreateFromBuffer, ValidFlacDecoderConfig) {
   EXPECT_EQ(stream_info.maximum_frame_size, 0);
   EXPECT_EQ(stream_info.sample_rate, 48000);
   EXPECT_EQ(stream_info.number_of_channels,
-            FlacMetaBlockStreamInfo::kNumberOfChannels);
+            FlacStreamInfoConstraints::kNumberOfChannels);
   EXPECT_EQ(stream_info.bits_per_sample, 7);
   EXPECT_EQ(stream_info.total_samples_in_stream, 100);
-  EXPECT_EQ(stream_info.md5_signature, FlacMetaBlockStreamInfo::kMd5Signature);
+  EXPECT_EQ(stream_info.md5_signature,
+            FlacStreamInfoConstraints::kMd5Signature);
   EXPECT_TRUE(obu->IsLossless());
 }
 

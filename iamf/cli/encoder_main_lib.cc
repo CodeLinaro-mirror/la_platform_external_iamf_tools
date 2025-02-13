@@ -11,9 +11,10 @@
  */
 #include "iamf/cli/encoder_main_lib.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <list>
 #include <memory>
 #include <optional>
@@ -35,11 +36,9 @@
 #include "iamf/cli/proto/temporal_delimiter.pb.h"
 #include "iamf/cli/proto/test_vector_metadata.pb.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
-#include "iamf/cli/proto_to_obu/arbitrary_obu_generator.h"
-#include "iamf/cli/rendering_mix_presentation_finalizer.h"
 #include "iamf/cli/wav_sample_provider.h"
 #include "iamf/cli/wav_writer.h"
-#include "iamf/common/macros.h"
+#include "iamf/common/utils/macros.h"
 #include "iamf/obu/arbitrary_obu.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/ia_sequence_header.h"
@@ -53,16 +52,6 @@ namespace {
 
 using iamf_tools_cli_proto::ParameterBlockObuMetadata;
 using iamf_tools_cli_proto::UserMetadata;
-
-std::unique_ptr<WavWriter> ProduceAllWavWriters(
-    DecodedUleb128 mix_presentation_id, int sub_mix_index, int layout_index,
-    const Layout&, const std::filesystem::path& prefix, int num_channels,
-    int sample_rate, int bit_depth) {
-  const auto wav_path = absl::StrCat(
-      prefix.string(), "_rendered_id_", mix_presentation_id, "_sub_mix_",
-      sub_mix_index, "_layout_", layout_index, ".wav");
-  return WavWriter::Create(wav_path, num_channels, sample_rate, bit_depth);
-}
 
 absl::Status PartitionParameterMetadata(UserMetadata& user_metadata) {
   uint32_t partition_duration = 0;
@@ -156,20 +145,12 @@ absl::Status CreateOutputDirectory(const std::string& output_directory) {
   return absl::OkStatus();
 }
 
-absl::Status GenerateObus(
+absl::Status GenerateTemporalUnitObus(
     const UserMetadata& user_metadata, const std::string& input_wav_directory,
-    const std::string& output_iamf_directory, IamfEncoder& iamf_encoder,
-    std::optional<IASequenceHeaderObu>& ia_sequence_header_obu,
-    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
+    IamfEncoder& iamf_encoder,
     absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements,
-    std::list<MixPresentationObu>& mix_presentation_obus,
     std::list<AudioFrameWithData>& audio_frames,
-    std::list<ParameterBlockWithData>& parameter_blocks,
-    std::list<ArbitraryObu>& arbitrary_obus) {
-  RETURN_IF_NOT_OK(iamf_encoder.GenerateDescriptorObus(
-      ia_sequence_header_obu, codec_config_obus, audio_elements,
-      mix_presentation_obus));
-
+    std::list<ParameterBlockWithData>& parameter_blocks) {
   auto wav_sample_provider =
       WavSampleProvider::Create(user_metadata.audio_frame_metadata(),
                                 input_wav_directory, audio_elements);
@@ -185,7 +166,6 @@ absl::Status GenerateObus(
   // TODO(b/329375123): Make two while loops that run on two threads: one for
   //                    adding samples and parameter block metadata, and one for
   //                    outputing OBUs.
-  IdTimeLabeledFrameMap id_to_time_to_labeled_frame;
   int data_obus_iteration = 0;  // Just for logging purposes.
   while (iamf_encoder.GeneratingDataObus()) {
     LOG_EVERY_N_SEC(INFO, 5)
@@ -228,10 +208,8 @@ absl::Status GenerateObus(
     std::list<AudioFrameWithData> temp_audio_frames;
     std::list<ParameterBlockWithData> temp_parameter_blocks;
     IdLabeledFrameMap id_to_labeled_frame;
-    int32_t output_timestamp = 0;
-    RETURN_IF_NOT_OK(iamf_encoder.OutputTemporalUnit(
-        temp_audio_frames, temp_parameter_blocks, id_to_labeled_frame,
-        output_timestamp));
+    RETURN_IF_NOT_OK(iamf_encoder.OutputTemporalUnit(temp_audio_frames,
+                                                     temp_parameter_blocks));
 
     if (temp_audio_frames.empty()) {
       // Some audio codec will only output an encoded frame after the next
@@ -241,14 +219,6 @@ absl::Status GenerateObus(
       continue;
     }
 
-    // TODO(b/349271713): Move `id_to_time_to_labeled_frame` inside
-    //                    `IamfEncoder` once the mix presentation finalizer is
-    //                    inside too.
-    // Collect and organize generated audio frames in time.
-    for (const auto& [id, labeled_frame] : id_to_labeled_frame) {
-      id_to_time_to_labeled_frame[id][output_timestamp] = labeled_frame;
-    }
-
     audio_frames.splice(audio_frames.end(), temp_audio_frames);
     parameter_blocks.splice(parameter_blocks.end(), temp_parameter_blocks);
   }
@@ -256,48 +226,21 @@ absl::Status GenerateObus(
             << " =============================\n\n";
   PrintAudioFrames(audio_frames);
 
-  // TODO(b/349271508): Move the arbitrary obu generator inside `IamfEncoder`.
-  ArbitraryObuGenerator arbitrary_obu_generator(
-      user_metadata.arbitrary_obu_metadata());
-  RETURN_IF_NOT_OK(arbitrary_obu_generator.Generate(arbitrary_obus));
+  return absl::OkStatus();
+}
 
-  // Finalize mix presentation. Requires rendering data for every submix to
-  // accurately compute loudness.
-  std::optional<uint8_t> output_wav_file_bit_depth_override;
-  if (user_metadata.test_vector_metadata()
-          .has_output_wav_file_bit_depth_override()) {
-    if (user_metadata.test_vector_metadata()
-            .output_wav_file_bit_depth_override() >
-        std::numeric_limits<uint8_t>::max()) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("Bit-depth too large. "
-                       "output_wav_file_bit_depth_override= ",
-                       user_metadata.test_vector_metadata()
-                           .output_wav_file_bit_depth_override()));
-    }
-    output_wav_file_bit_depth_override =
-        static_cast<uint8_t>(user_metadata.test_vector_metadata()
-                                 .output_wav_file_bit_depth_override());
+// TODO(b/390392510): Update control of output wav file bit-depth.
+std::optional<uint8_t> GetOverrideBitDepth(uint32_t requested_bit_depth) {
+  if (requested_bit_depth == 0) {
+    return std::nullopt;
   }
 
-  // TODO(b/349271713): Move the mix presentation finalizer inside
-  //                    `IamfEncoder`.
-  // Write the output audio streams which were used to measure loudness to the
-  // same directory as the IAMF file.
-  const std::string output_wav_file_prefix =
-      (std::filesystem::path(output_iamf_directory) /
-       user_metadata.test_vector_metadata().file_name_prefix())
-          .string();
-  LOG(INFO) << "output_wav_file_prefix = " << output_wav_file_prefix;
-  RenderingMixPresentationFinalizer mix_presentation_finalizer(
-      output_wav_file_prefix, output_wav_file_bit_depth_override,
-      user_metadata.test_vector_metadata().validate_user_loudness(),
-      CreateRendererFactory(), CreateLoudnessCalculatorFactory());
-  RETURN_IF_NOT_OK(mix_presentation_finalizer.Finalize(
-      audio_elements, id_to_time_to_labeled_frame, parameter_blocks,
-      ProduceAllWavWriters, mix_presentation_obus));
-
-  return absl::OkStatus();
+  // Clamp the bit-depth to something supported by wav files.
+  constexpr uint32_t kMinWavFileBitDepth = 16;
+  constexpr uint32_t kMaxWavFileBitDepth = 32;
+  const uint32_t clamped_bit_depth =
+      std::clamp(requested_bit_depth, kMinWavFileBitDepth, kMaxWavFileBitDepth);
+  return static_cast<uint8_t>(clamped_bit_depth);
 }
 
 absl::Status WriteObus(
@@ -335,7 +278,7 @@ absl::Status TestMain(const UserMetadata& input_user_metadata,
   std::optional<IASequenceHeaderObu> ia_sequence_header_obu;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements;
-  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<MixPresentationObu> preliminary_mix_presentation_obus;
   std::list<AudioFrameWithData> audio_frames;
   std::list<ParameterBlockWithData> parameter_blocks;
   std::list<ArbitraryObu> arbitrary_obus;
@@ -350,15 +293,59 @@ absl::Status TestMain(const UserMetadata& input_user_metadata,
     RETURN_IF_NOT_OK(PartitionParameterMetadata(user_metadata));
   }
 
-  IamfEncoder iamf_encoder(user_metadata);
-  RETURN_IF_NOT_OK(GenerateObus(
-      user_metadata, input_wav_directory, output_iamf_directory, iamf_encoder,
+  // We want to hold the `IamfEncoder` until all OBUs have been written.
+  // Write the output audio streams which were used to measure loudness to the
+  // same directory as the IAMF file.
+  const std::string output_wav_file_prefix =
+      (std::filesystem::path(output_iamf_directory) /
+       user_metadata.test_vector_metadata().file_name_prefix())
+          .string();
+  const std::optional<uint8_t> override_bit_depth =
+      GetOverrideBitDepth(user_metadata.test_vector_metadata()
+                              .output_wav_file_bit_depth_override());
+  LOG(INFO) << "output_wav_file_prefix = " << output_wav_file_prefix;
+  const auto ProduceAllWavWriters =
+      [output_wav_file_prefix, override_bit_depth](
+          DecodedUleb128 mix_presentation_id, int sub_mix_index,
+          int layout_index, const Layout&, int num_channels, int sample_rate,
+          int bit_depth,
+          size_t max_input_samples_per_frame) -> std::unique_ptr<WavWriter> {
+    const auto wav_path = absl::StrCat(
+        output_wav_file_prefix, "_rendered_id_", mix_presentation_id,
+        "_sub_mix_", sub_mix_index, "_layout_", layout_index, ".wav");
+    // Obey the override bit depth. But if it is not set, we can infer a good
+    // bit-depth from the input audio.
+    const uint8_t wav_file_bit_depth = override_bit_depth.value_or(bit_depth);
+    return WavWriter::Create(wav_path, num_channels, sample_rate,
+                             wav_file_bit_depth, max_input_samples_per_frame);
+  };
+
+  auto iamf_encoder = IamfEncoder::Create(
+      user_metadata, CreateRendererFactory().get(),
+      CreateLoudnessCalculatorFactory().get(), ProduceAllWavWriters,
       ia_sequence_header_obu, codec_config_obus, audio_elements,
-      mix_presentation_obus, audio_frames, parameter_blocks, arbitrary_obus));
+      preliminary_mix_presentation_obus, arbitrary_obus);
+  if (!iamf_encoder.ok()) {
+    return iamf_encoder.status();
+  }
+  // Discard the "preliminary" mix presentation OBUs. We only care about the
+  // finalized ones, which are not possible to know until audio encoding is
+  // complete.
+  preliminary_mix_presentation_obus.clear();
+  RETURN_IF_NOT_OK(GenerateTemporalUnitObus(user_metadata, input_wav_directory,
+                                            *iamf_encoder, audio_elements,
+                                            audio_frames, parameter_blocks));
+  // Audio encoding is complete. Retrieve the OBUs with have the finalized
+  // loudness information.
+  const auto finalized_mix_presentation_obus =
+      iamf_encoder->GetFinalizedMixPresentationObus();
+  if (!finalized_mix_presentation_obus.ok()) {
+    return finalized_mix_presentation_obus.status();
+  }
 
   RETURN_IF_NOT_OK(WriteObus(user_metadata, output_iamf_directory,
                              ia_sequence_header_obu.value(), codec_config_obus,
-                             audio_elements, mix_presentation_obus,
+                             audio_elements, *finalized_mix_presentation_obus,
                              audio_frames, parameter_blocks, arbitrary_obus));
 
   return absl::OkStatus();

@@ -14,15 +14,14 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/lpcm_decoder_config.h"
 
@@ -43,8 +42,8 @@ absl::Status LpcmDecoder::Initialize() {
 }
 
 absl::Status LpcmDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame,
-    std::vector<std::vector<int32_t>>& decoded_samples) {
+    const std::vector<uint8_t>& encoded_frame) {
+  num_valid_ticks_ = 0;
   uint8_t bit_depth;
   auto status = decoder_config_.GetBitDepthToMeasureLoudness(bit_depth);
   if (!status.ok()) {
@@ -69,15 +68,22 @@ absl::Status LpcmDecoder::DecodeAudioFrame(
         bytes_per_sample, ") * number of channels (", num_channels_, ")."));
   }
   // Each time tick has one sample for each channel.
-  const size_t num_time_ticks =
+  const size_t num_ticks =
       encoded_frame.size() / bytes_per_sample / num_channels_;
+  if (num_ticks > num_samples_per_channel_) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Detected num_ticks= ", num_ticks,
+                     ", but the decoder is only configured for up to "
+                     "num_samples_per_channel_= ",
+                     num_samples_per_channel_, "."));
+  }
+  num_valid_ticks_ = num_ticks;
+
   const bool little_endian = decoder_config_.IsLittleEndian();
 
-  decoded_samples.reserve(decoded_samples.size() + num_time_ticks);
   int32_t sample_result;
-  for (size_t t = 0; t < num_time_ticks; ++t) {
+  for (size_t t = 0; t < num_valid_ticks_; ++t) {
     // One sample for each channel in this time tick.
-    std::vector<int32_t> time_tick_samples(num_channels_);
     for (size_t c = 0; c < num_channels_; ++c) {
       const size_t offset = (t * num_channels_ + c) * bytes_per_sample;
       absl::Span<const uint8_t> input_bytes(encoded_frame.data() + offset,
@@ -88,9 +94,8 @@ absl::Status LpcmDecoder::DecodeAudioFrame(
         status = BigEndianBytesToInt32(input_bytes, sample_result);
       }
       RETURN_IF_NOT_OK(status);
-      time_tick_samples[c] = sample_result;
+      decoded_samples_[t][c] = sample_result;
     }
-    decoded_samples.push_back(std::move(time_tick_samples));
   }
   return absl::OkStatus();
 }
