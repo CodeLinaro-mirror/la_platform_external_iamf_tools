@@ -24,13 +24,17 @@
 #include "gtest/gtest.h"
 #include "iamf/cli/adm_to_user_metadata/adm/bw64_reader.h"
 #include "iamf/cli/tests/cli_test_utils.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/obu/ia_sequence_header.h"
+
+// TODO(b/384048095): Add better tests for spliced wav files with LFE channels.
 
 namespace iamf_tools {
 namespace adm_to_user_metadata {
 namespace {
 
 using ::absl_testing::IsOk;
+
+using enum iamf_tools::ProfileVersion;
 
 constexpr int32_t kImportanceThreshold = 10;
 
@@ -213,8 +217,11 @@ TEST(SpliceWavFilesFromAdm, CreatesWavFiles) {
   const auto reader = Bw64Reader::BuildFromStream(kImportanceThreshold, ss);
   ASSERT_THAT(reader, IsOk());
   const std::string directory = GetAndCreateOutputDirectory("");
+  int lfe_count = 0;
 
-  EXPECT_THAT(SpliceWavFilesFromAdm(directory, "prefix", *reader, ss), IsOk());
+  EXPECT_THAT(SpliceWavFilesFromAdm(directory, "prefix", kIamfBaseProfile,
+                                    *reader, ss, lfe_count),
+              IsOk());
   EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(directory) /
                                       "prefix_converted1.wav"));
 }
@@ -236,9 +243,11 @@ TEST(SpliceWavFilesFromAdm,
   const auto reader = Bw64Reader::BuildFromStream(kImportanceThreshold, ss);
   ASSERT_THAT(reader, IsOk());
   const std::string directory = GetAndCreateOutputDirectory("");
+  int lfe_count = 0;
 
-  EXPECT_FALSE(
-      SpliceWavFilesFromAdm(::testing::TempDir(), "prefix", *reader, ss).ok());
+  EXPECT_FALSE(SpliceWavFilesFromAdm(::testing::TempDir(), "prefix",
+                                     kIamfBaseProfile, *reader, ss, lfe_count)
+                   .ok());
 
   EXPECT_TRUE(std::filesystem::is_empty(directory));
 }
@@ -248,8 +257,11 @@ TEST(SpliceWavFilesFromAdm, StripsAxmlChunkAndUpdatesChunkSizes) {
   const auto reader = Bw64Reader::BuildFromStream(kImportanceThreshold, ss);
   ASSERT_THAT(reader, IsOk());
   const std::string directory = GetAndCreateOutputDirectory("");
+  int lfe_count = 0;
 
-  ASSERT_THAT(SpliceWavFilesFromAdm(directory, "prefix", *reader, ss), IsOk());
+  ASSERT_THAT(SpliceWavFilesFromAdm(directory, "prefix", kIamfBaseProfile,
+                                    *reader, ss, lfe_count),
+              IsOk());
 
   ValidateFileContents(
       std::filesystem::path(directory) / "prefix_converted1.wav",
@@ -261,8 +273,11 @@ TEST(SpliceWavFilesFromAdm, OutputsOneWavFilePerObject) {
   const auto reader = Bw64Reader::BuildFromStream(kImportanceThreshold, ss);
   ASSERT_THAT(reader, IsOk());
   const std::string directory = GetAndCreateOutputDirectory("");
+  int lfe_count = 0;
 
-  EXPECT_THAT(SpliceWavFilesFromAdm(directory, "prefix", *reader, ss), IsOk());
+  EXPECT_THAT(SpliceWavFilesFromAdm(directory, "prefix", kIamfBaseProfile,
+                                    *reader, ss, lfe_count),
+              IsOk());
 
   ValidateFileContents(
       std::filesystem::path(directory) / ("prefix_converted1.wav"),

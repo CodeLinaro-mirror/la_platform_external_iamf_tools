@@ -16,10 +16,11 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/common/read_bit_buffer.h"
-#include "iamf/common/tests/test_utils.h"
+#include "iamf/common/utils/tests/test_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 
 namespace iamf_tools {
@@ -166,18 +167,20 @@ TEST(WriteDefaultDemixingInfoParameterData, Writes) {
 
 TEST(ReadDemixingInfoParameterData, ReadDMixPMode1) {
   std::vector<uint8_t> source_data = {kDMixPMode1 << kDMixPModeBitShift};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   DemixingInfoParameterData data;
-  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, rb), IsOk());
+  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, *rb), IsOk());
   EXPECT_EQ(data.dmixp_mode, kDMixPMode1);
   EXPECT_EQ(data.reserved, 0);
 }
 
 TEST(ReadDemixingInfoParameterData, ReadDMixPMode3) {
   std::vector<uint8_t> source_data = {kDMixPMode3 << kDMixPModeBitShift};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   DemixingInfoParameterData data;
-  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, rb), IsOk());
+  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, *rb), IsOk());
   EXPECT_EQ(data.dmixp_mode, kDMixPMode3);
   EXPECT_EQ(data.reserved, 0);
 }
@@ -186,9 +189,10 @@ TEST(ReadDemixingInfoParameterData, ReadReservedMax) {
   const uint32_t kReservedMax = 31;
   std::vector<uint8_t> source_data = {kDMixPMode1 << kDMixPModeBitShift |
                                       kReservedMax};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   DemixingInfoParameterData data;
-  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, rb), IsOk());
+  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, *rb), IsOk());
   EXPECT_EQ(data.dmixp_mode, kDMixPMode1);
   EXPECT_EQ(data.reserved, 31);
 }
@@ -201,9 +205,10 @@ TEST(ReadsDefaultDemixingInfoParameterData, Reads) {
   std::vector<uint8_t> source_data = {
       kExpectedDMixPMode << kDMixPModeBitShift | kExpectedReserved,
       kExpectedDefaultW << kDefaultWBitShift | kExpectedReservedDefault};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   DefaultDemixingInfoParameterData data;
-  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, rb), IsOk());
+  EXPECT_THAT(data.ReadAndValidate(/*per_id_metadata=*/{}, *rb), IsOk());
   EXPECT_EQ(data.dmixp_mode, kExpectedDMixPMode);
   EXPECT_EQ(data.reserved, kExpectedReserved);
   EXPECT_EQ(data.default_w, kExpectedDefaultW);

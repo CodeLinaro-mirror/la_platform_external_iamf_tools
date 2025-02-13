@@ -1,15 +1,17 @@
 # Tests for the IAMF software.
 
+# keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
 cc_test(
     name = "aac_decoder_config_test",
     srcs = ["aac_decoder_config_test.cc"],
     deps = [
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu/decoder_config:aac_decoder_config",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -20,10 +22,11 @@ cc_test(
     deps = [
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu/decoder_config:flac_decoder_config",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -34,10 +37,11 @@ cc_test(
     deps = [
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu/decoder_config:lpcm_decoder_config",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -48,10 +52,13 @@ cc_test(
     deps = [
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu/decoder_config:opus_decoder_config",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# keep-sorted end

@@ -16,9 +16,11 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "absl/types/span.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/types.h"
 
@@ -63,14 +65,29 @@ absl::Status ValidateSpecificParamDefinition(
 }  // namespace
 
 bool operator==(const ParamDefinition& lhs, const ParamDefinition& rhs) {
-  // First check always-present fields.
-  if (lhs.param_definition_mode_ != rhs.param_definition_mode_) {
-    return false;
-  }
   if (lhs.type_ != rhs.type_) {
     return false;
   }
-  if (!lhs.EquivalentDerived(rhs)) {
+  if (!lhs.type_.has_value()) {
+    return true;
+  }
+  switch (*lhs.type_) {
+    using enum ParamDefinition::ParameterDefinitionType;
+    case kParameterDefinitionMixGain:
+    case kParameterDefinitionDemixing:
+    case kParameterDefinitionReconGain:
+      if (!lhs.EquivalentDerived(rhs)) {
+        return false;
+      }
+      break;
+    case kParameterDefinitionReservedStart:
+    case kParameterDefinitionReservedEnd:
+      // Other fields are virtual. Only compare the derived "extended" bytes.
+      return lhs.EquivalentDerived(rhs);
+  }
+
+  // First check always-present fields.
+  if (lhs.param_definition_mode_ != rhs.param_definition_mode_) {
     return false;
   }
 
@@ -230,8 +247,8 @@ absl::Status ParamDefinition::Validate() const {
 
     // Check if the `subblock_durations` is included.
     if (IncludeSubblockDurationArray()) {
-      RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-          "subblock_durations", subblock_durations_.size(), num_subblocks_));
+      RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+          "subblock_durations", subblock_durations_, num_subblocks_));
 
       // Loop to add cumulative durations.
       uint32_t total_subblock_durations = 0;
@@ -315,9 +332,9 @@ absl::Status ExtendedParamDefinition::ValidateAndWrite(
   // This class does not write the base class's data, i.e. it doesn't call
   // `ParamDefinition::ValidateAndWrite(wb)`.
   RETURN_IF_NOT_OK(wb.WriteUleb128(param_definition_size_));
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual("param_definition_bytes_",
-                                           param_definition_bytes_.size(),
-                                           param_definition_size_));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual("param_definition_bytes_",
+                                              param_definition_bytes_,
+                                              param_definition_size_));
   RETURN_IF_NOT_OK(wb.WriteUint8Vector(param_definition_bytes_));
 
   return absl::OkStatus();
@@ -327,8 +344,8 @@ absl::Status ExtendedParamDefinition::ReadAndValidate(ReadBitBuffer& rb) {
   // This class does not read the base class's data, i.e. it doesn't call
   // `ParamDefinition::ReadAndWrite(wb)`.
   RETURN_IF_NOT_OK(rb.ReadULeb128(param_definition_size_));
-  RETURN_IF_NOT_OK(
-      rb.ReadUint8Vector(param_definition_size_, param_definition_bytes_));
+  param_definition_bytes_.resize(param_definition_size_);
+  RETURN_IF_NOT_OK(rb.ReadUint8Span(absl::MakeSpan(param_definition_bytes_)));
 
   return absl::OkStatus();
 }

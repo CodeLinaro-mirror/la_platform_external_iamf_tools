@@ -1,3 +1,4 @@
+# keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
 cc_test(
     name = "adm_to_user_metadata_main_lib_test",
     srcs = ["adm_to_user_metadata_main_lib_test.cc"],
@@ -7,8 +8,11 @@ cc_test(
         "//iamf/cli/proto:test_vector_metadata_cc_proto",
         "//iamf/cli/proto:user_metadata_cc_proto",
         "//iamf/cli/tests:cli_test_utils",
+        "//iamf/obu:ia_sequence_header",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# keep-sorted end

@@ -17,6 +17,10 @@
 #include <cstdlib>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
+#include "absl/types/span.h"
+#include "iamf/common/utils/sample_processing_utils.h"
+
 // This symbol conflicts with `aacenc_lib.h` and `aacdecoder_lib.h`.
 #ifdef IS_LITTLE_ENDIAN
 #undef IS_LITTLE_ENDIAN
@@ -28,8 +32,7 @@
 #include "absl/strings/string_view.h"
 #include "iamf/cli/codec/aac_utils.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/cli/proto/codec_config.pb.h"
-#include "iamf/common/macros.h"
+#include "iamf/common/utils/macros.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
@@ -166,8 +169,9 @@ absl::Status AacDecoder::Initialize() {
 }
 
 absl::Status AacDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame,
-    std::vector<std::vector<int32_t>>& decoded_samples) {
+    const std::vector<uint8_t>& encoded_frame) {
+  num_valid_ticks_ = 0;
+
   // Transform the data and feed it to the decoder.
   std::vector<UCHAR> input_data(encoded_frame.size());
   std::transform(encoded_frame.begin(), encoded_frame.end(), input_data.begin(),
@@ -187,30 +191,22 @@ absl::Status AacDecoder::DecodeAudioFrame(
 
   // Retrieve the decoded frame. `fdk_aac` decodes to INT_PCM (usually 16-bits)
   // samples with channels interlaced.
-  std::vector<INT_PCM> output_pcm;
-  output_pcm.resize(num_samples_per_channel_ * num_channels_);
+  std::vector<INT_PCM> output_pcm(num_samples_per_channel_ * num_channels_);
   RETURN_IF_NOT_OK(AacDecoderErrorToAbslStatus(
       aacDecoder_DecodeFrame(decoder_, output_pcm.data(), output_pcm.size(),
                              /*flags=*/0),
       "Failed on `aacDecoder_DecodeFrame`: "));
 
-  // Transform the data to channels arranged in (time, channel) axes with
-  // samples stored in the upper bytes of an `int32_t`. There can only be one or
-  // two channels.
-  decoded_samples.reserve(decoded_samples.size() +
-                          output_pcm.size() / num_channels_);
-  for (int i = 0; i < output_pcm.size(); i += num_channels_) {
-    // Grab samples in all channels associated with this time instant and store
-    // it in the upper bytes.
-    std::vector<int32_t> time_sample(num_channels_, 0);
-    for (int j = 0; j < num_channels_; ++j) {
-      time_sample[j] = static_cast<int32_t>(output_pcm[i + j])
-                       << (32 - GetFdkAacBitDepth());
-    }
-    decoded_samples.push_back(time_sample);
-  }
-
-  return absl::OkStatus();
+  // Arrange the interleaved data in (time, channel) axes with samples stored in
+  // the upper bytes of an `int32_t`.
+  const absl::AnyInvocable<absl::Status(INT_PCM, int32_t&) const>
+      kAacInternalTypeToInt32 = [](INT_PCM input, int32_t& output) {
+        output = static_cast<int32_t>(input) << (32 - GetFdkAacBitDepth());
+        return absl::OkStatus();
+      };
+  return ConvertInterleavedToTimeChannel(absl::MakeConstSpan(output_pcm),
+                                         num_channels_, kAacInternalTypeToInt32,
+                                         decoded_samples_, num_valid_ticks_);
 }
 
 }  // namespace iamf_tools

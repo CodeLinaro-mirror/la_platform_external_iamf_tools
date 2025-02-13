@@ -16,13 +16,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
+#include <functional>
 #include <list>
 #include <memory>
-#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/functional/any_invocable.h"
@@ -33,19 +34,20 @@
 #include "absl/strings/string_view.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/cli_util.h"
 #include "iamf/cli/demixing_module.h"
 #include "iamf/cli/loudness_calculator_base.h"
 #include "iamf/cli/loudness_calculator_factory_base.h"
 #include "iamf/cli/parameter_block_with_data.h"
-#include "iamf/cli/proto/mix_presentation.pb.h"
-#include "iamf/cli/proto/test_vector_metadata.pb.h"
 #include "iamf/cli/renderer/audio_element_renderer_base.h"
 #include "iamf/cli/renderer_factory.h"
-#include "iamf/cli/wav_writer.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/cli/sample_processor_base.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/sample_processing_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/mix_presentation.h"
@@ -56,6 +58,24 @@
 namespace iamf_tools {
 
 namespace {
+
+using LayoutRenderingMetadata =
+    RenderingMixPresentationFinalizer::LayoutRenderingMetadata;
+using SubmixRenderingMetadata =
+    RenderingMixPresentationFinalizer::SubmixRenderingMetadata;
+
+bool CanRenderAnyLayout(
+    const std::vector<SubmixRenderingMetadata>& rendering_metadata) {
+  for (auto& submix_rendering_metadata : rendering_metadata) {
+    for (auto& layout_rendering_metadata :
+         submix_rendering_metadata.layout_rendering_metadata) {
+      if (layout_rendering_metadata.can_render) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 absl::Status CollectAudioElementsInSubMix(
     const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
@@ -75,15 +95,18 @@ absl::Status CollectAudioElementsInSubMix(
   return absl::OkStatus();
 }
 
-absl::Status GetCommonSampleRateAndBitDepthFromAudioElementIds(
+absl::Status GetCommonCodecConfigPropertiesFromAudioElementIds(
     const std::vector<const AudioElementWithData*>& audio_elements_in_sub_mix,
     uint32_t& common_sample_rate, uint8_t& common_bit_depth,
-    bool& requires_resampling) {
+    uint32_t& common_num_samples_per_frame, bool& requires_resampling) {
   absl::flat_hash_set<uint32_t> sample_rates;
+  absl::flat_hash_set<uint32_t> num_samples_per_frame;
   absl::flat_hash_set<uint8_t> bit_depths;
 
   // Get all the bit-depths and sample_rates from each Audio Element.
   for (const auto* audio_element : audio_elements_in_sub_mix) {
+    num_samples_per_frame.insert(
+        audio_element->codec_config->GetNumSamplesPerFrame());
     sample_rates.insert(audio_element->codec_config->GetOutputSampleRate());
     bit_depths.insert(
         audio_element->codec_config->GetBitDepthToMeasureLoudness());
@@ -92,26 +115,24 @@ absl::Status GetCommonSampleRateAndBitDepthFromAudioElementIds(
   RETURN_IF_NOT_OK(GetCommonSampleRateAndBitDepth(
       sample_rates, bit_depths, common_sample_rate, common_bit_depth,
       requires_resampling));
+  if (num_samples_per_frame.size() != 1) {
+    return absl::InvalidArgumentError(
+        "Audio elements in a submix must have the same number of samples per "
+        "frame.");
+  }
+  common_num_samples_per_frame = *num_samples_per_frame.begin();
+
   return absl::OkStatus();
 }
 
-// Common metadata for rendering an audio element and independent of
-// each frame.
-struct AudioElementRenderingMetadata {
-  std::unique_ptr<AudioElementRendererBase> renderer;
-
-  // Pointers to the audio element and the associated codec config. They
-  // contain useful information for rendering.
-  const AudioElementObu* audio_element;
-  const CodecConfigObu* codec_config;
-};
+using AudioElementRenderingMetadata =
+    RenderingMixPresentationFinalizer::AudioElementRenderingMetadata;
 
 absl::Status InitializeRenderingMetadata(
     const RendererFactoryBase& renderer_factory,
     const std::vector<const AudioElementWithData*>& audio_elements_in_sub_mix,
     const std::vector<SubMixAudioElement>& sub_mix_audio_elements,
     const Layout& loudness_layout, const uint32_t common_sample_rate,
-    const uint8_t common_bit_depth,
     std::vector<AudioElementRenderingMetadata>& rendering_metadata_array) {
   rendering_metadata_array.resize(audio_elements_in_sub_mix.size());
 
@@ -120,13 +141,14 @@ absl::Status InitializeRenderingMetadata(
     auto& rendering_metadata = rendering_metadata_array[i];
     rendering_metadata.audio_element = &(sub_mix_audio_element.obu);
     rendering_metadata.codec_config = sub_mix_audio_element.codec_config;
-
     rendering_metadata.renderer = renderer_factory.CreateRendererForLayout(
         sub_mix_audio_element.obu.audio_substream_ids_,
         sub_mix_audio_element.substream_id_to_labels,
         rendering_metadata.audio_element->GetAudioElementType(),
         sub_mix_audio_element.obu.config_,
-        sub_mix_audio_elements[i].rendering_config, loudness_layout);
+        sub_mix_audio_elements[i].rendering_config, loudness_layout,
+        static_cast<size_t>(
+            rendering_metadata.codec_config->GetNumSamplesPerFrame()));
 
     if (rendering_metadata.renderer == nullptr) {
       return absl::UnknownError("Unable to create renderer.");
@@ -134,32 +156,15 @@ absl::Status InitializeRenderingMetadata(
 
     const uint32_t output_sample_rate =
         sub_mix_audio_element.codec_config->GetOutputSampleRate();
-    const uint8_t output_bit_depth =
-        sub_mix_audio_element.codec_config->GetBitDepthToMeasureLoudness();
-    if (common_sample_rate != output_sample_rate ||
-        common_bit_depth != output_bit_depth) {
+    if (common_sample_rate != output_sample_rate) {
       // TODO(b/274689885): Convert to a common sample rate and/or bit-depth.
-      return absl::UnimplementedError(absl::StrCat(
-          "OBUs with different sample rates or bit-depths not supported yet: (",
-          common_sample_rate, " != ", output_sample_rate, " or ",
-          common_bit_depth, " != ", output_bit_depth, ")."));
+      return absl::UnimplementedError(
+          absl::StrCat("OBUs with different sample rates not supported yet: (",
+                       common_sample_rate, " != ", output_sample_rate, ")."));
     }
   }
 
   return absl::OkStatus();
-}
-
-absl::Status SleepUntilFinalizedOrTimeout(
-    const AudioElementRendererBase& audio_element_renderer) {
-  const int kMaxNumTries = 500;
-  for (int i = 0; i < kMaxNumTries; i++) {
-    if (audio_element_renderer.IsFinalized()) {
-      // Usually it will be finalized right away. So avoid sleeping.
-      return absl::OkStatus();
-    }
-    absl::SleepFor(absl::Milliseconds(10));
-  }
-  return absl::DeadlineExceededError("Timed out waiting to finalize.");
 }
 
 absl::Status FlushUntilNonEmptyOrTimeout(
@@ -198,15 +203,47 @@ absl::Status RenderLabeledFrameToLayout(
                                      rendered_samples);
 }
 
+absl::Status GetParameterBlockLinearMixGainsPerTick(
+    uint32_t common_sample_rate, const ParameterBlockWithData& parameter_block,
+    const MixGainParamDefinition& mix_gain,
+    std::vector<float>& linear_mix_gain_per_tick) {
+  if (mix_gain.parameter_rate_ != common_sample_rate) {
+    // TODO(b/283281856): Support resampling parameter blocks.
+    return absl::UnimplementedError(
+        "Parameter blocks that require resampling are not supported yet.");
+  }
+
+  const int16_t default_mix_gain = mix_gain.default_mix_gain_;
+  // Initialize to the default gain value.
+  std::fill(linear_mix_gain_per_tick.begin(), linear_mix_gain_per_tick.end(),
+            std::pow(10.0f, Q7_8ToFloat(default_mix_gain) / 20.0f));
+
+  InternalTimestamp cur_tick = parameter_block.start_timestamp;
+  // Process as many ticks as possible until all are found or the parameter
+  // block ends.
+  while (cur_tick < parameter_block.end_timestamp &&
+         (cur_tick - parameter_block.start_timestamp) <
+             linear_mix_gain_per_tick.size()) {
+    RETURN_IF_NOT_OK(parameter_block.obu->GetLinearMixGain(
+        cur_tick - parameter_block.start_timestamp,
+        linear_mix_gain_per_tick[cur_tick - parameter_block.start_timestamp]));
+    cur_tick++;
+  }
+  return absl::OkStatus();
+}
+
 // Fills in the output `mix_gains` with the gain in Q7.8 format to apply at each
 // tick.
 // TODO(b/288073842): Consider improving computational efficiency instead of
 //                    searching through all parameter blocks for each frame.
-absl::Status GetParameterBlockMixGainsPerTick(
-    uint32_t common_sample_rate, int32_t start_timestamp, int32_t end_timestamp,
+// TODO(b/379961928): Remove this function once the new
+//                    `GetParameterBlockLinearMixGainsPerTick()` is in use.
+absl::Status GetParameterBlockLinearMixGainsPerTick(
+    uint32_t common_sample_rate, InternalTimestamp start_timestamp,
+    InternalTimestamp end_timestamp,
     const std::list<ParameterBlockWithData>& parameter_blocks,
     const MixGainParamDefinition& mix_gain,
-    std::vector<int16_t>& mix_gain_per_tick) {
+    std::vector<float>& linear_mix_gain_per_tick) {
   if (mix_gain.parameter_rate_ != common_sample_rate) {
     // TODO(b/283281856): Support resampling parameter blocks.
     return absl::UnimplementedError(
@@ -217,24 +254,24 @@ absl::Status GetParameterBlockMixGainsPerTick(
   const int16_t default_mix_gain = mix_gain.default_mix_gain_;
 
   // Initialize to the default gain value.
-  std::fill(mix_gain_per_tick.begin(), mix_gain_per_tick.end(),
-            default_mix_gain);
+  std::fill(linear_mix_gain_per_tick.begin(), linear_mix_gain_per_tick.end(),
+            std::pow(10.0f, Q7_8ToFloat(default_mix_gain) / 20.0f));
 
-  int32_t cur_tick = start_timestamp;
+  InternalTimestamp cur_tick = start_timestamp;
 
   // Find the mix gain at each tick. May terminate early if there are samples to
   // trim at the end.
   while (cur_tick < end_timestamp &&
-         (cur_tick - start_timestamp) < mix_gain_per_tick.size()) {
+         (cur_tick - start_timestamp) < linear_mix_gain_per_tick.size()) {
     // Find the parameter block that this tick occurs during.
-    const auto parameter_block = std::find_if(
+    const auto parameter_block_iter = std::find_if(
         parameter_blocks.begin(), parameter_blocks.end(),
         [cur_tick, parameter_id](const auto& parameter_block) {
           return parameter_block.obu->parameter_id_ == parameter_id &&
                  parameter_block.start_timestamp <= cur_tick &&
                  cur_tick < parameter_block.end_timestamp;
         });
-    if (parameter_block == parameter_blocks.end()) {
+    if (parameter_block_iter == parameter_blocks.end()) {
       // Default mix gain will be used for this frame. Logic elsewhere validates
       // the rest of the audio frames have consistent coverage.
       break;
@@ -243,11 +280,11 @@ absl::Status GetParameterBlockMixGainsPerTick(
     // Process as many ticks as possible until all are found or the parameter
     // block ends.
     while (cur_tick < end_timestamp &&
-           cur_tick < parameter_block->end_timestamp &&
-           (cur_tick - start_timestamp) < mix_gain_per_tick.size()) {
-      RETURN_IF_NOT_OK(parameter_block->obu->GetMixGain(
-          cur_tick - parameter_block->start_timestamp,
-          mix_gain_per_tick[cur_tick - start_timestamp]));
+           cur_tick < parameter_block_iter->end_timestamp &&
+           (cur_tick - start_timestamp) < linear_mix_gain_per_tick.size()) {
+      RETURN_IF_NOT_OK(parameter_block_iter->obu->GetLinearMixGain(
+          cur_tick - parameter_block_iter->start_timestamp,
+          linear_mix_gain_per_tick[cur_tick - start_timestamp]));
       cur_tick++;
     }
   }
@@ -255,16 +292,8 @@ absl::Status GetParameterBlockMixGainsPerTick(
   return absl::OkStatus();
 }
 
-// Applies the `mix_gain` in Q7.8 format to the output sample.
-absl::Status ApplyMixGain(int16_t mix_gain, InternalSampleType& sample) {
-  const double mix_gain_db = Q7_8ToFloat(mix_gain);
-  sample *= std::pow(10, mix_gain_db / 20);
-  return absl::OkStatus();
-}
-
-absl::Status GetAndApplyMixGain(
-    uint32_t common_sample_rate, int32_t start_timestamp, int32_t end_timestamp,
-    const std::list<ParameterBlockWithData>& parameter_blocks,
+absl::Status GetAndApplyMixGain(  // NOLINT
+    uint32_t common_sample_rate, const ParameterBlockWithData& parameter_block,
     const MixGainParamDefinition& mix_gain, int32_t num_channels,
     std::vector<InternalSampleType>& rendered_samples) {
   if (rendered_samples.size() % num_channels != 0) {
@@ -275,24 +304,60 @@ absl::Status GetAndApplyMixGain(
   }
 
   // Get the mix gain on a per tick basis from the parameter block.
-  std::vector<int16_t> mix_gain_per_tick(rendered_samples.size() /
-                                         num_channels);
-  RETURN_IF_NOT_OK(GetParameterBlockMixGainsPerTick(
-      common_sample_rate, start_timestamp, end_timestamp, parameter_blocks,
-      mix_gain, mix_gain_per_tick));
+  std::vector<float> linear_mix_gain_per_tick(rendered_samples.size() /
+                                              num_channels);
+  RETURN_IF_NOT_OK(GetParameterBlockLinearMixGainsPerTick(
+      common_sample_rate, parameter_block, mix_gain, linear_mix_gain_per_tick));
 
-  if (!mix_gain_per_tick.empty()) {
+  if (!linear_mix_gain_per_tick.empty()) {
     LOG_FIRST_N(INFO, 6) << " First tick in this frame has gain: "
-                         << mix_gain_per_tick.front();
+                         << linear_mix_gain_per_tick.front();
   }
 
-  for (int tick = 0; tick < mix_gain_per_tick.size(); tick++) {
+  for (int tick = 0; tick < linear_mix_gain_per_tick.size(); tick++) {
     for (int channel = 0; channel < num_channels; channel++) {
       // Apply the same mix gain to all `num_channels` associated with this
       // tick.
-      RETURN_IF_NOT_OK(
-          ApplyMixGain(mix_gain_per_tick[tick],
-                       rendered_samples[tick * num_channels + channel]));
+      rendered_samples[tick * num_channels + channel] *=
+          linear_mix_gain_per_tick[tick];
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+// TODO(b/379961928): Remove once the new GetAndApplyMixGain is in use.
+absl::Status GetAndApplyMixGain(
+    uint32_t common_sample_rate, InternalTimestamp start_timestamp,
+    InternalTimestamp end_timestamp,
+    const std::list<ParameterBlockWithData>& parameter_blocks,
+    const MixGainParamDefinition& mix_gain, int32_t num_channels,
+    std::vector<float>& linear_mix_gain_per_tick,
+    std::vector<InternalSampleType>& rendered_samples) {
+  if (rendered_samples.size() % num_channels != 0) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Expected an integer number of interlaced channels. "
+        "renderered_samples.size()= ",
+        rendered_samples.size(), ", num_channels= ", num_channels));
+  }
+
+  // Get the mix gain on a per tick basis from the parameter block.
+  linear_mix_gain_per_tick.resize(rendered_samples.size() / num_channels, 0.0f);
+  RETURN_IF_NOT_OK(GetParameterBlockLinearMixGainsPerTick(
+      common_sample_rate, start_timestamp, end_timestamp, parameter_blocks,
+      mix_gain, linear_mix_gain_per_tick));
+
+  if (!linear_mix_gain_per_tick.empty()) {
+    LOG_FIRST_N(INFO, 6) << " First tick in this frame has gain: "
+                         << linear_mix_gain_per_tick.front();
+  }
+
+  for (int tick = 0; tick < linear_mix_gain_per_tick.size(); tick++) {
+    for (int channel = 0; channel < num_channels; channel++) {
+      // Apply the same mix gain to all `num_channels` associated with this
+      // tick.
+      rendered_samples[tick * num_channels + channel] *=
+          linear_mix_gain_per_tick[tick];
     }
   }
 
@@ -327,60 +392,41 @@ absl::Status MixAudioElements(
   return absl::OkStatus();
 }
 
-absl::Status RenderNextFrameForLayout(
+// Fills in `valid_rendered_samples` which is a view backed by
+// `rendered_samples` of the ticks actually rendered.
+absl::Status RenderAllFramesForLayout(
     int32_t num_channels,
     const std::vector<SubMixAudioElement> sub_mix_audio_elements,
     const MixGainParamDefinition& output_mix_gain,
-    const IdTimeLabeledFrameMap& id_to_time_to_labeled_frame,
+    const IdLabeledFrameMap& id_to_labeled_frame,
     const std::vector<AudioElementRenderingMetadata>& rendering_metadata_array,
+    InternalTimestamp start_timestamp, InternalTimestamp end_timestamp,
     const std::list<ParameterBlockWithData>& parameter_blocks,
-    const uint32_t common_sample_rate, int32_t& start_timestamp,
-    std::vector<int32_t>& rendered_samples) {
-  LOG_FIRST_N(INFO, 1) << "Rendering start_timestamp= " << start_timestamp;
-
-  rendered_samples.clear();
-  // TODO(b/273464424): To support enhanced profile remove assumption that
-  //                    all audio frames are aligned and have the same
-  //                    duration.
-  int32_t end_timestamp = start_timestamp;
-
+    const uint32_t common_sample_rate,
+    std::vector<std::vector<int32_t>>& rendered_samples,
+    absl::Span<const std::vector<int32_t>>& valid_rendered_samples) {
   // Each audio element rendered individually with `element_mix_gain` applied.
   std::vector<std::vector<InternalSampleType>> rendered_audio_elements(
       sub_mix_audio_elements.size());
+  std::vector<float> linear_mix_gain_per_tick;
   for (int i = 0; i < sub_mix_audio_elements.size(); i++) {
     const SubMixAudioElement& sub_mix_audio_element = sub_mix_audio_elements[i];
     const auto audio_element_id = sub_mix_audio_element.audio_element_id;
-    const auto& time_to_labeled_frame =
-        id_to_time_to_labeled_frame.at(audio_element_id);
     const auto& rendering_metadata = rendering_metadata_array[i];
 
-    if (time_to_labeled_frame.find(start_timestamp) !=
-        time_to_labeled_frame.end()) {
-      const auto& labeled_frame = time_to_labeled_frame.at(start_timestamp);
-      end_timestamp = labeled_frame.end_timestamp;
-
+    if (id_to_labeled_frame.find(audio_element_id) !=
+        id_to_labeled_frame.end()) {
+      const auto& labeled_frame = id_to_labeled_frame.at(audio_element_id);
       // Render the frame to the specified `loudness_layout` and apply element
       // mix gain.
       RETURN_IF_NOT_OK(RenderLabeledFrameToLayout(
           labeled_frame, rendering_metadata, rendered_audio_elements[i]));
-
-    } else {
-      // This can happen when reaching the end of the stream. Flush and
-      // calculate the final gains.
-      LOG(INFO) << "Rendering END";
-      RETURN_IF_NOT_OK(rendering_metadata.renderer->Finalize());
-      RETURN_IF_NOT_OK(
-          SleepUntilFinalizedOrTimeout(*rendering_metadata.renderer));
-
-      RETURN_IF_NOT_OK(
-          rendering_metadata.renderer->Flush(rendered_audio_elements[i]));
     }
-
     RETURN_IF_NOT_OK(GetAndApplyMixGain(
         common_sample_rate, start_timestamp, end_timestamp, parameter_blocks,
         sub_mix_audio_element.element_mix_gain, num_channels,
-        rendered_audio_elements[i]));
-  }  // End of for (int i = 0; i < num_audio_elements; i++)
+        linear_mix_gain_per_tick, rendered_audio_elements[i]));
+  }
 
   // Mix the audio elements.
   std::vector<InternalSampleType> rendered_samples_internal;
@@ -390,41 +436,20 @@ absl::Status RenderNextFrameForLayout(
   LOG_FIRST_N(INFO, 1) << "    Applying output_mix_gain.default_mix_gain= "
                        << output_mix_gain.default_mix_gain_;
 
-  RETURN_IF_NOT_OK(GetAndApplyMixGain(
-      common_sample_rate, start_timestamp, end_timestamp, parameter_blocks,
-      output_mix_gain, num_channels, rendered_samples_internal));
+  RETURN_IF_NOT_OK(
+      GetAndApplyMixGain(common_sample_rate, start_timestamp, end_timestamp,
+                         parameter_blocks, output_mix_gain, num_channels,
+                         linear_mix_gain_per_tick, rendered_samples_internal));
 
   // Convert the rendered samples to int32, clipping if needed.
-  rendered_samples.reserve(rendered_samples_internal.size());
-  for (const InternalSampleType sample : rendered_samples_internal) {
-    int32_t sample_int32;
-    RETURN_IF_NOT_OK(ClipDoubleToInt32(sample, sample_int32));
-    rendered_samples.push_back(sample_int32);
-  }
-
-  // Set the output argument to the next timestamp in the series.
-  start_timestamp = end_timestamp;
-
-  return absl::OkStatus();
-}
-
-// Convert the samples from left-justified 32 bit to the little endian PCM with
-// the expected bit-depth. Write the native format write to the wav file.
-absl::Status WriteRenderedSamples(const std::vector<int32_t>& rendered_samples,
-                                  const uint8_t common_bit_depth,
-                                  WavWriter& wav_writer) {
-  std::vector<uint8_t> native_samples(
-      rendered_samples.size() * common_bit_depth / 8, 0);
-  int write_position = 0;
-  for (const int32_t sample : rendered_samples) {
-    // `WritePcmSample` requires the input sample to be in the upper
-    // bits of the first argument.
-    RETURN_IF_NOT_OK(WritePcmSample(sample, common_bit_depth,
-                                    /*big_endian=*/false, native_samples.data(),
-                                    write_position));
-  }
-  wav_writer.WriteSamples(native_samples);
-
+  size_t num_ticks = 0;
+  RETURN_IF_NOT_OK(ConvertInterleavedToTimeChannel(
+      absl::MakeConstSpan(rendered_samples_internal), num_channels,
+      absl::AnyInvocable<absl::Status(InternalSampleType, int32_t&) const>(
+          NormalizedFloatingPointToInt32<InternalSampleType>),
+      rendered_samples, num_ticks));
+  valid_rendered_samples =
+      absl::MakeConstSpan(rendered_samples).first(num_ticks);
   return absl::OkStatus();
 }
 
@@ -470,178 +495,427 @@ absl::Status ValidateUserLoudness(const LoudnessInfo& user_loudness,
   return absl::OkStatus();
 }
 
-absl::Status FillLoudnessInfo(
-    bool validate_loudness, const RendererFactoryBase& renderer_factory,
-    const LoudnessCalculatorFactoryBase* loudness_calculator_factory,
-    const RenderingMixPresentationFinalizer::WavWriterFactory&
-        wav_writer_factory,
-    const std::filesystem::path& file_path_prefix,
-    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
-    const IdTimeLabeledFrameMap& id_to_time_to_labeled_frame,
-    const int32_t min_start_time, const int32_t max_end_time,
-    const std::list<ParameterBlockWithData>& parameter_blocks,
-    const std::optional<uint32_t> output_wav_file_bit_depth_override,
-    MixPresentationObu& mix_presentation_obu) {
-  bool loudness_matches_user_data = true;
-  const auto mix_presentation_id = mix_presentation_obu.GetMixPresentationId();
+// Calculates the loudness of the rendered samples. These rendered samples are
+// for a specific timestamp for a given submix and layout. If
+// `validate_loudness` is true, then the user provided loudness values are
+// validated against the computed values.
+absl::Status UpdateLoudnessInfoForLayout(
+    bool validate_loudness, const LoudnessInfo& input_loudness,
+    const uint32_t mix_presentation_id, const int sub_mix_index,
+    const int layout_index, bool& loudness_matches_user_data,
+    std::unique_ptr<LoudnessCalculatorBase> loudness_calculator,
+    LoudnessInfo& output_calculated_loudness) {
+  // Copy the final loudness values back to the output OBU.
+  auto calculated_loudness_info = loudness_calculator->QueryLoudness();
+  if (!calculated_loudness_info.ok()) {
+    return calculated_loudness_info.status();
+  }
 
+  if (validate_loudness) {
+    // Validate any user provided loudness values match computed values.
+    RETURN_IF_NOT_OK(ValidateUserLoudness(
+        input_loudness, mix_presentation_id, sub_mix_index, layout_index,
+        *calculated_loudness_info, loudness_matches_user_data));
+  }
+  output_calculated_loudness = *calculated_loudness_info;
+  return absl::OkStatus();
+}
+
+// Generates rendering metadata for all layouts within a submix. This includes
+// optionally creating a sample processor and/or a loudness calculator for each
+// layout.
+absl::Status GenerateRenderingMetadataForLayouts(
+    const RendererFactoryBase& renderer_factory,
+    const LoudnessCalculatorFactoryBase* loudness_calculator_factory,
+    const RenderingMixPresentationFinalizer::SampleProcessorFactory&
+        sample_processor_factory,
+    const DecodedUleb128 mix_presentation_id,
+    const MixPresentationSubMix& sub_mix, int sub_mix_index,
+    const std::vector<const AudioElementWithData*>& audio_elements_in_sub_mix,
+    uint32_t common_sample_rate, uint8_t rendering_bit_depth,
+    uint32_t common_num_samples_per_frame,
+    std::vector<LayoutRenderingMetadata>& output_layout_rendering_metadata) {
+  output_layout_rendering_metadata.resize(sub_mix.layouts.size());
+  for (int layout_index = 0; layout_index < sub_mix.layouts.size();
+       layout_index++) {
+    LayoutRenderingMetadata& layout_rendering_metadata =
+        output_layout_rendering_metadata[layout_index];
+    const auto& layout = sub_mix.layouts[layout_index];
+
+    int32_t num_channels = 0;
+    auto can_render_status = MixPresentationObu::GetNumChannelsFromLayout(
+        layout.loudness_layout, num_channels);
+    layout_rendering_metadata.num_channels = num_channels;
+
+    can_render_status.Update(InitializeRenderingMetadata(
+        renderer_factory, audio_elements_in_sub_mix, sub_mix.audio_elements,
+        layout.loudness_layout, common_sample_rate,
+        layout_rendering_metadata.audio_element_rendering_metadata));
+
+    if (!can_render_status.ok()) {
+      layout_rendering_metadata.can_render = false;
+      continue;
+    } else {
+      layout_rendering_metadata.can_render = true;
+    }
+    if (loudness_calculator_factory != nullptr) {
+      // Optionally create a loudness calculator.
+      layout_rendering_metadata.loudness_calculator =
+          loudness_calculator_factory->CreateLoudnessCalculator(
+              layout, common_num_samples_per_frame, common_sample_rate,
+              rendering_bit_depth);
+    }
+    // Optionally create a post-processor.
+    layout_rendering_metadata.sample_processor = sample_processor_factory(
+        mix_presentation_id, sub_mix_index, layout_index,
+        layout.loudness_layout, num_channels, common_sample_rate,
+        rendering_bit_depth, common_num_samples_per_frame);
+
+    // Pre-allocate a buffer to store a frame's worth of rendered samples.
+    layout_rendering_metadata.rendered_samples.resize(
+        common_num_samples_per_frame, std::vector<int32_t>(num_channels, 0));
+  }
+
+  return absl::OkStatus();
+}
+
+// We generate one rendering metadata object for each submix. Once this
+// metadata is generated, we will loop through it to render all submixes
+// for a given timestamp. Within a submix, there can be many different audio
+// elements and layouts that need to be rendered as well. Not all of these
+// need to be rendered; only the ones that either have a wav writer or a
+// loudness calculator.
+absl::Status GenerateRenderingMetadataForSubmixes(
+    const RendererFactoryBase& renderer_factory,
+    absl::Nullable<const LoudnessCalculatorFactoryBase*>
+        loudness_calculator_factory,
+    const RenderingMixPresentationFinalizer::SampleProcessorFactory&
+        sample_processor_factory,
+    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    const MixPresentationObu& mix_presentation_obu,
+    std::vector<SubmixRenderingMetadata>& output_rendering_metadata) {
+  const auto mix_presentation_id = mix_presentation_obu.GetMixPresentationId();
+  output_rendering_metadata.resize(mix_presentation_obu.sub_mixes_.size());
   for (int sub_mix_index = 0;
        sub_mix_index < mix_presentation_obu.sub_mixes_.size();
        ++sub_mix_index) {
-    MixPresentationSubMix& sub_mix =
-        mix_presentation_obu.sub_mixes_[sub_mix_index];
+    SubmixRenderingMetadata& submix_rendering_metadata =
+        output_rendering_metadata[sub_mix_index];
+    const auto& sub_mix = mix_presentation_obu.sub_mixes_[sub_mix_index];
 
     // Pointers to audio elements in this sub mix; useful later.
     std::vector<const AudioElementWithData*> audio_elements_in_sub_mix;
     RETURN_IF_NOT_OK(CollectAudioElementsInSubMix(
         audio_elements, sub_mix.audio_elements, audio_elements_in_sub_mix));
 
+    submix_rendering_metadata.audio_elements_in_sub_mix =
+        sub_mix.audio_elements;
+    submix_rendering_metadata.mix_gain =
+        std::make_unique<MixGainParamDefinition>(sub_mix.output_mix_gain);
+
     // Data common to all audio elements and layouts.
-    uint32_t common_sample_rate;
-    uint8_t common_bit_depth;
     bool requires_resampling;
-    RETURN_IF_NOT_OK(GetCommonSampleRateAndBitDepthFromAudioElementIds(
-        audio_elements_in_sub_mix, common_sample_rate, common_bit_depth,
+    uint32_t common_num_samples_per_frame;
+    uint8_t rendering_bit_depth;
+    RETURN_IF_NOT_OK(GetCommonCodecConfigPropertiesFromAudioElementIds(
+        audio_elements_in_sub_mix, submix_rendering_metadata.common_sample_rate,
+        rendering_bit_depth, common_num_samples_per_frame,
         requires_resampling));
     if (requires_resampling) {
       // TODO(b/274689885): Convert to a common sample rate and/or bit-depth.
-      return absl::UnknownError(
+      return absl::UnimplementedError(
           "This implementation does not support mixing different sample rates "
           "or bit-depths.");
     }
-    const auto output_wav_file_bit_depth =
-        output_wav_file_bit_depth_override.has_value()
-            ? *output_wav_file_bit_depth_override
-            : common_bit_depth;
+    RETURN_IF_NOT_OK(GenerateRenderingMetadataForLayouts(
+        renderer_factory, loudness_calculator_factory, sample_processor_factory,
+        mix_presentation_id, sub_mix, sub_mix_index, audio_elements_in_sub_mix,
+        submix_rendering_metadata.common_sample_rate, rendering_bit_depth,
+        common_num_samples_per_frame,
+        submix_rendering_metadata.layout_rendering_metadata));
+  }
+  return absl::OkStatus();
+}
 
-    // Render all audio elements to all layouts.
-    for (int layout_index = 0; layout_index < sub_mix.layouts.size();
-         layout_index++) {
-      MixPresentationLayout& layout = sub_mix.layouts[layout_index];
-
-      int32_t num_channels = 0;
-      auto can_render_status = MixPresentationObu::GetNumChannelsFromLayout(
-          layout.loudness_layout, num_channels);
-
-      int32_t start_timestamp = min_start_time;
-
-      std::vector<AudioElementRenderingMetadata> rendering_metadata_array;
-      can_render_status.Update(InitializeRenderingMetadata(
-          renderer_factory, audio_elements_in_sub_mix, sub_mix.audio_elements,
-          layout.loudness_layout, common_sample_rate, common_bit_depth,
-          rendering_metadata_array));
-
-      if (!can_render_status.ok()) {
-        LOG(WARNING) << "Rendering is not supported yet for this layout: "
-                     << can_render_status
-                     << ". Skipping rendering and loudness calculation.";
-        continue;
+absl::Status FlushPostProcessors(
+    std::vector<SubmixRenderingMetadata>& rendering_metadata) {
+  for (auto& submix_rendering_metadata : rendering_metadata) {
+    for (auto& layout_rendering_metadata :
+         submix_rendering_metadata.layout_rendering_metadata) {
+      if (layout_rendering_metadata.sample_processor != nullptr) {
+        RETURN_IF_NOT_OK(layout_rendering_metadata.sample_processor->Flush());
       }
-      std::unique_ptr<LoudnessCalculatorBase> loudness_calculator = nullptr;
-      if (loudness_calculator_factory != nullptr) {
-        loudness_calculator =
-            loudness_calculator_factory->CreateLoudnessCalculator(
-                layout, common_sample_rate, common_bit_depth);
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status FillLoudnessForMixPresentation(
+    bool validate_loudness,
+    std::vector<SubmixRenderingMetadata>& rendering_metadata,
+    MixPresentationObu& mix_presentation_obu) {
+  bool loudness_matches_user_data = true;
+  int submix_index = 0;
+  for (auto& submix_rendering_metadata : rendering_metadata) {
+    int layout_index = 0;
+    for (auto& layout_rendering_metadata :
+         submix_rendering_metadata.layout_rendering_metadata) {
+      if (layout_rendering_metadata.loudness_calculator != nullptr) {
+        RETURN_IF_NOT_OK(UpdateLoudnessInfoForLayout(
+            validate_loudness,
+            mix_presentation_obu.sub_mixes_[submix_index]
+                .layouts[layout_index]
+                .loudness,
+            mix_presentation_obu.GetMixPresentationId(), submix_index,
+            layout_index, loudness_matches_user_data,
+            std::move(layout_rendering_metadata.loudness_calculator),
+            mix_presentation_obu.sub_mixes_[submix_index]
+                .layouts[layout_index]
+                .loudness));
       }
-
-      // Rendering is supported. Render the samples to measure loudness. Try
-      // to create a wav writer, but it is OK if the user disabled it in this
-      // context.
-      auto wav_writer = wav_writer_factory(
-          mix_presentation_id, sub_mix_index, layout_index,
-          layout.loudness_layout, file_path_prefix, num_channels,
-          common_sample_rate, output_wav_file_bit_depth);
-
-      do {
-        std::vector<int32_t> rendered_samples;
-        RETURN_IF_NOT_OK(RenderNextFrameForLayout(
-            num_channels, sub_mix.audio_elements, sub_mix.output_mix_gain,
-            id_to_time_to_labeled_frame, rendering_metadata_array,
-            parameter_blocks, common_sample_rate, start_timestamp,
-            rendered_samples));
-
-        if (wav_writer != nullptr) {
-          RETURN_IF_NOT_OK(WriteRenderedSamples(
-              rendered_samples, output_wav_file_bit_depth, *wav_writer));
-        }
-
-        if (loudness_calculator != nullptr) {
-          RETURN_IF_NOT_OK(loudness_calculator->AccumulateLoudnessForSamples(
-              rendered_samples));
-        }
-      } while (start_timestamp != max_end_time);
-      if (loudness_calculator == nullptr) {
-        // Rendering is done, and loudness is not being calculated. Ok.
-        continue;
-      }
-
-      // Copy the final loudness values back to the output OBU.
-      auto calculated_loudness_info = loudness_calculator->QueryLoudness();
-      if (!calculated_loudness_info.ok()) {
-        return calculated_loudness_info.status();
-      }
-
-      if (validate_loudness) {
-        // Validate any user provided loudness values match computed values.
-        RETURN_IF_NOT_OK(ValidateUserLoudness(
-            layout.loudness, mix_presentation_id, sub_mix_index, layout_index,
-            *calculated_loudness_info, loudness_matches_user_data));
-      }
-      layout.loudness = *calculated_loudness_info;
-    }  // End loop over all layouts.
-  }  // End loop over all submixes.
-
+      layout_index++;
+    }
+    submix_index++;
+  }
   if (!loudness_matches_user_data) {
     return absl::InvalidArgumentError("Loudness does not match user data.");
   }
   return absl::OkStatus();
 }
 
-}  // namespace
-
-absl::Status RenderingMixPresentationFinalizer::Finalize(
-    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
-    const IdTimeLabeledFrameMap& id_to_time_to_labeled_frame,
+// Renders all submixes, layouts, and audio elements for a temporal unit. It
+// then optionally writes the rendered samples to a wav file and/or calculates
+// the loudness of the rendered samples.
+absl::Status RenderWriteAndCalculateLoudnessForTemporalUnit(
+    const IdLabeledFrameMap& id_to_labeled_frame,
+    InternalTimestamp start_timestamp, InternalTimestamp end_timestamp,
     const std::list<ParameterBlockWithData>& parameter_blocks,
-    const WavWriterFactory& wav_writer_factory,
-    std::list<MixPresentationObu>& mix_presentation_obus) {
-  if (renderer_factory_ == nullptr) {
-    // Ok. When rendering is disabled, there is nothing to finalize.
-    for (const auto& mix_presentation_obu : mix_presentation_obus) {
-      mix_presentation_obu.PrintObu();
+    std::vector<SubmixRenderingMetadata>& rendering_metadata) {
+  for (auto& submix_rendering_metadata : rendering_metadata) {
+    for (auto& layout_rendering_metadata :
+         submix_rendering_metadata.layout_rendering_metadata) {
+      if (!layout_rendering_metadata.can_render) {
+        continue;
+      }
+      if (submix_rendering_metadata.mix_gain == nullptr) {
+        return absl::InvalidArgumentError("Submix mix gain is null");
+      }
+
+      RETURN_IF_NOT_OK(RenderAllFramesForLayout(
+          layout_rendering_metadata.num_channels,
+          submix_rendering_metadata.audio_elements_in_sub_mix,
+          *submix_rendering_metadata.mix_gain, id_to_labeled_frame,
+          layout_rendering_metadata.audio_element_rendering_metadata,
+          start_timestamp, end_timestamp, parameter_blocks,
+          submix_rendering_metadata.common_sample_rate,
+          layout_rendering_metadata.rendered_samples,
+          layout_rendering_metadata.valid_rendered_samples));
+
+      // Calculate loudness based on the original rendered samples; we do not
+      // know what post-processing the end user will have.
+      if (layout_rendering_metadata.loudness_calculator != nullptr) {
+        RETURN_IF_NOT_OK(
+            layout_rendering_metadata.loudness_calculator
+                ->AccumulateLoudnessForSamples(
+                    layout_rendering_metadata.valid_rendered_samples));
+      }
+
+      // Perform any post-processing.
+      if (layout_rendering_metadata.sample_processor != nullptr) {
+        RETURN_IF_NOT_OK(layout_rendering_metadata.sample_processor->PushFrame(
+            layout_rendering_metadata.valid_rendered_samples));
+      }
     }
-    return absl::OkStatus();
-  }
-  // Find the minimum start timestamp and maximum end timestamp.
-  int32_t min_start_time = INT32_MAX;
-  int32_t max_end_time = INT32_MIN;
-  for (const auto& [unused_id, time_to_labeled_frame] :
-       id_to_time_to_labeled_frame) {
-    // `time_to_labeled_frame` is already sorted by the starting timestamps,
-    // so we just have to probe the first and the last frames.
-    min_start_time =
-        std::min(min_start_time, time_to_labeled_frame.begin()->first);
-    max_end_time = std::max(
-        max_end_time, time_to_labeled_frame.rbegin()->second.end_timestamp);
-  }
-
-  // Finalize all OBUs by calculating the loudness.
-  int i = 0;
-  for (auto& mix_presentation_obu : mix_presentation_obus) {
-    RETURN_IF_NOT_OK(FillLoudnessInfo(
-        validate_loudness_, *renderer_factory_,
-        loudness_calculator_factory_.get(), wav_writer_factory,
-        file_path_prefix_, audio_elements, id_to_time_to_labeled_frame,
-        min_start_time, max_end_time, parameter_blocks,
-        output_wav_file_bit_depth_override_, mix_presentation_obu));
-    i++;
-  }
-
-  // Examine finalized Mix Presentation OBUs.
-  for (const auto& mix_presentation_obu : mix_presentation_obus) {
-    mix_presentation_obu.PrintObu();
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<const LayoutRenderingMetadata*>
+GetRenderedSamplesAndPostProcessor(
+    const absl::flat_hash_map<DecodedUleb128,
+                              std::vector<SubmixRenderingMetadata>>&
+        mix_presentation_id_to_sub_mix_rendering_metadata,
+    DecodedUleb128 mix_presentation_id, size_t sub_mix_index,
+    size_t layout_index) {
+  // Lookup the requested layout in the requested mix presentation.
+  const auto sub_mix_rendering_metadata_it =
+      mix_presentation_id_to_sub_mix_rendering_metadata.find(
+          mix_presentation_id);
+  const auto mix_presentation_id_error_message =
+      absl::StrCat(" Mix Presentation ID ", mix_presentation_id);
+  if (sub_mix_rendering_metadata_it ==
+      mix_presentation_id_to_sub_mix_rendering_metadata.end()) {
+    return absl::NotFoundError(
+        absl::StrCat(mix_presentation_id_error_message,
+                     " not found in rendering metadata."));
+  }
+
+  // Validate the sub mix and layout are in bounds, then retrieve it.
+  const auto& [unused_mix_presentation_id, sub_mix_rendering_metadatas] =
+      *sub_mix_rendering_metadata_it;
+  RETURN_IF_NOT_OK(Validate(
+      sub_mix_index, std::less<size_t>(), sub_mix_rendering_metadatas.size(),
+      absl::StrCat(mix_presentation_id_error_message, "  sub_mix_index <")));
+  RETURN_IF_NOT_OK(Validate(
+      layout_index, std::less<size_t>(),
+      sub_mix_rendering_metadatas[sub_mix_index]
+          .layout_rendering_metadata.size(),
+      absl::StrCat(mix_presentation_id_error_message, "  layout_index <")));
+  return &sub_mix_rendering_metadatas[sub_mix_index]
+              .layout_rendering_metadata[layout_index];
+}
+
+}  // namespace
+
+absl::StatusOr<RenderingMixPresentationFinalizer>
+RenderingMixPresentationFinalizer::Create(
+    absl::Nullable<const RendererFactoryBase*> renderer_factory,
+    absl::Nullable<const LoudnessCalculatorFactoryBase*>
+        loudness_calculator_factory,
+    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    const SampleProcessorFactory& sample_processor_factory,
+    const std::list<MixPresentationObu>& mix_presentation_obus) {
+  const bool rendering_enabled = renderer_factory != nullptr;
+  if (!rendering_enabled) {
+    LOG(INFO) << "Rendering is safely disabled.";
+  }
+  if (loudness_calculator_factory == nullptr) {
+    LOG(INFO) << "Loudness calculator factory is null so loudness will not be "
+                 "calculated.";
+  }
+  absl::flat_hash_map<DecodedUleb128, std::vector<SubmixRenderingMetadata>>
+      mix_presentation_id_to_rendering_metadata;
+  std::list<MixPresentationObu> mix_presentation_obus_to_render;
+  for (const auto& mix_presentation_obu : mix_presentation_obus) {
+    // Copy all mix presentation OBUs, so they can be echoed back, even when
+    // rendering is disabled.
+    mix_presentation_obus_to_render.emplace_back(mix_presentation_obu);
+
+    // Fill in rendering metadata if rendering is enabled, and at least one
+    // layout can be rendered.
+    if (rendering_enabled) {
+      std::vector<SubmixRenderingMetadata> temp_sub_mix_rendering_metadata;
+      RETURN_IF_NOT_OK(GenerateRenderingMetadataForSubmixes(
+          *renderer_factory, loudness_calculator_factory,
+          sample_processor_factory, audio_elements, mix_presentation_obu,
+          temp_sub_mix_rendering_metadata));
+      if (CanRenderAnyLayout(temp_sub_mix_rendering_metadata)) {
+        mix_presentation_id_to_rendering_metadata.emplace(
+            mix_presentation_obu.GetMixPresentationId(),
+            std::move(temp_sub_mix_rendering_metadata));
+      }
+    }
+  }
+
+  return RenderingMixPresentationFinalizer(
+      std::move(mix_presentation_id_to_rendering_metadata),
+      std::move(mix_presentation_obus_to_render));
+}
+
+absl::Status RenderingMixPresentationFinalizer::PushTemporalUnit(
+    const IdLabeledFrameMap& id_to_labeled_frame,
+    InternalTimestamp start_timestamp, InternalTimestamp end_timestamp,
+    const std::list<ParameterBlockWithData>& parameter_blocks) {
+  switch (state_) {
+    case kAcceptingTemporalUnits:
+      // Ok to push.
+      break;
+    case kFinalizePushTemporalUnitCalled:
+      return absl::FailedPreconditionError(
+          "PushTemporalUnit() should not be called after "
+          "FinalizePushingTemporalUnits() has been called.");
+    case kFlushedFinalizedMixPresentationObus:
+      return absl::FailedPreconditionError(
+          "PushTemporalUnit() should not be called after "
+          "GetFinalizedMixPresentationOBUs() has been called.");
+  }
+  for (auto& [mix_presentation_ids, sub_mix_rendering_metadata] :
+       mix_presentation_id_to_sub_mix_rendering_metadata_) {
+    RETURN_IF_NOT_OK(RenderWriteAndCalculateLoudnessForTemporalUnit(
+        id_to_labeled_frame, start_timestamp, end_timestamp, parameter_blocks,
+        sub_mix_rendering_metadata));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<absl::Span<const std::vector<int32_t>>>
+RenderingMixPresentationFinalizer::GetPostProcessedSamplesAsSpan(
+    DecodedUleb128 mix_presentation_id, size_t sub_mix_index,
+    size_t layout_index) const {
+  const auto layout_rendering_metadata = GetRenderedSamplesAndPostProcessor(
+      mix_presentation_id_to_sub_mix_rendering_metadata_, mix_presentation_id,
+      sub_mix_index, layout_index);
+  if (!layout_rendering_metadata.ok()) {
+    return layout_rendering_metadata.status();
+  }
+  // `absl::StatusOr<const T*> cannot hold a nullptr.
+  CHECK_NE(*layout_rendering_metadata, nullptr);
+
+  // Prioritize returning the post-processed samples if a post-processor is
+  // available. Otherwise, return the rendered samples.
+  return (*layout_rendering_metadata)->sample_processor != nullptr
+             ? (*layout_rendering_metadata)
+                   ->sample_processor->GetOutputSamplesAsSpan()
+             : (*layout_rendering_metadata)->valid_rendered_samples;
+}
+
+absl::Status RenderingMixPresentationFinalizer::FinalizePushingTemporalUnits() {
+  switch (state_) {
+    case kAcceptingTemporalUnits:
+      state_ = kFinalizePushTemporalUnitCalled;
+      break;
+    case kFinalizePushTemporalUnitCalled:
+    case kFlushedFinalizedMixPresentationObus:
+      return absl::FailedPreconditionError(
+          "FinalizePushingTemporalUnits() should not be called twice.");
+  }
+
+  for (auto& [mix_presentation_id, sub_mix_rendering_metadata] :
+       mix_presentation_id_to_sub_mix_rendering_metadata_) {
+    RETURN_IF_NOT_OK(FlushPostProcessors(sub_mix_rendering_metadata));
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::list<MixPresentationObu>>
+RenderingMixPresentationFinalizer::GetFinalizedMixPresentationObus(
+    bool validate_loudness) {
+  switch (state_) {
+    case kAcceptingTemporalUnits:
+      return absl::FailedPreconditionError(
+          "FinalizePushingTemporalUnits() should be called before "
+          "GetFinalizedMixPresentationOBUs().");
+    case kFinalizePushTemporalUnitCalled:
+      // Ok to finalize.
+      break;
+    case kFlushedFinalizedMixPresentationObus:
+      return absl::FailedPreconditionError(
+          "GetFinalizedMixPresentationOBUs() should not be called twice.");
+  }
+
+  // Finalize the OBUs in place.
+  for (auto& mix_presentation_obu : mix_presentation_obus_) {
+    const auto sub_mix_rendering_metadata_it =
+        mix_presentation_id_to_sub_mix_rendering_metadata_.find(
+            mix_presentation_obu.GetMixPresentationId());
+    if (sub_mix_rendering_metadata_it ==
+        mix_presentation_id_to_sub_mix_rendering_metadata_.end()) {
+      LOG(INFO) << "Rendering was disabled for Mix Presentation ID= "
+                << mix_presentation_obu.GetMixPresentationId()
+                << " echoing the input OBU.";
+      continue;
+    }
+
+    RETURN_IF_NOT_OK(FillLoudnessForMixPresentation(
+        validate_loudness, sub_mix_rendering_metadata_it->second,
+        mix_presentation_obu));
+  }
+
+  // Flush the finalized OBUs and mark that this class should not use them
+  // again.
+  state_ = kFlushedFinalizedMixPresentationObus;
+  return std::move(mix_presentation_obus_);
 }
 
 }  // namespace iamf_tools
