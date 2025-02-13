@@ -22,9 +22,9 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/cli/leb_generator.h"
-#include "iamf/common/bit_buffer_util.h"
-#include "iamf/common/macros.h"
+#include "iamf/common/leb_generator.h"
+#include "iamf/common/utils/bit_buffer_util.h"
+#include "iamf/common/utils/macros.h"
 #include "iamf/obu/types.h"
 
 namespace iamf_tools {
@@ -74,6 +74,12 @@ absl::Status WriteBit(int bit, int64_t& bit_offset,
 absl::Status InternalWriteUnsigned(int max_bits, uint64_t data, int num_bits,
                                    int64_t& bit_offset,
                                    std::vector<uint8_t>& bit_buffer) {
+  if (num_bits < 0) {
+    return absl::InvalidArgumentError("num_bits cannot be negative.");
+  }
+  if (num_bits == 0) {
+    return absl::OkStatus();
+  }
   // The `uint64` input limits this function to only write 64 bits at a time.
   if (max_bits > 64) {
     return absl::InvalidArgumentError("max_bits cannot be greater than 64.");
@@ -169,23 +175,31 @@ absl::Status WriteBitBuffer::WriteSigned16(int16_t data) {
 
 // Writes a null terminated C-style string to the buffer - including the null.
 absl::Status WriteBitBuffer::WriteString(const std::string& data) {
-  // Write up to the first `kIamfMaxStringSize` characters. Exit after writing
-  // the null terminator.
-  for (int i = 0; i < kIamfMaxStringSize; i++) {
+  if (data.size() > kIamfMaxStringSize - 1) {  // -1 for the NULL terminator.
+    return absl::InvalidArgumentError(
+        absl::StrCat("String length, ", data.size(),
+                     ", (including the NULL terminator) is longer than the "
+                     "allowed maximum of ",
+                     kIamfMaxStringSize));
+  }
+  if (data.empty()) {
+    RETURN_IF_NOT_OK(WriteUnsignedLiteral(static_cast<uint8_t>('\0'), 8));
+    return absl::OkStatus();
+  }
+  for (int i = 0; i < data.size(); ++i) {
+    if (data[i] == '\0') {
+      return absl::InvalidArgumentError(
+          "String contains an internal null terminator");
+    }
+  }
+  for (int i = 0; i < data.size(); ++i) {
     // Note that some systems have `char` as signed and others unsigned. Write
     // the same raw byte value regardless.
     const uint8_t byte = static_cast<uint8_t>(data[i]);
     RETURN_IF_NOT_OK(WriteUnsignedLiteral(byte, 8));
-
-    // Exit successfully after last byte was written.
-    if (data[i] == '\0') {
-      return absl::OkStatus();
-    }
   }
-
-  // Failed to find the null terminator within `kIamfMaxStringSize` bytes.
-  return absl::InvalidArgumentError(
-      absl::StrCat("Failed to find the null terminator for data= ", data));
+  RETURN_IF_NOT_OK(WriteUnsignedLiteral(static_cast<uint8_t>('\0'), 8));
+  return absl::OkStatus();
 }
 
 absl::Status WriteBitBuffer::WriteUleb128(const DecodedUleb128 data) {
@@ -250,7 +264,9 @@ absl::Status WriteBitBuffer::FlushAndWriteToFile(
     RETURN_IF_NOT_OK(WriteBufferToFile(bit_buffer_, *output_file));
   }
 
-  LOG_EVERY_POW_2(INFO) << "Flushing " << bit_offset_ / 8 << " bytes";
+  if (bit_offset_ > 0) {
+    LOG_EVERY_POW_2(INFO) << "Flushing " << bit_offset_ / 8 << " bytes";
+  }
   Reset();
   return absl::OkStatus();
 }

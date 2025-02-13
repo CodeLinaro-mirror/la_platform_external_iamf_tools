@@ -1,0 +1,41 @@
+###############################################################################
+# This project is now using bazelmod to manage some dependencies.
+# Some still remain in WORKSPACE.
+#
+# For more details, please check https://github.com/bazelbuild/bazel/issues/18958
+###############################################################################
+
+module(
+    name = "iamf_tools",
+    version = "1.0.0",
+)
+
+bazel_dep(
+    name = "abseil-cpp",
+    version = "20240722.0.bcr.2",
+    repo_name = "com_google_absl",
+)
+bazel_dep(
+    name = "googletest",
+    version = "1.15.2",
+    repo_name = "com_google_googletest",
+)
+bazel_dep(
+    name = "protobuf",
+    version = "28.3",
+    repo_name = "com_google_protobuf",
+)
+bazel_dep(
+    name = "fuzztest",
+    version = "20241028.0",
+    repo_name = "com_google_fuzztest",
+)
+bazel_dep(
+    name = "google_benchmark",
+    version = "1.8.5",
+    repo_name = "com_google_benchmark",
+)
+bazel_dep(
+    name = "eigen",
+    version = "3.4.0",
+)

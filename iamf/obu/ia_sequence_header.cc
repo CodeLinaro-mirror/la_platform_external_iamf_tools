@@ -16,9 +16,9 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
 
@@ -43,9 +43,9 @@ absl::Status ValidateProfileVersion(ProfileVersion profile_version) {
 absl::Status IASequenceHeaderObu::Validate() const {
   // If the IA Code is any other value then the data may not actually be an IA
   // Sequence, or it may mean the data is corrupt / misaligned.
-  RETURN_IF_NOT_OK(
+  MAYBE_RETURN_IF_NOT_OK(
       ValidateEqual(ia_code_, IASequenceHeaderObu::kIaCode, "ia_code"));
-  RETURN_IF_NOT_OK(ValidateProfileVersion(primary_profile_));
+  MAYBE_RETURN_IF_NOT_OK(ValidateProfileVersion(primary_profile_));
   return absl::OkStatus();
 }
 

@@ -1,5 +1,6 @@
 package(default_visibility = ["//iamf:__subpackages__"])
 
+# keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
 cc_library(
     name = "arbitrary_obu",
     srcs = [
@@ -9,9 +10,10 @@ cc_library(
     deps = [
         ":obu_base",
         ":obu_header",
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
@@ -28,15 +30,17 @@ cc_library(
         ":obu_header",
         ":param_definitions",
         ":types",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:numeric_utils",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -50,12 +54,13 @@ cc_library(
         ":obu_base",
         ":obu_header",
         ":types",
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -68,9 +73,9 @@ cc_library(
         ":obu_base",
         ":obu_header",
         ":types",
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
         "//iamf/obu/decoder_config:aac_decoder_config",
         "//iamf/obu/decoder_config:flac_decoder_config",
         "//iamf/obu/decoder_config:lpcm_decoder_config",
@@ -89,9 +94,9 @@ cc_library(
     deps = [
         ":param_definitions",
         ":parameter_data",
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
     ],
@@ -104,20 +109,15 @@ cc_library(
     deps = [
         ":obu_base",
         ":obu_header",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
     ],
-)
-
-cc_library(
-    name = "types",
-    hdrs = ["types.h"],
 )
 
 cc_library(
@@ -129,16 +129,18 @@ cc_library(
         ":obu_header",
         ":param_definitions",
         ":types",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:map_utils",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -148,13 +150,14 @@ cc_library(
     hdrs = ["obu_base.h"],
     deps = [
         ":obu_header",
-        "//iamf/cli:leb_generator",
-        "//iamf/common:macros",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -164,14 +167,19 @@ cc_library(
     hdrs = ["obu_header.h"],
     deps = [
         ":types",
-        "//iamf/cli:leb_generator",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:numeric_utils",
+        "//iamf/common/utils:validation_utils",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -181,13 +189,15 @@ cc_library(
     hdrs = ["param_definitions.h"],
     deps = [
         ":types",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:numeric_utils",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -201,10 +211,10 @@ cc_library(
         ":param_definitions",
         ":parameter_data",
         ":types",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:obu_util",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/memory",
@@ -232,15 +242,16 @@ cc_library(
     deps = [
         ":param_definitions",
         ":types",
-        "//iamf/common:macros",
-        "//iamf/common:obu_util",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:validation_utils",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -250,10 +261,17 @@ cc_library(
     deps = [
         ":obu_base",
         ":obu_header",
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:macros",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
     ],
 )
+
+cc_library(
+    name = "types",
+    hdrs = ["types.h"],
+)
+
+# keep-sorted end

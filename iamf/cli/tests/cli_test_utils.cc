@@ -13,20 +13,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <limits>
 #include <list>
 #include <memory>
+#include <numbers>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -35,13 +41,21 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
+#include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/demixing_module.h"
+#include "iamf/cli/obu_processor.h"
+#include "iamf/cli/obu_with_data_generator.h"
+#include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/proto/mix_presentation.pb.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
-#include "iamf/cli/proto_to_obu/audio_element_generator.h"
-#include "iamf/cli/proto_to_obu/mix_presentation_generator.h"
+#include "iamf/cli/proto_conversion/proto_to_obu/audio_element_generator.h"
+#include "iamf/cli/proto_conversion/proto_to_obu/mix_presentation_generator.h"
 #include "iamf/cli/renderer/audio_element_renderer_base.h"
+#include "iamf/cli/user_metadata_builder/audio_element_metadata_builder.h"
+#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/cli/wav_reader.h"
+#include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
@@ -50,11 +64,13 @@
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/demixing_param_definition.h"
+#include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_header.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
 #include "src/google/protobuf/io/zero_copy_stream_impl.h"
+#include "src/google/protobuf/repeated_ptr_field.h"
 #include "src/google/protobuf/text_format.h"
 
 namespace iamf_tools {
@@ -99,6 +115,43 @@ void AddParamDefinition(
 }  // namespace
 
 using ::absl_testing::IsOk;
+
+absl::Status CollectObusFromIaSequence(
+    ReadBitBuffer& read_bit_buffer, IASequenceHeaderObu& ia_sequence_header,
+    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements,
+    std::list<MixPresentationObu>& mix_presentations,
+    std::list<AudioFrameWithData>& audio_frames,
+    std::list<ParameterBlockWithData>& parameter_blocks) {
+  bool insufficient_data = false;
+  auto obu_processor = ObuProcessor::Create(
+      /*is_exhaustive_and_exact=*/false, &read_bit_buffer, insufficient_data);
+  EXPECT_FALSE(insufficient_data);
+
+  bool continue_processing = true;
+  int temporal_unit_count = 0;
+  LOG(INFO) << "Starting Temporal Unit OBU processing";
+  while (continue_processing) {
+    std::list<AudioFrameWithData> audio_frames_for_temporal_unit;
+    std::list<ParameterBlockWithData> parameter_blocks_for_temporal_unit;
+    std::optional<int32_t> timestamp_for_temporal_unit;
+    RETURN_IF_NOT_OK(obu_processor->ProcessTemporalUnit(
+        audio_frames_for_temporal_unit, parameter_blocks_for_temporal_unit,
+        timestamp_for_temporal_unit, continue_processing));
+    audio_frames.splice(audio_frames.end(), audio_frames_for_temporal_unit);
+    parameter_blocks.splice(parameter_blocks.end(),
+                            parameter_blocks_for_temporal_unit);
+    temporal_unit_count++;
+  }
+  LOG(INFO) << "Processed " << temporal_unit_count << " Temporal Unit OBUs";
+
+  // Move the processed data to the output.
+  ia_sequence_header = obu_processor->ia_sequence_header_;
+  codec_config_obus.swap(obu_processor->codec_config_obus_);
+  audio_elements.swap(obu_processor->audio_elements_);
+  mix_presentations.swap(obu_processor->mix_presentations_);
+  return absl::OkStatus();
+}
 
 void AddLpcmCodecConfigWithIdAndSampleRate(
     uint32_t codec_config_id, uint32_t sample_rate,
@@ -174,7 +227,7 @@ void AddAacCodecConfigWithId(
 
 void AddAmbisonicsMonoAudioElementWithSubstreamIds(
     DecodedUleb128 audio_element_id, uint32_t codec_config_id,
-    const std::vector<DecodedUleb128>& substream_ids,
+    absl::Span<const DecodedUleb128> substream_ids,
     const absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
     absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements) {
   // Check the `codec_config_id` is known and this is a new
@@ -187,10 +240,9 @@ void AddAmbisonicsMonoAudioElementWithSubstreamIds(
   AudioElementObu obu = AudioElementObu(
       ObuHeader(), audio_element_id, AudioElementObu::kAudioElementSceneBased,
       0, codec_config_id);
-  obu.audio_substream_ids_ = substream_ids;
   obu.InitializeParams(0);
   obu.InitializeAudioSubstreams(substream_ids.size());
-  obu.audio_substream_ids_ = substream_ids;
+  obu.audio_substream_ids_.assign(substream_ids.begin(), substream_ids.end());
 
   // Initialize to n-th order ambisonics. Choose the lowest order that can fit
   // all `substream_ids`. This may result in mixed-order ambisonics.
@@ -215,39 +267,41 @@ void AddAmbisonicsMonoAudioElementWithSubstreamIds(
 
   AudioElementWithData audio_element = {
       .obu = std::move(obu), .codec_config = &codec_config_iter->second};
-  ASSERT_THAT(AudioElementGenerator::FinalizeAmbisonicsConfig(
+  ASSERT_THAT(ObuWithDataGenerator::FinalizeAmbisonicsConfig(
                   audio_element.obu, audio_element.substream_id_to_labels),
               IsOk());
 
   audio_elements.emplace(audio_element_id, std::move(audio_element));
 }
 
-// TODO(b/309658744): Populate the rest of `ScalableChannelLayout`.
 // Adds a scalable Audio Element OBU based on the input arguments.
 void AddScalableAudioElementWithSubstreamIds(
-    DecodedUleb128 audio_element_id, uint32_t codec_config_id,
-    const std::vector<DecodedUleb128>& substream_ids,
+    IamfInputLayout input_layout, DecodedUleb128 audio_element_id,
+    uint32_t codec_config_id, absl::Span<const DecodedUleb128> substream_ids,
     const absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
     absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements) {
-  // Check the `codec_config_id` is known and this is a new
-  // `audio_element_id`.
-  auto codec_config_iter = codec_config_obus.find(codec_config_id);
-  ASSERT_NE(codec_config_iter, codec_config_obus.end());
-  ASSERT_EQ(audio_elements.find(audio_element_id), audio_elements.end());
+  google::protobuf::RepeatedPtrField<
+      iamf_tools_cli_proto::AudioElementObuMetadata>
+      audio_element_metadatas;
+  AudioElementMetadataBuilder builder;
 
-  // Initialize the Audio Element OBU without any parameters and a single layer.
-  AudioElementObu obu(ObuHeader(), audio_element_id,
-                      AudioElementObu::kAudioElementChannelBased, 0,
-                      codec_config_id);
-  obu.audio_substream_ids_ = substream_ids;
-  obu.InitializeParams(0);
+  auto& new_audio_element_metadata = *audio_element_metadatas.Add();
+  ASSERT_THAT(builder.PopulateAudioElementMetadata(
+                  audio_element_id, codec_config_id, input_layout,
+                  new_audio_element_metadata),
+              IsOk());
+  // Check that this is a scalable Audio Element, and override the substream
+  // IDs.
+  ASSERT_TRUE(new_audio_element_metadata.has_scalable_channel_layout_config());
+  ASSERT_EQ(new_audio_element_metadata.num_substreams(), substream_ids.size());
+  for (int i = 0; i < substream_ids.size(); ++i) {
+    new_audio_element_metadata.mutable_audio_substream_ids()->Set(
+        i, substream_ids[i]);
+  }
 
-  EXPECT_THAT(obu.InitializeScalableChannelLayout(1, 0), IsOk());
-
-  AudioElementWithData audio_element = {
-      .obu = std::move(obu), .codec_config = &codec_config_iter->second};
-
-  audio_elements.emplace(audio_element_id, std::move(audio_element));
+  // Generate the Audio Element OBU.
+  AudioElementGenerator generator(audio_element_metadatas);
+  ASSERT_THAT(generator.Generate(codec_config_obus, audio_elements), IsOk());
 }
 
 void AddMixPresentationObuWithAudioElementIds(
@@ -362,10 +416,17 @@ void RenderAndFlushExpectOk(const LabeledFrame& labeled_frame,
 std::string GetAndCleanupOutputFileName(absl::string_view suffix) {
   const testing::TestInfo* const test_info =
       testing::UnitTest::GetInstance()->current_test_info();
-  const std::filesystem::path test_specific_file_name =
-      std::filesystem::path(::testing::TempDir()) /
+  std::string file_name =
       absl::StrCat(test_info->name(), "-", test_info->test_suite_name(), "-",
                    test_info->test_case_name(), suffix);
+
+  // It is possible that the test suite name and test case name contain the '/'
+  // character. Replace it with '-' to form a legal file name.
+  std::transform(file_name.begin(), file_name.end(), file_name.begin(),
+                 [](char c) { return (c == '/') ? '-' : c; });
+  const std::filesystem::path test_specific_file_name =
+      std::filesystem::path(::testing::TempDir()) / file_name;
+
   std::filesystem::remove(test_specific_file_name);
   return test_specific_file_name.string();
 }
@@ -438,6 +499,129 @@ std::vector<DecodeSpecification> GetDecodeSpecifications(
     }
   }
   return decode_specifications;
+}
+
+std::vector<InternalSampleType> Int32ToInternalSampleType(
+    absl::Span<const int32_t> samples) {
+  std::vector<InternalSampleType> result(samples.size());
+  Int32ToInternalSampleType(samples, absl::MakeSpan(result));
+  return result;
+}
+
+std::vector<InternalSampleType> GenerateSineWav(uint64_t start_tick,
+                                                uint32_t num_samples,
+                                                uint32_t sample_rate_hz,
+                                                double frequency_hz,
+                                                double amplitude) {
+  std::vector<InternalSampleType> samples(num_samples, 0.0);
+  constexpr double kPi = std::numbers::pi_v<InternalSampleType>;
+  const double time_base = 1.0 / sample_rate_hz;
+
+  for (int frame_tick = 0; frame_tick < num_samples; ++frame_tick) {
+    const double t = start_tick + frame_tick;
+    samples[frame_tick] =
+        amplitude * sin(2.0 * kPi * frequency_hz * t * time_base);
+  }
+  return samples;
+}
+
+void AccumulateZeroCrossings(
+    absl::Span<const std::vector<int32_t>> samples,
+    std::vector<ZeroCrossingState>& zero_crossing_states,
+    std::vector<int>& zero_crossing_counts) {
+  using enum ZeroCrossingState;
+  const auto num_channels = samples.empty() ? 0 : samples[0].size();
+  // Seed the data structures, or check they contain the right number of
+  // channels.
+  if (zero_crossing_counts.empty()) {
+    zero_crossing_counts.resize(num_channels, 0);
+  } else {
+    ASSERT_EQ(num_channels, zero_crossing_counts.size());
+  }
+  if (zero_crossing_states.empty()) {
+    zero_crossing_states.resize(num_channels, ZeroCrossingState::kUnknown);
+  } else {
+    ASSERT_EQ(num_channels, zero_crossing_states.size());
+  }
+
+  // Zero crossing threshold determined empirically for -18 dB sine waves to
+  // skip encoding artifacts (e.g. a small ringing artifact < -40 dB after
+  // the sine wave stopped.)  Note that -18 dB would correspond to dividing
+  // by 8, while dividing by 100 is -40 dB.
+  constexpr int32_t kThreshold = std::numeric_limits<int32_t>::max() / 100;
+  for (const auto& tick : samples) {
+    ASSERT_EQ(tick.size(), num_channels);
+    for (int i = 0; i < num_channels; ++i) {
+      ZeroCrossingState next_state = (tick[i] > kThreshold)    ? kPositive
+                                     : (tick[i] < -kThreshold) ? kNegative
+                                                               : kUnknown;
+      if (next_state == kUnknown) {
+        // Don't do anything if it's not clearly positive or negative.
+        continue;
+      } else if (zero_crossing_states[i] != next_state) {
+        // If we clearly flipped states, count it as a zero crossing.
+        zero_crossing_counts[i]++;
+        zero_crossing_states[i] = next_state;
+      }
+    }
+  }
+}
+
+absl::Status ReadFileToBytes(const std::filesystem::path& file_path,
+                             std::vector<uint8_t>& buffer) {
+  if (!std::filesystem::exists(file_path)) {
+    return absl::NotFoundError("File not found.");
+  }
+  std::ifstream ifs(file_path, std::ios::binary | std::ios::in);
+
+  // Increase the size of the buffer. Write to the original end (before
+  // resizing).
+  const auto file_size = std::filesystem::file_size(file_path);
+  const auto original_buffer_size = buffer.size();
+  buffer.resize(original_buffer_size + file_size);
+  ifs.read(reinterpret_cast<char*>(buffer.data() + original_buffer_size),
+           file_size);
+  return absl::OkStatus();
+}
+
+absl::Status EverySecondTickResampler::PushFrameDerived(
+    absl::Span<const std::vector<int32_t>> time_channel_samples) {
+  EXPECT_EQ(num_valid_ticks_, 0);  // `SampleProcessorBase` should ensure this.
+  for (size_t i = 0; i < time_channel_samples.size(); ++i) {
+    if (i % 2 == 1) {
+      output_time_channel_samples_[num_valid_ticks_] = time_channel_samples[i];
+      ++num_valid_ticks_;
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status EverySecondTickResampler::FlushDerived() {
+  EXPECT_EQ(num_valid_ticks_, 0);  // `SampleProcessorBase` should ensure this.
+  return absl::OkStatus();
+}
+
+absl::Status OneFrameDelayer::PushFrameDerived(
+    absl::Span<const std::vector<int32_t>> time_channel_samples) {
+  // Swap the delayed samples with the output samples from the base class.
+  std::swap(delayed_samples_, output_time_channel_samples_);
+  std::swap(num_delayed_ticks_, num_valid_ticks_);
+
+  // The fact that the input size is less than the output size should have
+  // already been validated in `SampleProcessorBase`, but for safety we can
+  // check it here.
+  EXPECT_LE(time_channel_samples.size(), delayed_samples_.size());
+  // Cache the new samples to delay.
+  std::copy(time_channel_samples.begin(), time_channel_samples.end(),
+            delayed_samples_.begin());
+  num_delayed_ticks_ = time_channel_samples.size();
+
+  return absl::OkStatus();
+}
+
+absl::Status OneFrameDelayer::FlushDerived() {
+  // Pushing in an empty frame will cause the delayed frame to be available.
+  return PushFrameDerived({});
 }
 
 }  // namespace iamf_tools

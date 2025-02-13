@@ -18,11 +18,12 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/common/macros.h"
 #include "iamf/common/read_bit_buffer.h"
-#include "iamf/common/tests/test_utils.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/tests/test_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
 
@@ -69,9 +70,10 @@ TEST(ObuBaseTest, InvalidWhenValidatePayloadDerivedDoesNotReadIntegerBytes) {
   const ImaginaryObuNonIntegerBytes obu;
 
   std::vector<uint8_t> source_data = {kObuIaReserved24 << 3, 1, 0x80};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
-  EXPECT_FALSE(ImaginaryObuNonIntegerBytes::CreateFromBuffer(1, rb).ok());
+  EXPECT_FALSE(ImaginaryObuNonIntegerBytes::CreateFromBuffer(1, *rb).ok());
 }
 
 // A simple OBU with a constant payload with a length of 1 byte.
@@ -152,9 +154,10 @@ TEST(ObuBaseTest, WritesObuFooterAndConsistentObuSize) {
 
 TEST(ObuBaseTest, ReadWithConsistentSize) {
   std::vector<uint8_t> source_data = {kObuIaReserved24 << 3, 1, 255};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
-  auto obu = OneByteObu::CreateFromBuffer(ObuHeader(), 1, rb);
+  auto obu = OneByteObu::CreateFromBuffer(ObuHeader(), 1, *rb);
   EXPECT_THAT(obu, IsOk());
 }
 
@@ -164,21 +167,23 @@ TEST(ObuBaseTest, ReadDoesNotOverflowWhenBufferIsLarge) {
   constexpr size_t kJunkDataSize = 1 << 29;
   std::vector<uint8_t> source_data(kJunkDataSize + kObu.size(), 0);
   source_data.insert(source_data.end() - kObu.size(), kObu.begin(), kObu.end());
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Advance the buffer to just before the OBU of interest.
-  std::vector<uint8_t> junk_data;
-  ASSERT_THAT(rb.ReadUint8Vector(kJunkDataSize, junk_data), IsOk());
+  std::vector<uint8_t> junk_data(kJunkDataSize);
+  ASSERT_THAT(rb->ReadUint8Span(absl::MakeSpan(junk_data)), IsOk());
 
-  EXPECT_THAT(OneByteObu::CreateFromBuffer(ObuHeader(), 1, rb), IsOk());
+  EXPECT_THAT(OneByteObu::CreateFromBuffer(ObuHeader(), 1, *rb), IsOk());
 }
 
 TEST(ObuBaseTest, ReadFailsWhenSizeIsTooSmall) {
   const int64_t kSizeTooSmall = 0;
   std::vector<uint8_t> source_data = {kObuIaReserved24 << 3, 1, 255};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
   EXPECT_FALSE(
-      OneByteObu::CreateFromBuffer(ObuHeader(), kSizeTooSmall, rb).ok());
+      OneByteObu::CreateFromBuffer(ObuHeader(), kSizeTooSmall, *rb).ok());
 }
 
 TEST(ObuBaseTest, ReadsFooterWhenObuSizeIsTooLarge) {
@@ -186,12 +191,13 @@ TEST(ObuBaseTest, ReadsFooterWhenObuSizeIsTooLarge) {
   const std::vector<uint8_t> kExtraData = {'e', 'x', 't'};
 
   std::vector<uint8_t> source_data = {255, 'e', 'x', 't'};
-  ReadBitBuffer rb(1024, &source_data);
+  auto rb = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
   const auto obu =
-      OneByteObu::CreateFromBuffer(ObuHeader(), kSizeWithExtraData, rb);
+      OneByteObu::CreateFromBuffer(ObuHeader(), kSizeWithExtraData, *rb);
 
-  EXPECT_EQ(rb.buffer_bit_offset(), 32);
+  EXPECT_EQ(rb->Tell(), kSizeWithExtraData * 8);
   ASSERT_THAT(obu, IsOk());
   EXPECT_EQ(obu->footer_, kExtraData);
 }
