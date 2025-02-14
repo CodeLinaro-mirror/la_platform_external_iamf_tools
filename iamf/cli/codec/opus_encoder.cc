@@ -16,15 +16,19 @@
 #include <utility>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/codec/opus_utils.h"
 #include "iamf/cli/proto/codec_config.pb.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/sample_processing_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "include/opus.h"
 #include "include/opus_defines.h"
@@ -35,7 +39,7 @@ namespace iamf_tools {
 namespace {
 
 // Performs validation for values that this implementation assumes are
-// restricted because they are restricted in IAMF V1.
+// restricted because they are restricted in IAMF v1.1.0.
 absl::Status ValidateDecoderConfig(
     const OpusDecoderConfig& opus_decoder_config) {
   // Validate the input. Reject values that would need to be added to this
@@ -43,7 +47,7 @@ absl::Status ValidateDecoderConfig(
   if (opus_decoder_config.output_gain_ != 0 ||
       opus_decoder_config.mapping_family_ != 0) {
     auto error_message = absl::StrCat(
-        "IAMF V1 expects output_gain: ", opus_decoder_config.output_gain_,
+        "IAMF v1.1.0 expects output_gain: ", opus_decoder_config.output_gain_,
         " and mapping_family: ", opus_decoder_config.mapping_family_,
         " to be 0.");
     return absl::InvalidArgumentError(error_message);
@@ -52,20 +56,21 @@ absl::Status ValidateDecoderConfig(
   return absl::OkStatus();
 }
 
+// `opus_encode_float` recommends the input is normalized to the range [-1, 1].
+const absl::AnyInvocable<absl::Status(int32_t, float&) const>
+    kInt32ToNormalizedFloat = [](int32_t input, float& output) {
+      output = Int32ToNormalizedFloatingPoint<float>(input);
+      return absl::OkStatus();
+    };
+
 absl::StatusOr<int> EncodeFloat(
     const std::vector<std::vector<int32_t>>& samples,
-    int num_samples_per_channel, int num_channels, ::OpusEncoder* encoder,
+    int num_samples_per_channel, ::OpusEncoder* encoder,
     std::vector<uint8_t>& audio_frame) {
-  //  `opus_encode_float` usually recommends the input is normalized to the
-  //  range [-1, 1].
-  std::vector<float> encoder_input_pcm(num_samples_per_channel * num_channels,
-                                       0.0);
-  for (int t = 0; t < samples.size(); t++) {
-    for (int c = 0; c < num_channels; ++c) {
-      encoder_input_pcm[t * num_channels + c] =
-          Int32ToNormalizedFloatingPoint<float>(samples[t][c]);
-    }
-  }
+  std::vector<float> encoder_input_pcm;
+  RETURN_IF_NOT_OK(ConvertTimeChannelToInterleaved(absl::MakeConstSpan(samples),
+                                                   kInt32ToNormalizedFloat,
+                                                   encoder_input_pcm));
 
   // TODO(b/311655037): Test that samples are passed to `opus_encode_float` in
   //                    the correct order. Maybe also check they are in the
@@ -113,16 +118,16 @@ absl::Status OpusEncoder::SetNumberOfSamplesToDelayAtStart(
   // `lookahead`.
   required_samples_to_delay_at_start_ = static_cast<uint32_t>(lookahead);
   if (validate_codec_delay) {
-    return ValidateEqual(static_cast<uint32_t>(decoder_config_.pre_skip_),
-                         required_samples_to_delay_at_start_,
-                         "Opus `pre_skip`");
+    MAYBE_RETURN_IF_NOT_OK(
+        ValidateEqual(static_cast<uint32_t>(decoder_config_.pre_skip_),
+                      required_samples_to_delay_at_start_, "Opus `pre_skip`"));
   }
 
   return absl::OkStatus();
 }
 
 absl::Status OpusEncoder::InitializeEncoder() {
-  RETURN_IF_NOT_OK(ValidateDecoderConfig(decoder_config_));
+  MAYBE_RETURN_IF_NOT_OK(ValidateDecoderConfig(decoder_config_));
 
   int application;
   switch (encoder_metadata_.application()) {
@@ -183,8 +188,7 @@ absl::Status OpusEncoder::EncodeAudioFrame(
 
   const auto encoded_length_bytes =
       encoder_metadata_.use_float_api()
-          ? EncodeFloat(samples, num_samples_per_channel, num_channels_,
-                        encoder_, audio_frame)
+          ? EncodeFloat(samples, num_samples_per_channel, encoder_, audio_frame)
           : EncodeInt16(samples, num_samples_per_channel, num_channels_,
                         encoder_, audio_frame);
 

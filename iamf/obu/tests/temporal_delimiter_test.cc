@@ -18,9 +18,10 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
@@ -117,20 +118,22 @@ TEST_F(TemporalDelimiterTest,
 
 TEST(CreateFromBuffer, SucceedsWithEmptyBuffer) {
   std::vector<uint8_t> source_data = {};
-  ReadBitBuffer buffer(1024, &source_data);
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
   EXPECT_THAT(TemporalDelimiterObu::CreateFromBuffer(
-                  ObuHeader(), source_data.size(), buffer),
+                  ObuHeader(), source_data.size(), *buffer),
               IsOk());
 }
 
 TEST(CreateFromBuffer, SetsObuType) {
   std::vector<uint8_t> source_data = {};
-  ReadBitBuffer buffer(1024, &source_data);
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
 
   absl::StatusOr<TemporalDelimiterObu> obu =
       TemporalDelimiterObu::CreateFromBuffer(ObuHeader(), source_data.size(),
-                                             buffer);
+                                             *buffer);
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->header_.obu_type, kObuIaTemporalDelimiter);
 }
@@ -138,12 +141,13 @@ TEST(CreateFromBuffer, SetsObuType) {
 TEST(CreateFromBuffer, DoesNotConsumeBufferWhenObuPayloadSizeIsZero) {
   const int64_t kObuPayloadSize = 0;
   std::vector<uint8_t> source_data = {99};
-  ReadBitBuffer buffer(1024, &source_data);
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   EXPECT_THAT(TemporalDelimiterObu::CreateFromBuffer(ObuHeader(),
-                                                     kObuPayloadSize, buffer),
+                                                     kObuPayloadSize, *buffer),
               IsOk());
   uint8_t next_byte;
-  EXPECT_THAT(buffer.ReadUnsignedLiteral(8, next_byte), IsOk());
+  EXPECT_THAT(buffer->ReadUnsignedLiteral(8, next_byte), IsOk());
 
   EXPECT_EQ(next_byte, 99);
 }

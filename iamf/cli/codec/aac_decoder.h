@@ -22,7 +22,6 @@
 
 #include "absl/status/status.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
 #include "libAACdec/include/aacdecoder_lib.h"
@@ -52,13 +51,10 @@ class AacDecoder : public DecoderBase {
   /*!\brief Decodes an AAC audio frame.
    *
    * \param encoded_frame Frame to decode.
-   * \param decoded_samples Output decoded frames arranged in (time, sample)
-   *        axes.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   absl::Status DecodeAudioFrame(
-      const std::vector<uint8_t>& encoded_frame,
-      std::vector<std::vector<int32_t>>& decoded_samples) override;
+      const std::vector<uint8_t>& encoded_frame) override;
 
  private:
   const AacDecoderConfig& aac_decoder_config_;

@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
-#include <vector>
 
 // [internal] Placeholder for get runfiles header.
 #include "absl/container/flat_hash_map.h"
@@ -30,6 +29,7 @@
 #include "iamf/cli/proto/audio_frame.pb.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
 #include "iamf/cli/tests/cli_test_utils.h"
+#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/types.h"
 #include "src/google/protobuf/text_format.h"
@@ -39,10 +39,10 @@ namespace {
 
 using ::absl_testing::IsOk;
 using enum ChannelLabel::Label;
-using testing::DoubleEq;
 using testing::Pointwise;
 
 constexpr DecodedUleb128 kAudioElementId = 300;
+constexpr DecodedUleb128 kSubstreamId = 0;
 constexpr DecodedUleb128 kCodecConfigId = 200;
 constexpr uint32_t kSampleRate = 48000;
 
@@ -102,10 +102,9 @@ void InitializeTestData(
   codec_config_obus.clear();
   AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, sample_rate,
                                         codec_config_obus);
-  const std::vector<DecodedUleb128> kSubstreamIds = {0};
-  AddScalableAudioElementWithSubstreamIds(kAudioElementId, kCodecConfigId,
-                                          kSubstreamIds, codec_config_obus,
-                                          audio_elements);
+  AddScalableAudioElementWithSubstreamIds(
+      IamfInputLayout::kStereo, kAudioElementId, kCodecConfigId, {kSubstreamId},
+      codec_config_obus, audio_elements);
 }
 
 std::string GetInputWavDir() {
@@ -374,8 +373,12 @@ TEST(WavSampleProviderTest, ReadFrameSucceedsWithDeprecatedChannelLabels) {
   ReadOneFrameExpectFinished(*wav_sample_provider, labeled_samples);
 
   // Validate samples read from the WAV file.
-  EXPECT_THAT(labeled_samples[kL2], Pointwise(DoubleEq(), kExpectedSamplesL2));
-  EXPECT_THAT(labeled_samples[kR2], Pointwise(DoubleEq(), kExpectedSamplesR2));
+  EXPECT_THAT(
+      labeled_samples[kL2],
+      Pointwise(InternalSampleMatchesIntegralSample(), kExpectedSamplesL2));
+  EXPECT_THAT(
+      labeled_samples[kR2],
+      Pointwise(InternalSampleMatchesIntegralSample(), kExpectedSamplesR2));
 }
 
 TEST(WavSampleProviderTest, ReadFrameSucceedsWithChannelMetadatas) {
@@ -392,8 +395,12 @@ TEST(WavSampleProviderTest, ReadFrameSucceedsWithChannelMetadatas) {
   ReadOneFrameExpectFinished(*wav_sample_provider, labeled_samples);
 
   // Validate samples read from the WAV file.
-  EXPECT_THAT(labeled_samples[kL2], Pointwise(DoubleEq(), kExpectedSamplesL2));
-  EXPECT_THAT(labeled_samples[kR2], Pointwise(DoubleEq(), kExpectedSamplesR2));
+  EXPECT_THAT(
+      labeled_samples[kL2],
+      Pointwise(InternalSampleMatchesIntegralSample(), kExpectedSamplesL2));
+  EXPECT_THAT(
+      labeled_samples[kR2],
+      Pointwise(InternalSampleMatchesIntegralSample(), kExpectedSamplesR2));
 }
 
 TEST(WavSampleProviderTest, ReadFrameFailsWithWrongAudioElementId) {
