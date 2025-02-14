@@ -18,10 +18,12 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/numeric_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/demixing_param_definition.h"
@@ -67,7 +69,8 @@ TEST(CreateFromBuffer, InvalidWhenObuSizeIsTooSmallToReadParameterId) {
   };
   const int64_t kCorrectObuSize = source_data.size();
   constexpr int64_t kIncorrectObuSize = 1;
-  ReadBitBuffer buffer(1024, &source_data);
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
@@ -81,13 +84,13 @@ TEST(CreateFromBuffer, InvalidWhenObuSizeIsTooSmallToReadParameterId) {
   // Sanity check that the OBU is valid.
   EXPECT_THAT(ParameterBlockObu::CreateFromBuffer(
                   ObuHeader{.obu_type = kObuIaParameterBlock}, kCorrectObuSize,
-                  per_id_metadata, buffer),
+                  per_id_metadata, *buffer),
               IsOk());
 
   // But it would be invalid if the OBU size is too small.
   EXPECT_FALSE(ParameterBlockObu::CreateFromBuffer(
                    ObuHeader{.obu_type = kObuIaParameterBlock},
-                   kIncorrectObuSize, per_id_metadata, buffer)
+                   kIncorrectObuSize, per_id_metadata, *buffer)
                    .ok());
 }
 
@@ -124,7 +127,9 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode1) {
       0x05,
       0x44,
   };
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
@@ -135,8 +140,8 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode1) {
   per_id_metadata[kParameterId].param_definition.parameter_rate_ = 1;
   per_id_metadata[kParameterId].param_definition.param_definition_mode_ = 1;
   auto parameter_block = ParameterBlockObu::CreateFromBuffer(
-      ObuHeader{.obu_type = kObuIaParameterBlock}, source_data.size(),
-      per_id_metadata, buffer);
+      ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+      per_id_metadata, *buffer);
   EXPECT_THAT(parameter_block, IsOk());
 
   // Validate all the getters match the input data.
@@ -148,17 +153,17 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode1) {
   EXPECT_THAT((*parameter_block)->GetSubblockDuration(1), IsOkAndHolds(3));
   EXPECT_THAT((*parameter_block)->GetSubblockDuration(2), IsOkAndHolds(6));
 
-  int16_t mix_gain;
+  float linear_mix_gain;
   // The first subblock covers [0, subblock_duration[0]).
-  EXPECT_THAT((*parameter_block)->GetMixGain(0, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0988);
-  EXPECT_THAT((*parameter_block)->GetMixGain(1, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0766);
-  EXPECT_THAT((*parameter_block)->GetMixGain(4, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0544);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(0, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 2.9961426f);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(1, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 2.343807f);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(4, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 1.8335015f);
 
   // Parameter blocks are open intervals.
-  EXPECT_FALSE((*parameter_block)->GetMixGain(10, mix_gain).ok());
+  EXPECT_FALSE((*parameter_block)->GetLinearMixGain(10, linear_mix_gain).ok());
 }
 
 TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode0) {
@@ -182,7 +187,9 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode0) {
       0x05,
       0x44,
   };
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
@@ -200,8 +207,8 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode0) {
   ASSERT_THAT(param_definition.SetSubblockDuration(1, 3), IsOk());
   ASSERT_THAT(param_definition.SetSubblockDuration(2, 6), IsOk());
   auto parameter_block = ParameterBlockObu::CreateFromBuffer(
-      ObuHeader{.obu_type = kObuIaParameterBlock}, source_data.size(),
-      per_id_metadata, buffer);
+      ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+      per_id_metadata, *buffer);
   EXPECT_THAT(parameter_block, IsOk());
 
   // Validate all the getters match the input data. Note the getters return data
@@ -214,17 +221,17 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode0) {
   EXPECT_THAT((*parameter_block)->GetSubblockDuration(1), IsOkAndHolds(3));
   EXPECT_THAT((*parameter_block)->GetSubblockDuration(2), IsOkAndHolds(6));
 
-  int16_t mix_gain;
+  float linear_mix_gain;
   // The first subblock covers [0, subblock_duration[0]).
-  EXPECT_THAT((*parameter_block)->GetMixGain(0, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0988);
-  EXPECT_THAT((*parameter_block)->GetMixGain(1, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0766);
-  EXPECT_THAT((*parameter_block)->GetMixGain(4, mix_gain), IsOk());
-  EXPECT_EQ(mix_gain, 0x0544);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(0, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 2.9961426f);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(1, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 2.343807f);
+  EXPECT_THAT((*parameter_block)->GetLinearMixGain(4, linear_mix_gain), IsOk());
+  EXPECT_FLOAT_EQ(linear_mix_gain, 1.8335015f);
 
   // Parameter blocks are open intervals.
-  EXPECT_FALSE((*parameter_block)->GetMixGain(10, mix_gain).ok());
+  EXPECT_FALSE((*parameter_block)->GetLinearMixGain(10, linear_mix_gain).ok());
 }
 
 TEST(ParameterBlockObu,
@@ -249,7 +256,9 @@ TEST(ParameterBlockObu,
       0x09,
       0x88,
   };
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
@@ -261,8 +270,8 @@ TEST(ParameterBlockObu,
   per_id_metadata[kParameterId].param_definition.param_definition_mode_ = 1;
 
   EXPECT_FALSE(ParameterBlockObu::CreateFromBuffer(
-                   ObuHeader{.obu_type = kObuIaParameterBlock},
-                   source_data.size(), per_id_metadata, buffer)
+                   ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+                   per_id_metadata, *buffer)
                    .ok());
 }
 
@@ -281,7 +290,9 @@ TEST(ParameterBlockObu, CreateFromBufferParamRequiresPerIdParameterMetadata) {
       0x09,
       0x88,
   };
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
       .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
@@ -291,17 +302,18 @@ TEST(ParameterBlockObu, CreateFromBufferParamRequiresPerIdParameterMetadata) {
   per_id_metadata[kParameterId].param_definition.parameter_rate_ = 1;
   per_id_metadata[kParameterId].param_definition.param_definition_mode_ = 1;
   EXPECT_THAT(ParameterBlockObu::CreateFromBuffer(
-                  ObuHeader{.obu_type = kObuIaParameterBlock},
-                  source_data.size(), per_id_metadata, buffer),
+                  ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+                  per_id_metadata, *buffer),
               IsOk());
 
   // When there is no matching metadata, the parameter block cannot be created.
   per_id_metadata.erase(kParameterId);
-  ReadBitBuffer buffer_to_use_without_metadata(1024, &source_data);
+  auto buffer_to_use_without_metadata =
+      MemoryBasedReadBitBuffer::CreateFromSpan(
+          1024, absl::MakeConstSpan(source_data));
   EXPECT_FALSE(ParameterBlockObu::CreateFromBuffer(
-                   ObuHeader{.obu_type = kObuIaParameterBlock},
-                   source_data.size(), per_id_metadata,
-                   buffer_to_use_without_metadata)
+                   ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+                   per_id_metadata, *buffer_to_use_without_metadata)
                    .ok());
 }
 
@@ -311,7 +323,9 @@ TEST(ParameterBlockObu, CreateFromBufferDemixingParamDefinitionMode0) {
                                       kParameterId,
                                       // `dmixp_mode`.
                                       kDMixPMode2 << 5};
-  ReadBitBuffer buffer(1024, &source_data);
+  const int64_t payload_size = source_data.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source_data));
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
@@ -326,8 +340,8 @@ TEST(ParameterBlockObu, CreateFromBufferDemixingParamDefinitionMode0) {
   param_definition.constant_subblock_duration_ = 10;
   param_definition.InitializeSubblockDurations(1);
   auto parameter_block = ParameterBlockObu::CreateFromBuffer(
-      ObuHeader{.obu_type = kObuIaParameterBlock}, source_data.size(),
-      per_id_metadata, buffer);
+      ObuHeader{.obu_type = kObuIaParameterBlock}, payload_size,
+      per_id_metadata, *buffer);
   EXPECT_THAT(parameter_block, IsOk());
 
   // Validate all the getters match the input data. Note the getters return data
@@ -1034,9 +1048,9 @@ TEST_F(ExtensionParameterBlockTest, TwoSubblocksParamDefinitionMode1) {
 
 struct InterpolateMixGainParameterDataTestCase {
   MixGainParameterData mix_gain_parameter_data;
-  int32_t start_time;
-  int32_t end_time;
-  int32_t target_time;
+  InternalTimestamp start_time;
+  InternalTimestamp end_time;
+  InternalTimestamp target_time;
   int16_t expected_target_mix_gain;
 
   absl::Status expected_status;
@@ -1047,14 +1061,16 @@ using InterpolateMixGainParameter =
 
 TEST_P(InterpolateMixGainParameter, InterpolateMixGainParameter) {
   const InterpolateMixGainParameterDataTestCase& test_case = GetParam();
-  int16_t target_mix_gain;
+  float target_mix_gain_db;
   EXPECT_EQ(ParameterBlockObu::InterpolateMixGainParameterData(
                 &test_case.mix_gain_parameter_data, test_case.start_time,
-                test_case.end_time, test_case.target_time, target_mix_gain),
+                test_case.end_time, test_case.target_time, target_mix_gain_db),
             test_case.expected_status);
 
   if (test_case.expected_status.ok()) {
-    EXPECT_EQ(target_mix_gain, test_case.expected_target_mix_gain);
+    int16_t target_mix_gain_q7_8;
+    EXPECT_THAT(FloatToQ7_8(target_mix_gain_db, target_mix_gain_q7_8), IsOk());
+    EXPECT_EQ(target_mix_gain_q7_8, test_case.expected_target_mix_gain);
   }
 }
 

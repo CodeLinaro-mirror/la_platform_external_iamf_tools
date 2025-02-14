@@ -18,9 +18,10 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
@@ -31,11 +32,29 @@ namespace {
 
 using ::absl_testing::IsOk;
 
+constexpr uint32_t kInvalidIACode = 0xff;
+
 TEST(IaSequenceHeaderConstructor, SetsObuType) {
   IASequenceHeaderObu obu({}, IASequenceHeaderObu::kIaCode,
                           ProfileVersion::kIamfSimpleProfile,
                           ProfileVersion::kIamfSimpleProfile);
   EXPECT_EQ(obu.header_.obu_type, kObuIaSequenceHeader);
+}
+
+TEST(IaSequenceHeaderConstructor, SetsIaCode) {
+  IASequenceHeaderObu obu({}, IASequenceHeaderObu::kIaCode,
+                          ProfileVersion::kIamfSimpleProfile,
+                          ProfileVersion::kIamfSimpleProfile);
+
+  EXPECT_EQ(obu.GetIaCode(), IASequenceHeaderObu::kIaCode);
+}
+
+TEST(IaSequenceHeaderConstructor, SetsInvalidIaCode) {
+  IASequenceHeaderObu obu({}, kInvalidIACode,
+                          ProfileVersion::kIamfSimpleProfile,
+                          ProfileVersion::kIamfSimpleProfile);
+
+  EXPECT_EQ(obu.GetIaCode(), kInvalidIACode);
 }
 
 TEST(Validate, SucceedsWithSimpleProfile) {
@@ -140,11 +159,13 @@ TEST(CreateFromBuffer, SimpleAndBaseProfile) {
       static_cast<uint8_t>(ProfileVersion::kIamfSimpleProfile),
       // `additional_profile`.
       static_cast<uint8_t>(ProfileVersion::kIamfBaseProfile)};
-  ReadBitBuffer buffer(1024, &source);
+  const int64_t payload_size = source.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   ObuHeader header;
 
   absl::StatusOr<IASequenceHeaderObu> obu =
-      IASequenceHeaderObu::CreateFromBuffer(header, source.size(), buffer);
+      IASequenceHeaderObu::CreateFromBuffer(header, payload_size, *buffer);
 
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->GetPrimaryProfile(), ProfileVersion::kIamfSimpleProfile);
@@ -159,11 +180,13 @@ TEST(CreateFromBuffer, BaseEnhancedProfile) {
       static_cast<uint8_t>(ProfileVersion::kIamfBaseEnhancedProfile),
       // `additional_profile`.
       static_cast<uint8_t>(ProfileVersion::kIamfBaseEnhancedProfile)};
-  ReadBitBuffer buffer(1024, &source);
+  const int64_t payload_size = source.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   ObuHeader header;
 
   absl::StatusOr<IASequenceHeaderObu> obu =
-      IASequenceHeaderObu::CreateFromBuffer(header, source.size(), buffer);
+      IASequenceHeaderObu::CreateFromBuffer(header, payload_size, *buffer);
 
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu->GetPrimaryProfile(), ProfileVersion::kIamfBaseEnhancedProfile);
@@ -179,11 +202,13 @@ TEST(CreateFromBuffer, InvalidWhenPrimaryProfileIs3) {
       3,
       // `additional_profile`.
       static_cast<uint8_t>(ProfileVersion::kIamfBaseProfile)};
-  ReadBitBuffer buffer(1024, &source);
+  const int64_t payload_size = source.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   ObuHeader header;
 
   EXPECT_FALSE(
-      IASequenceHeaderObu::CreateFromBuffer(header, source.size(), buffer)
+      IASequenceHeaderObu::CreateFromBuffer(header, payload_size, *buffer)
           .ok());
 }
 
@@ -195,11 +220,13 @@ TEST(CreateFromBuffer, InvalidWhenPrimaryProfileIs255) {
       static_cast<uint8_t>(ProfileVersion::kIamfReserved255Profile),
       // `additional_profile`.
       static_cast<uint8_t>(ProfileVersion::kIamfBaseProfile)};
-  ReadBitBuffer buffer(1024, &source);
+  const int64_t payload_size = source.size();
+  auto buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   ObuHeader header;
 
   EXPECT_FALSE(
-      IASequenceHeaderObu::CreateFromBuffer(header, source.size(), buffer)
+      IASequenceHeaderObu::CreateFromBuffer(header, payload_size, *buffer)
           .ok());
 }
 

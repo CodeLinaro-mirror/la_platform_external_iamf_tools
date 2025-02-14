@@ -11,11 +11,11 @@
  */
 #include "iamf/cli/cli_util.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <list>
 #include <memory>
-#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -28,19 +28,18 @@
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
+#include "iamf/cli/obu_with_data_generator.h"
 #include "iamf/cli/proto/obu_header.pb.h"
 #include "iamf/cli/proto/parameter_data.pb.h"
-#include "iamf/cli/proto_to_obu/audio_element_generator.h"
 #include "iamf/cli/tests/cli_test_utils.h"
+#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
-#include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_header.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
-#include "src/google/protobuf/text_format.h"
 
 namespace iamf_tools {
 namespace {
@@ -55,6 +54,8 @@ constexpr DecodedUleb128 kParameterId = 99999;
 constexpr DecodedUleb128 kParameterRate = 48000;
 constexpr DecodedUleb128 kFirstSubstreamId = 31;
 constexpr DecodedUleb128 kSecondSubstreamId = 32;
+constexpr std::array<DecodedUleb128, 1> kZerothOrderAmbisonicsSubstreamId{
+    kFirstSubstreamId};
 
 TEST(WritePcmFrameToBuffer, ResizesOutputBuffer) {
   const size_t kExpectedSize = 12;  // 3 bytes per sample * 4 samples.
@@ -400,70 +401,6 @@ TEST(ValidateAndGetCommonTrim, InvalidWithFullyTrimmedSamplesFromEnd) {
                    .ok());
 }
 
-TEST(CopyDemixingInfoParameterData, Basic) {
-  iamf_tools_cli_proto::DemixingInfoParameterData
-      demixing_info_parameter_data_metadata;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        dmixp_mode: DMIXP_MODE_3 reserved: 0
-      )pb",
-      &demixing_info_parameter_data_metadata));
-  DemixingInfoParameterData demixing_info_parameter_data;
-  EXPECT_THAT(
-      CopyDemixingInfoParameterData(demixing_info_parameter_data_metadata,
-                                    demixing_info_parameter_data),
-      IsOk());
-
-  EXPECT_EQ(demixing_info_parameter_data.dmixp_mode,
-            DemixingInfoParameterData::kDMixPMode3);
-  EXPECT_EQ(demixing_info_parameter_data.reserved, 0);
-}
-
-TEST(CopyDMixPMode, CopiesValue) {
-  constexpr auto kTestValue = DemixingInfoParameterData::kDMixPMode3;
-  constexpr auto kExpectedProtoValue = iamf_tools_cli_proto::DMIXP_MODE_3;
-
-  iamf_tools_cli_proto::DMixPMode output_dmixp_mode;
-  EXPECT_THAT(CopyDMixPMode(kTestValue, output_dmixp_mode), IsOk());
-
-  EXPECT_EQ(output_dmixp_mode, kExpectedProtoValue);
-}
-
-TEST(CopyObuHeader, Default) {
-  iamf_tools_cli_proto::ObuHeaderMetadata obu_header_metadata;
-  ObuHeader header_ = GetHeaderFromMetadata(obu_header_metadata);
-  // `ObuHeader` is initialized with reasonable default values for typical use
-  // cases.
-  EXPECT_EQ(header_.obu_redundant_copy, false);
-  EXPECT_EQ(header_.obu_trimming_status_flag, false);
-  EXPECT_EQ(header_.obu_extension_flag, false);
-}
-
-TEST(CopyObuHeader, MostValuesModified) {
-  iamf_tools_cli_proto::ObuHeaderMetadata obu_header_metadata;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        obu_redundant_copy: true
-        obu_trimming_status_flag: true
-        obu_extension_flag: true
-        num_samples_to_trim_at_end: 1
-        num_samples_to_trim_at_start: 2
-        extension_header_size: 5
-        extension_header_bytes: "extra"
-      )pb",
-      &obu_header_metadata));
-  ObuHeader header_ = GetHeaderFromMetadata(obu_header_metadata);
-
-  EXPECT_EQ(header_.obu_redundant_copy, true);
-  EXPECT_EQ(header_.obu_trimming_status_flag, true);
-  EXPECT_EQ(header_.obu_extension_flag, true);
-  EXPECT_EQ(header_.num_samples_to_trim_at_end, 1);
-  EXPECT_EQ(header_.num_samples_to_trim_at_start, 2);
-  EXPECT_EQ(header_.extension_header_size, 5);
-  EXPECT_EQ(header_.extension_header_bytes,
-            (std::vector<uint8_t>{'e', 'x', 't', 'r', 'a'}));
-}
-
 TEST(CollectAndValidateParamDefinitions,
      ReturnsOneUniqueParamDefinitionWhenTheyAreIdentical) {
   // Initialize prerequisites.
@@ -525,8 +462,8 @@ TEST(CollectAndValidateParamDefinitions,
   const std::list<MixPresentationObu> kNoMixPresentationObus = {};
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements;
   AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kAudioElementId, kCodecConfigId, {kFirstSubstreamId}, input_codec_configs,
-      audio_elements);
+      kAudioElementId, kCodecConfigId, kZerothOrderAmbisonicsSubstreamId,
+      input_codec_configs, audio_elements);
   auto& audio_element = audio_elements.at(kAudioElementId);
   audio_element.obu.InitializeParams(1);
   audio_element.obu.audio_element_params_[0] = AudioElementParam{
@@ -547,8 +484,8 @@ TEST(CollectAndValidateParamDefinitions,
   const std::list<MixPresentationObu> kNoMixPresentationObus = {};
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements;
   AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kAudioElementId, kCodecConfigId, {kFirstSubstreamId}, input_codec_configs,
-      audio_elements);
+      kAudioElementId, kCodecConfigId, kZerothOrderAmbisonicsSubstreamId,
+      input_codec_configs, audio_elements);
 
   // Add an extension param definition to the audio element. It is not possible
   // to determine the ID to store it or to use further processing.
@@ -623,7 +560,7 @@ TEST(GenerateParamIdToMetadataMapTest, ReconGainParamDefinition) {
   SubstreamIdLabelsMap substream_id_labels_map;
   LabelGainMap label_gain_map;
   std::vector<ChannelNumbers> channel_numbers;
-  ASSERT_THAT(AudioElementGenerator::FinalizeScalableChannelLayoutConfig(
+  ASSERT_THAT(ObuWithDataGenerator::FinalizeScalableChannelLayoutConfig(
                   obu.audio_substream_ids_, two_layer_stereo_config,
                   substream_id_labels_map, label_gain_map, channel_numbers),
               IsOk());
@@ -672,8 +609,8 @@ TEST(GenerateParamIdToMetadataMapTest,
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData>
       audio_elements_with_data;
   AddScalableAudioElementWithSubstreamIds(
-      kAudioElementId, kCodecConfigId, {kFirstSubstreamId}, input_codec_configs,
-      audio_elements_with_data);
+      IamfInputLayout::kMono, kAudioElementId, kCodecConfigId,
+      {kFirstSubstreamId}, input_codec_configs, audio_elements_with_data);
 
   auto param_definition = ReconGainParamDefinition(kSecondAudioElementId);
   param_definition.parameter_id_ = kParameterId;
@@ -684,24 +621,68 @@ TEST(GenerateParamIdToMetadataMapTest,
   EXPECT_FALSE(param_id_to_metadata_map.ok());
 }
 
-TEST(GetLogSpectralDistance, ReturnsCorrectValue) {
-  std::vector<double> first_log_spectrum(10);
-  std::iota(first_log_spectrum.begin(), first_log_spectrum.end(), 0);
-  std::vector<double> second_log_spectrum(10);
-  std::iota(second_log_spectrum.begin(), second_log_spectrum.end(), 1);
-  EXPECT_EQ(GetLogSpectralDistance(absl::MakeConstSpan(first_log_spectrum),
-                                   absl::MakeConstSpan(second_log_spectrum)),
-            10.0);
+TEST(IsStereoLayout, ReturnsTrueForStereoLayout) {
+  Layout playback_layout = {
+      .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
+      .specific_layout = LoudspeakersSsConventionLayout{
+          .sound_system = LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0,
+          .reserved = 0}};
+  EXPECT_TRUE(IsStereoLayout(playback_layout));
 }
 
-TEST(ExpectLogSpectralDistanceBelowThreshold, ReturnsZeroWhenEqual) {
-  std::vector<double> first_log_spectrum(10);
-  std::iota(first_log_spectrum.begin(), first_log_spectrum.end(), 1);
-  std::vector<double> second_log_spectrum(10);
-  std::iota(second_log_spectrum.begin(), second_log_spectrum.end(), 1);
-  EXPECT_EQ(GetLogSpectralDistance(absl::MakeConstSpan(first_log_spectrum),
-                                   absl::MakeConstSpan(second_log_spectrum)),
-            0.0);
+TEST(IsStereoLayout, ReturnsFalseForNonStereoLayout) {
+  Layout playback_layout = {.layout_type = Layout::kLayoutTypeBinaural};
+  EXPECT_FALSE(IsStereoLayout(playback_layout));
+}
+
+TEST(IsStereoLayout, ReturnsFalseForInvalidLayout) {
+  Layout playback_layout = {
+      .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
+      .specific_layout = LoudspeakersReservedOrBinauralLayout{}};
+  EXPECT_FALSE(IsStereoLayout(playback_layout));
+}
+
+TEST(GetIndicesForLayout, SuccessWithStereoLayout) {
+  // Initialize prerequisites.
+  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements = {};
+  // Create a mix presentation OBU; by default, it's created with a stereo
+  // layout in the first submix.
+  std::list<MixPresentationObu> mix_presentation_obus;
+  AddMixPresentationObuWithAudioElementIds(
+      kMixPresentationId, {kAudioElementId}, kParameterId, kParameterRate,
+      mix_presentation_obus);
+  Layout playback_layout = {
+      .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
+      .specific_layout = LoudspeakersSsConventionLayout{
+          .sound_system = LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0,
+          .reserved = 0}};
+  // Set to non-default values to ensure they are returned correctly.
+  int submix_index = 2;
+  int layout_index = 2;
+  auto layout_info =
+      GetIndicesForLayout(mix_presentation_obus.back().sub_mixes_,
+                          playback_layout, submix_index, layout_index);
+  EXPECT_THAT(layout_info, IsOk());
+  EXPECT_EQ(submix_index, 0);
+  EXPECT_EQ(layout_index, 0);
+}
+
+TEST(GetIndicesForLayout, FailsWithMismatchedLayout) {
+  // Initialize prerequisites.
+  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements = {};
+  // Create a mix presentation OBU; by default, it's created with a stereo
+  // layout in the first submix.
+  std::list<MixPresentationObu> mix_presentation_obus;
+  AddMixPresentationObuWithAudioElementIds(
+      kMixPresentationId, {kAudioElementId}, kParameterId, kParameterRate,
+      mix_presentation_obus);
+  Layout playback_layout = {.layout_type = Layout::kLayoutTypeBinaural};
+  int submix_index;
+  int layout_index;
+  auto layout_info =
+      GetIndicesForLayout(mix_presentation_obus.back().sub_mixes_,
+                          playback_layout, submix_index, layout_index);
+  EXPECT_THAT(layout_info, testing::Not(IsOk()));
 }
 
 }  // namespace

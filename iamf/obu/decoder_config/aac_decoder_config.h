@@ -35,7 +35,7 @@ class AudioSpecificConfig {
     k48000 = 3,
     k44100 = 4,
     k32000 = 5,
-    k23000 = 6,
+    k24000 = 6,
     k22050 = 7,
     k16000 = 8,
     k12000 = 9,
@@ -148,6 +148,12 @@ class AacDecoderConfig {
   absl::Status ReadAndValidate(int16_t audio_roll_distance, ReadBitBuffer& rb);
 
   /*!\brief Gets the output sample rate of the `AacDecoderConfig`.
+   *
+   * This sample rate is used for timing and offset calculations.
+   *
+   * IAMF v1.1.0 section 3.11.2 specifies:
+   *  > "The sample rate used for computing offsets SHALL be the rate indicated
+   *     by the samplingFrequencyIndex in GASpecificConfig()."
    *
    * \param output_sample_rate Output sample rate.
    * \return `absl::OkStatus()` if successful. `absl::InvalidArgumentError()`

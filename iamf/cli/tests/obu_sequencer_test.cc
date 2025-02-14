@@ -27,9 +27,9 @@
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
-#include "iamf/cli/leb_generator.h"
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/tests/cli_test_utils.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/arbitrary_obu.h"
 #include "iamf/obu/audio_frame.h"
@@ -73,8 +73,8 @@ constexpr std::nullopt_t kOriginalSamplesAreIrrelevant = std::nullopt;
 //                    fixed-size leb generators.
 
 void AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-    uint32_t audio_element_id, uint32_t substream_id, int32_t start_timestamp,
-    int32_t end_timestamp,
+    uint32_t audio_element_id, uint32_t substream_id,
+    InternalTimestamp start_timestamp, InternalTimestamp end_timestamp,
     const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
     std::list<AudioFrameWithData>& audio_frames) {
   ASSERT_TRUE(audio_elements.contains(audio_element_id));
@@ -166,8 +166,8 @@ PerIdParameterMetadata CreatePerIdMetadataForDemixing(
 TEST(GenerateTemporalUnitMap, ParameterBlocksAreOrderedByAscendingParameterId) {
   constexpr DecodedUleb128 kLowerParameterId = 9;
   constexpr DecodedUleb128 kHigherParameterId = 9000;
-  constexpr int32_t kStartTimestamp = 0;
-  constexpr int32_t kEndTimestamp = 16;
+  constexpr InternalTimestamp kStartTimestamp = 0;
+  constexpr InternalTimestamp kEndTimestamp = 16;
   constexpr DecodedUleb128 kSecondParameterId = kCommonMixGainParameterId + 1;
   std::list<ParameterBlockWithData> parameter_blocks;
   const std::list<ArbitraryObu> kNoArbitraryObus;
@@ -308,8 +308,8 @@ void InitializeOneParameterBlockAndOneAudioFrame(
     std::list<AudioFrameWithData>& audio_frames,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
     absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements) {
-  const int32_t kStartTimestamp = 0;
-  const int32_t kEndTimestamp = 16;
+  constexpr InternalTimestamp kStartTimestamp = 0;
+  constexpr InternalTimestamp kEndTimestamp = 16;
   AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
                                         codec_config_obus);
   AddAmbisonicsMonoAudioElementWithSubstreamIds(
@@ -776,28 +776,36 @@ TEST_F(ObuSequencerTest, AudioElementAreAscendingOrderByDefault) {
   ValidateWriteDescriptorObuSequence(expected_sequence);
 }
 
-TEST_F(ObuSequencerTest, MixPresentationsAreAscendingOrderByDefault) {
+TEST_F(ObuSequencerTest, MixPresentationsMaintainOriginalOrder) {
   InitializeDescriptorObus();
+  mix_presentation_obus_.clear();
 
-  // Initialize a second Mix Presentation OBU.
-  const DecodedUleb128 kSecondMixPresentationId = 99;
+  // Prefix descriptor OBUs.
+  std::list<const ObuBase*> expected_sequence = {
+      &ia_sequence_header_obu_.value(),
+      &codec_config_obus_.at(kCodecConfigId),
+      &audio_elements_.at(kFirstAudioElementId).obu,
+  };
+  // Initialize three Mix Presentation OBUs, regardless of their IDs we
+  // expect them to be serialized in the same order as the input list.
+  constexpr DecodedUleb128 kFirstMixPresentationId = 100;
+  constexpr DecodedUleb128 kSecondMixPresentationId = 99;
+  constexpr DecodedUleb128 kThirdMixPresentationId = 101;
+  AddMixPresentationObuWithAudioElementIds(
+      kFirstMixPresentationId, {kFirstAudioElementId},
+      kCommonMixGainParameterId, kCommonMixGainParameterRate,
+      mix_presentation_obus_);
+  expected_sequence.push_back(&mix_presentation_obus_.back());
   AddMixPresentationObuWithAudioElementIds(
       kSecondMixPresentationId, {kFirstAudioElementId},
       kCommonMixGainParameterId, kCommonMixGainParameterRate,
       mix_presentation_obus_);
-
-  // IAMF makes no recommendation for the ordering between multiple descriptor
-  // OBUs of the same type. By default `WriteDescriptorObus` orders them in
-  // ascending order regardless of their order in the input list.
-  ASSERT_LT(kSecondMixPresentationId, kFirstMixPresentationId);
-  ASSERT_EQ(mix_presentation_obus_.back().GetMixPresentationId(),
-            kSecondMixPresentationId);
-  ASSERT_EQ(mix_presentation_obus_.front().GetMixPresentationId(),
-            kFirstMixPresentationId);
-  const std::list<const ObuBase*> expected_sequence = {
-      &ia_sequence_header_obu_.value(), &codec_config_obus_.at(kCodecConfigId),
-      &audio_elements_.at(kFirstAudioElementId).obu,
-      &mix_presentation_obus_.back(), &mix_presentation_obus_.front()};
+  expected_sequence.push_back(&mix_presentation_obus_.back());
+  AddMixPresentationObuWithAudioElementIds(
+      kThirdMixPresentationId, {kFirstAudioElementId},
+      kCommonMixGainParameterId, kCommonMixGainParameterRate,
+      mix_presentation_obus_);
+  expected_sequence.push_back(&mix_presentation_obus_.back());
 
   ValidateWriteDescriptorObuSequence(expected_sequence);
 }

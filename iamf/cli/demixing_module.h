@@ -16,18 +16,18 @@
 #include <cstdint>
 #include <deque>
 #include <list>
+#include <utility>
 #include <vector>
 
-#include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/container/node_hash_map.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_decoder.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/channel_label.h"
-#include "iamf/cli/proto/audio_frame.pb.h"
-#include "iamf/cli/proto/user_metadata.pb.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/recon_gain_info_parameter_data.h"
@@ -71,13 +71,6 @@ struct LabeledFrame {
 // Mapping from audio element ids to `LabeledFrame`s.
 typedef absl::flat_hash_map<DecodedUleb128, LabeledFrame> IdLabeledFrameMap;
 
-// Mapping from starting timestamps to `LabeledFrame`s.
-typedef absl::btree_map<int32_t, LabeledFrame> TimeLabeledFrameMap;
-
-// Mapping from audio element ids to `TimeLabeledFrameMap`s.
-typedef absl::flat_hash_map<DecodedUleb128, TimeLabeledFrameMap>
-    IdTimeLabeledFrameMap;
-
 typedef absl::Status (*Demixer)(const DownMixingParams&, LabelSamplesMap&);
 
 /*!\brief Manages data and processing to down-mix and demix audio elements.
@@ -99,33 +92,46 @@ typedef absl::Status (*Demixer)(const DownMixingParams&, LabelSamplesMap&);
  */
 class DemixingModule {
  public:
-  struct DemxingMetadataForAudioElementId {
+  struct DemixingMetadataForAudioElementId {
     std::list<Demixer> demixers;
     std::list<Demixer> down_mixers;
     SubstreamIdLabelsMap substream_id_to_labels;
     LabelGainMap label_to_output_gain;
   };
 
-  /*!\brief Constructor. */
-  DemixingModule() = default;
+  struct DownmixingAndReconstructionConfig {
+    absl::flat_hash_set<ChannelLabel::Label> user_labels;
+    SubstreamIdLabelsMap substream_id_to_labels;
+    LabelGainMap label_to_output_gain;
+  };
 
-  /*!\brief Initializes for down-mixing and demixing the input audio elements.
+  /*!\brief Creates a `DemixingModule` for down-mixing and reconstruction.
+   *
+   * This is most useful from the context of an encoder. For example, to encode
+   * a scalable channel audio element with two layers, the input channels are
+   * down-mixed according to various rules in the spec.
    *
    * Initializes metadata for each input audio element ID. The metadata includes
    * information about the channels and the specific down-mixers and demixers
    * needed for that audio element.
    *
-   * \param user_metadata Input user metadata.
-   * \param audio_elements Audio elements. Used only for `audio_element_id`,
-   *        `substream_id_to_labels`, and `label_to_output_gain`.
+   * \param id_to_config_map Map of Audio Element IDs to
+   *        `DownmixingAndReconstructionConfig`, which contains the
+   *        user-provided labels and the `substream_id_to_labels` and
+   *        `label_to_output_gain` from the corresponding
+   *        `AudioElementWithData`.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status InitializeForDownMixingAndReconstruction(
-      const iamf_tools_cli_proto::UserMetadata& user_metadata,
-      const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
-          audio_elements);
+  static absl::StatusOr<DemixingModule> CreateForDownMixingAndReconstruction(
+      const absl::flat_hash_map<DecodedUleb128,
+                                DownmixingAndReconstructionConfig>&&
+          id_to_config_map);
 
   /*!\brief Initializes for reconstruction (demixing) the input audio elements.
+   *
+   * This is most useful from the context of a decoder. For example, to decode
+   * a scalable channel audio element with two layers, the substreams are
+   * demixed according to various rules in the spec.
    *
    * Initializes metadata for each input audio element ID. The metadata includes
    * information about the channels and the specific down-mixers and demixers
@@ -134,7 +140,7 @@ class DemixingModule {
    * \param audio_elements Audio elements.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status InitializeForReconstruction(
+  static absl::StatusOr<DemixingModule> CreateForReconstruction(
       const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
           audio_elements);
 
@@ -202,9 +208,21 @@ class DemixingModule {
                            const std::list<Demixer>*& demixers) const;
 
  private:
-  absl::Status init_status_;
+  /*!\brief Private constructor.
+   *
+   * For use with `CreateForDownMixingAndReconstruction` and
+   * `CreateForReconstruction`.
+   *
+   * \param audio_element_id_to_demixing_metadata Mapping from audio element ID
+   *        to demixing metadata.
+   */
+  DemixingModule(
+      absl::flat_hash_map<DecodedUleb128, DemixingMetadataForAudioElementId>&&
+          audio_element_id_to_demixing_metadata)
+      : audio_element_id_to_demixing_metadata_(
+            std::move(audio_element_id_to_demixing_metadata)) {}
 
-  absl::flat_hash_map<DecodedUleb128, DemxingMetadataForAudioElementId>
+  const absl::flat_hash_map<DecodedUleb128, DemixingMetadataForAudioElementId>
       audio_element_id_to_demixing_metadata_;
 };
 

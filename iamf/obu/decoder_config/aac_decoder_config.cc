@@ -14,16 +14,16 @@
 #include <cstdint>
 #include <vector>
 
-#include "absl/base/no_destructor.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "absl/types/span.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/map_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "libSYS/include/machine_type.h"
 
@@ -88,9 +88,7 @@ absl::Status GetExpectedPositionFromIso14496_1Expanded(
     ReadBitBuffer& rb, int64_t& expected_position) {
   uint32_t size;
   RETURN_IF_NOT_OK(rb.ReadIso14496_1Expanded(kMaxClassSize, size));
-  expected_position =
-      (rb.source_bit_offset() - (rb.buffer_size() - rb.buffer_bit_offset())) +
-      (size * 8);
+  expected_position = rb.Tell() + (static_cast<int64_t>(size) * 8);
   return absl::OkStatus();
 }
 
@@ -99,17 +97,16 @@ absl::Status GetExpectedPositionFromIso14496_1Expanded(
 // to go backwards.
 absl::Status AdvanceBufferToPosition(absl::string_view debugging_context,
                                      ReadBitBuffer& rb,
-                                     int32_t expected_position,
+                                     const int64_t expected_position,
                                      std::vector<uint8_t>& extension) {
-  const int actual_position =
-      (rb.source_bit_offset() - (rb.buffer_size() - rb.buffer_bit_offset()));
+  const int64_t actual_position = rb.Tell();
   if (actual_position == expected_position) {
     // Ok no extension is present.
     return absl::OkStatus();
   } else if (actual_position < expected_position) {
     // Advance and consume the extension.
-    return rb.ReadUint8Vector((expected_position - actual_position) / 8,
-                              extension);
+    extension.resize((expected_position - actual_position) / 8);
+    return rb.ReadUint8Span(absl::MakeSpan(extension));
   } else {
     // The buffer is already past the position.
     return absl::OutOfRangeError(
@@ -202,7 +199,7 @@ absl::Status AudioSpecificConfig::Read(ReadBitBuffer& rb) {
 
 absl::Status AacDecoderConfig::ValidateAndWrite(int16_t audio_roll_distance,
                                                 WriteBitBuffer& wb) const {
-  RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
+  MAYBE_RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
   RETURN_IF_NOT_OK(Validate());
 
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(decoder_config_descriptor_tag_, 8));
@@ -281,7 +278,7 @@ absl::Status AacDecoderConfig::GetOutputSampleRate(
                                               {k48000, 48000},
                                               {k44100, 44100},
                                               {k32000, 32000},
-                                              {k23000, 23000},
+                                              {k24000, 24000},
                                               {k22050, 22050},
                                               {k16000, 16000},
                                               {k12000, 12000},

@@ -22,13 +22,13 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/string_view.h"
 #include "iamf/cli/adm_to_user_metadata/adm/adm_elements.h"
-#include "iamf/cli/adm_to_user_metadata/iamf/iamf_input_layout.h"
 #include "iamf/cli/proto/mix_presentation.pb.h"
 #include "iamf/cli/proto/param_definitions.pb.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
+#include "iamf/common/utils/map_utils.h"
+#include "iamf/common/utils/numeric_utils.h"
 
 namespace iamf_tools {
 namespace adm_to_user_metadata {
@@ -51,6 +51,7 @@ LookupSoundSystemFromInputLayout(IamfInputLayout layout) {
           {k5_1_4, SOUND_SYSTEM_D_4_5_0},
           {k7_1, SOUND_SYSTEM_I_0_7_0},
           {k7_1_4, SOUND_SYSTEM_J_4_7_0},
+          {kLFE, SOUND_SYSTEM_J_4_7_0},
       });
 
   return LookupInMap(*kInputLayoutToSoundSystem, layout,
@@ -122,7 +123,7 @@ absl::Status SetDefaultLoudnessLayout(
   return CopyLoudness(loudness_metadata, *layout->mutable_loudness());
 }
 
-absl::Status SubMixAudioElementHandler(
+absl::Status SubMixAudioElementMetadataBuilder(
     const AudioObject& audio_object, uint32_t audio_element_id,
     uint32_t common_parameter_rate,
     iamf_tools_cli_proto::SubMixAudioElement& sub_mix_audio_element) {
@@ -198,6 +199,7 @@ bool IsChannelBasedAndNotStereo(IamfInputLayout input_layout) {
     case k7_1:
     case k7_1_4:
     case kBinaural:
+    case kLFE:
       return true;
     case kStereo:
     case kAmbisonicsOrder1:
@@ -205,6 +207,9 @@ bool IsChannelBasedAndNotStereo(IamfInputLayout input_layout) {
     case kAmbisonicsOrder3:
       return false;
   }
+  // The above switch is exhaustive.
+  LOG(FATAL) << "Unexpcected value for `IamfInputLayout`: "
+             << static_cast<int>(input_layout);
 }
 
 }  // namespace
@@ -226,7 +231,7 @@ absl::Status MixPresentationHandler::PopulateMixPresentation(
       *mix_presentation_obu_metadata.add_sub_mixes();
   mix_presentation_sub_mix.set_num_audio_elements(audio_objects.size());
   for (const auto& audio_object : audio_objects) {
-    const auto status = SubMixAudioElementHandler(
+    const auto status = SubMixAudioElementMetadataBuilder(
         audio_object, audio_object_id_to_audio_element_id_[audio_object.id],
         common_parameter_rate_, *mix_presentation_sub_mix.add_audio_elements());
     if (!status.ok()) {
