@@ -11,6 +11,7 @@
  */
 #include "iamf/obu/parameter_block.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,9 +23,9 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/obu_util.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/extension_parameter_data.h"
@@ -126,8 +127,9 @@ ParameterBlockObu::ParameterBlockObu(const ObuHeader& header,
       metadata_(metadata) {}
 
 absl::Status ParameterBlockObu::InterpolateMixGainParameterData(
-    const MixGainParameterData* mix_gain_parameter_data, int32_t start_time,
-    int32_t end_time, int32_t target_time, int16_t& target_mix_gain) {
+    const MixGainParameterData* mix_gain_parameter_data,
+    InternalTimestamp start_time, InternalTimestamp end_time,
+    InternalTimestamp target_time, float& target_mix_gain_db) {
   return InterpolateMixGainValue(
       mix_gain_parameter_data->animation_type,
       MixGainParameterData::kAnimateStep, MixGainParameterData::kAnimateLinear,
@@ -166,7 +168,7 @@ absl::Status ParameterBlockObu::InterpolateMixGainParameterData(
                    mix_gain_parameter_data->param_data)
             .control_point_relative_time;
       },
-      start_time, end_time, target_time, target_mix_gain);
+      start_time, end_time, target_time, target_mix_gain_db);
 }
 
 DecodedUleb128 ParameterBlockObu::GetDuration() const {
@@ -249,8 +251,8 @@ absl::Status ParameterBlockObu::SetSubblockDuration(int subblock_index,
   return absl::OkStatus();
 }
 
-absl::Status ParameterBlockObu::GetMixGain(int32_t obu_relative_time,
-                                           int16_t& mix_gain) const {
+absl::Status ParameterBlockObu::GetLinearMixGain(
+    InternalTimestamp obu_relative_time, float& linear_mix_gain) const {
   if (metadata_.param_definition_type !=
       ParamDefinition::kParameterDefinitionMixGain) {
     return absl::InvalidArgumentError("Expected Mix Gain Parameter Definition");
@@ -258,9 +260,9 @@ absl::Status ParameterBlockObu::GetMixGain(int32_t obu_relative_time,
 
   const DecodedUleb128 num_subblocks = GetNumSubblocks();
   int target_subblock_index = -1;
-  int32_t target_subblock_start_time = -1;
-  int32_t subblock_relative_start_time = 0;
-  int32_t subblock_relative_end_time = 0;
+  InternalTimestamp target_subblock_start_time = -1;
+  InternalTimestamp subblock_relative_start_time = 0;
+  InternalTimestamp subblock_relative_end_time = 0;
   for (int i = 0; i < num_subblocks; i++) {
     const auto subblock_duration = GetSubblockDuration(i);
     if (!subblock_duration.ok()) {
@@ -286,12 +288,15 @@ absl::Status ParameterBlockObu::GetMixGain(int32_t obu_relative_time,
                      num_subblocks));
   }
 
+  float mix_gain_db = 0;
   RETURN_IF_NOT_OK(InterpolateMixGainParameterData(
       static_cast<const MixGainParameterData*>(
           subblocks_[target_subblock_index].param_data.get()),
       subblock_relative_start_time, subblock_relative_end_time,
-      obu_relative_time, mix_gain));
+      obu_relative_time, mix_gain_db));
 
+  // Mix gain data is in dB and stored in Q7.8. Convert to the linear value.
+  linear_mix_gain = std::pow(10.0f, mix_gain_db / 20.0f);
   return absl::OkStatus();
 }
 

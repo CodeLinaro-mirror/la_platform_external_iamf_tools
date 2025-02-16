@@ -20,60 +20,41 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
-#include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
-#include "iamf/cli/proto/obu_header.pb.h"
-#include "iamf/cli/proto/param_definitions.pb.h"
-#include "iamf/cli/proto/parameter_data.pb.h"
 #include "iamf/obu/codec_config.h"
-#include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/mix_presentation.h"
-#include "iamf/obu/obu_header.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
-/*!\brief Copies param definitions from the corresponding protocol buffer.
+/*!\brief Determines if the layout is a stereo layout.
  *
- * \param input_param_definition Input protocol buffer.
- * \param param_definition Destination param definition.
+ * \param layout Layout to check.
+ * \return True if the layout is a stereo layout. False otherwise.
+ */
+bool IsStereoLayout(const Layout& layout);
+
+/*!\brief Gets indices for the target Layout in the mix presentation.
+ *
+ * This function grabs the submix index and layout index of the desired layout
+ * in the mix presentation.
+ *
+ * \param mix_presentation_sub_mixes List of mix presentation submixes where we
+ *        search for the target_layout.
+ * \param target_layout Layout to get the indices for.
+ * \param output_submix_index Index of the submix to use.
+ * \param output_layout_index Index of the layout to use.
  * \return `absl::OkStatus()` on success. A specific status on failure.
  */
-absl::Status CopyParamDefinition(
-    const iamf_tools_cli_proto::ParamDefinition& input_param_definition,
-    ParamDefinition& param_definition);
-
-/*!\brief Returns an `ObuHeader` based on the corresponding protocol buffer.
- *
- * \param input_obu_header Input protocol buffer.
- * \return Result.
- */
-ObuHeader GetHeaderFromMetadata(
-    const iamf_tools_cli_proto::ObuHeaderMetadata& input_obu_header);
-
-/*!\brief Copies `DemixingInfoParameterData` from the input protocol buffer.
- *
- * \param input_demixing_info_parameter_data Input protocol buffer.
- * \param obu_demixing_param_data Reference to the result.
- * \return `absl::OkStatus()` on success. A specific status on failure.
- */
-absl::Status CopyDemixingInfoParameterData(
-    const iamf_tools_cli_proto::DemixingInfoParameterData&
-        input_demixing_info_parameter_data,
-    DemixingInfoParameterData& obu_demixing_param_data);
-
-/*!\brief Copies `DMixPMode` to the output protocol buffer.
- *
- * \param obu_dmixp_mode Input `DMixPMode`.
- * \param dmixp_mode Reference to output protocol buffer.
- * \return `absl::OkStatus()` on success. A specific status on failure.
- */
-absl::Status CopyDMixPMode(DemixingInfoParameterData::DMixPMode obu_dmixp_mode,
-                           iamf_tools_cli_proto::DMixPMode& dmixp_mode);
+absl::Status GetIndicesForLayout(
+    const std::vector<MixPresentationSubMix>& mix_presentation_sub_mixes,
+    const Layout& target_layout, int& output_submix_index,
+    int& output_layout_index);
 
 /*!\brief Collects and validates the parameter definitions against the spec.
  *
@@ -121,8 +102,8 @@ GenerateParamIdToMetadataMap(
  * \return `absl::OkStatus()` if the timestamps are equal.
  *         `absl::InvalidArgumentError()` with a custom message otherwise.
  */
-absl::Status CompareTimestamps(int32_t expected_timestamp,
-                               int32_t actual_timestamp,
+absl::Status CompareTimestamps(InternalTimestamp expected_timestamp,
+                               InternalTimestamp actual_timestamp,
                                absl::string_view prompt = "");
 
 /*!\brief Writes interlaced PCM samples into the output buffer.
