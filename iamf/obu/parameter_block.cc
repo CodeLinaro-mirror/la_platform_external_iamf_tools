@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
@@ -71,7 +72,7 @@ absl::Status ParameterSubblock::Write(
     RETURN_IF_NOT_OK(wb.WriteUleb128(*subblock_duration));
   }
 
-  // Write the specific parameter data depending on `param_definition_type`.
+  // Write the specific parameter data depending on the specific type.
   RETURN_IF_NOT_OK(param_data->Write(per_id_metadata, wb));
 
   return absl::OkStatus();
@@ -87,7 +88,7 @@ void ParameterSubblock::Print() const {
 absl::StatusOr<std::unique_ptr<ParameterBlockObu>>
 ParameterBlockObu::CreateFromBuffer(
     const ObuHeader& header, int64_t payload_size,
-    absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata>&
+    const absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata>&
         parameter_id_to_metadata,
     ReadBitBuffer& rb) {
   DecodedUleb128 parameter_id;
@@ -121,7 +122,7 @@ ParameterBlockObu::CreateFromBuffer(
 
 ParameterBlockObu::ParameterBlockObu(const ObuHeader& header,
                                      DecodedUleb128 parameter_id,
-                                     PerIdParameterMetadata& metadata)
+                                     const PerIdParameterMetadata& metadata)
     : ObuBase(header, kObuIaParameterBlock),
       parameter_id_(parameter_id),
       metadata_(metadata) {}
@@ -225,6 +226,10 @@ absl::StatusOr<DecodedUleb128> ParameterBlockObu::GetSubblockDuration(
 
 absl::Status ParameterBlockObu::SetSubblockDuration(int subblock_index,
                                                     DecodedUleb128 duration) {
+  CHECK_NE(metadata_.param_definition.param_definition_mode_, 0)
+      << "Calling ParameterBlockObu::SetSubblockDuration() is disallowed when "
+      << "`param_definition_mode_ == 0`";
+
   const DecodedUleb128 num_subblocks = GetNumSubblocks();
   if (subblock_index > num_subblocks) {
     return absl::InvalidArgumentError(absl::StrCat(
@@ -238,22 +243,15 @@ absl::Status ParameterBlockObu::SetSubblockDuration(int subblock_index,
   subblocks_[subblock_index].subblock_duration.reset();
 
   if (constant_subblock_duration == 0) {
-    if (metadata_.param_definition.param_definition_mode_ == 1) {
-      // Overwrite the default value in the parameter block.
-      subblocks_[subblock_index].subblock_duration = duration;
-
-    } else {
-      // Set the duration in the metadata_.
-      RETURN_IF_NOT_OK(metadata_.param_definition.SetSubblockDuration(
-          subblock_index, duration));
-    }
+    // Overwrite the default value in the parameter block.
+    subblocks_[subblock_index].subblock_duration = duration;
   }
   return absl::OkStatus();
 }
 
 absl::Status ParameterBlockObu::GetLinearMixGain(
     InternalTimestamp obu_relative_time, float& linear_mix_gain) const {
-  if (metadata_.param_definition_type !=
+  if (metadata_.param_definition.GetType() !=
       ParamDefinition::kParameterDefinitionMixGain) {
     return absl::InvalidArgumentError("Expected Mix Gain Parameter Definition");
   }
@@ -303,6 +301,10 @@ absl::Status ParameterBlockObu::GetLinearMixGain(
 absl::Status ParameterBlockObu::InitializeSubblocks(
     DecodedUleb128 duration, DecodedUleb128 constant_subblock_duration,
     DecodedUleb128 num_subblocks) {
+  CHECK_EQ(metadata_.param_definition.param_definition_mode_, 1)
+      << "InitializeSubblocks() with input arguments should only "
+      << "be called when `param_definition_mode_ == 1`";
+
   SetDuration(duration);
   SetConstantSubblockDuration(constant_subblock_duration);
   SetNumSubblocks(num_subblocks);
@@ -312,12 +314,10 @@ absl::Status ParameterBlockObu::InitializeSubblocks(
 }
 
 absl::Status ParameterBlockObu::InitializeSubblocks() {
-  if (metadata_.param_definition.param_definition_mode_ != 0) {
-    init_status_ = absl::InvalidArgumentError(
-        "InitializeSubblocks() without input arguments should only "
-        "be called when `param_definition_mode_ == 0`");
-    return init_status_;
-  }
+  CHECK_EQ(metadata_.param_definition.param_definition_mode_, 0)
+      << "InitializeSubblocks() without input arguments should only "
+      << "be called when `param_definition_mode_ == 0`";
+
   subblocks_.resize(static_cast<size_t>(GetNumSubblocks()));
   init_status_ = absl::OkStatus();
   return absl::OkStatus();
@@ -329,8 +329,6 @@ void ParameterBlockObu::PrintObu() const {
   }
 
   LOG(INFO) << "Parameter Block OBU:";
-  LOG(INFO) << "  // param_definition_type= "
-            << metadata_.param_definition_type;
   LOG(INFO) << "  // param_definition:";
   metadata_.param_definition.Print();
 
@@ -352,37 +350,30 @@ void ParameterBlockObu::PrintObu() const {
 }
 
 void ParameterBlockObu::SetDuration(DecodedUleb128 duration) {
-  if (metadata_.param_definition.param_definition_mode_ == 1) {
-    duration_ = duration;
-  } else {
-    metadata_.param_definition.duration_ = duration;
-  }
+  CHECK_NE(metadata_.param_definition.param_definition_mode_, 0)
+      << "Calling ParameterBlockObu::SetDuration() is disallowed when "
+      << "`param_definition_mode_ == 0`";
+  duration_ = duration;
 }
 
 void ParameterBlockObu::SetConstantSubblockDuration(
     DecodedUleb128 constant_subblock_duration) {
-  if (metadata_.param_definition.param_definition_mode_ == 1) {
-    constant_subblock_duration_ = constant_subblock_duration;
-  } else {
-    metadata_.param_definition.constant_subblock_duration_ =
-        constant_subblock_duration;
-  }
+  CHECK_NE(metadata_.param_definition.param_definition_mode_, 0)
+      << "Calling ParameterBlockObu::SetConstantSubblockDuration() is "
+      << "disallowed when `param_definition_mode_ == 0`";
+  constant_subblock_duration_ = constant_subblock_duration;
 }
 
 void ParameterBlockObu::SetNumSubblocks(DecodedUleb128 num_subblocks) {
-  const DecodedUleb128 constant_subblock_duration =
-      GetConstantSubblockDuration();
-  if (constant_subblock_duration != 0) {
+  CHECK_NE(metadata_.param_definition.param_definition_mode_, 0)
+      << "Calling ParameterBlockObu::SetNumSubblocks() is "
+      << "disallowed when `param_definition_mode_ == 0`";
+  if (GetConstantSubblockDuration() != 0) {
     // Nothing to do. The field is implicit.
     return;
   }
 
-  // Set `num_subblocks_` explicitly in the OBU or metadata_.
-  if (metadata_.param_definition.param_definition_mode_ == 1) {
-    num_subblocks_ = num_subblocks;
-  } else {
-    metadata_.param_definition.InitializeSubblockDurations(num_subblocks);
-  }
+  num_subblocks_ = num_subblocks;
 }
 
 absl::Status ParameterBlockObu::ValidateAndWritePayload(
