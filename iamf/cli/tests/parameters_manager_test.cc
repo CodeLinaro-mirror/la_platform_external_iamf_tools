@@ -27,6 +27,7 @@
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
+#include "iamf/obu/demixing_param_definition.h"
 #include "iamf/obu/obu_header.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_block.h"
@@ -53,16 +54,14 @@ constexpr DemixingInfoParameterData::DMixPMode kDMixPMode =
 
 absl::Status AppendParameterBlock(
     DecodedUleb128 parameter_id, InternalTimestamp start_timestamp,
-    PerIdParameterMetadata& per_id_metadata,
+    const PerIdParameterMetadata& per_id_metadata,
     std::vector<ParameterBlockWithData>& parameter_blocks) {
   parameter_blocks.emplace_back(ParameterBlockWithData{
       std::make_unique<ParameterBlockObu>(ObuHeader(), parameter_id,
                                           per_id_metadata),
       start_timestamp, start_timestamp + kDurationAsInternalTimestamp});
   ParameterBlockObu& parameter_block_obu = *parameter_blocks.back().obu;
-  absl::Status status =
-      parameter_block_obu.InitializeSubblocks(kDuration, kDuration, 1);
-  status.Update(parameter_block_obu.SetSubblockDuration(0, kDuration));
+  absl::Status status = parameter_block_obu.InitializeSubblocks();
   return status;
 }
 
@@ -71,7 +70,6 @@ absl::Status AddOneDemixingParameterBlock(
     PerIdParameterMetadata& per_id_metadata,
     std::vector<ParameterBlockWithData>& parameter_blocks) {
   per_id_metadata = {
-      .param_definition_type = ParamDefinition::kParameterDefinitionDemixing,
       .param_definition = param_definition,
   };
   auto status = AppendParameterBlock(kParameterId, start_timestamp,
@@ -89,9 +87,7 @@ absl::Status AddOneReconGainParameterBlock(
     const ParamDefinition& param_definition, InternalTimestamp start_timestamp,
     PerIdParameterMetadata& per_id_metadata,
     std::vector<ParameterBlockWithData>& parameter_blocks) {
-  per_id_metadata = {
-      .param_definition_type = ParamDefinition::kParameterDefinitionReconGain,
-      .param_definition = param_definition};
+  per_id_metadata = {.param_definition = param_definition};
   auto status = AppendParameterBlock(kSecondParameterId, start_timestamp,
                                      per_id_metadata, parameter_blocks);
 
@@ -105,7 +101,6 @@ absl::Status AddOneReconGainParameterBlock(
   ParameterBlockObu& parameter_block_obu = *parameter_blocks.back().obu;
   parameter_block_obu.subblocks_[0].param_data =
       std::move(recon_gain_info_parameter_data);
-
   return status;
 }
 
@@ -125,7 +120,8 @@ class ParametersManagerTest : public testing::Test {
 
     EXPECT_THAT(
         AddOneDemixingParameterBlock(
-            *audio_element_obu.audio_element_params_[0].param_definition,
+            std::get<DemixingParamDefinition>(
+                audio_element_obu.audio_element_params_[0].param_definition),
             /*start_timestamp=*/0, per_id_metadata_,
             demixing_parameter_blocks_),
         IsOk());
@@ -156,15 +152,19 @@ TEST_F(ParametersManagerTest, InitializeWithTwoDemixingParametersFails) {
 }
 
 TEST_F(ParametersManagerTest, InitializeWithReconGainParameterSucceeds) {
+  // Remove existng param definitions added in the constructor of the
+  // test fixture.
+  audio_elements_.at(kAudioElementId).obu.audio_element_params_.clear();
   AddReconGainParamDefinition(kSecondParameterId, kSampleRate, kDuration,
                               audio_elements_.at(kAudioElementId).obu,
                               /*param_definitions=*/nullptr);
   EXPECT_THAT(
-      AddOneReconGainParameterBlock(*audio_elements_.at(kAudioElementId)
-                                         .obu.audio_element_params_[0]
-                                         .param_definition,
-                                    /*start_timestamp=*/0, per_id_metadata_,
-                                    recon_gain_parameter_blocks_),
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[0]
+                                                 .param_definition),
+          /*start_timestamp=*/0, per_id_metadata_,
+          recon_gain_parameter_blocks_),
       IsOk());
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   EXPECT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -204,11 +204,12 @@ TEST_F(ParametersManagerTest, GetReconGainInfoParameterDataSucceeds) {
                               audio_elements_.at(kAudioElementId).obu,
                               /*param_definitions=*/nullptr);
   ASSERT_THAT(
-      AddOneReconGainParameterBlock(*audio_elements_.at(kAudioElementId)
-                                         .obu.audio_element_params_[1]
-                                         .param_definition,
-                                    /*start_timestamp=*/0, per_id_metadata_,
-                                    recon_gain_parameter_blocks_),
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[1]
+                                                 .param_definition),
+          /*start_timestamp=*/0, per_id_metadata_,
+          recon_gain_parameter_blocks_),
       IsOk());
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   ASSERT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -278,11 +279,12 @@ TEST_F(ParametersManagerTest, GetMultipleReconGainParametersSucceeds) {
                               audio_elements_.at(kAudioElementId).obu,
                               /*param_definitions=*/nullptr);
   ASSERT_THAT(
-      AddOneReconGainParameterBlock(*audio_elements_.at(kAudioElementId)
-                                         .obu.audio_element_params_[1]
-                                         .param_definition,
-                                    /*start_timestamp=*/0, per_id_metadata_,
-                                    recon_gain_parameter_blocks_),
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[1]
+                                                 .param_definition),
+          /*start_timestamp=*/0, per_id_metadata_,
+          recon_gain_parameter_blocks_),
       IsOk());
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   ASSERT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -307,13 +309,14 @@ TEST_F(ParametersManagerTest, GetMultipleReconGainParametersSucceeds) {
               IsOk());
 
   // Second recon gain parameter block.
-  ASSERT_THAT(AddOneReconGainParameterBlock(
-                  *audio_elements_.at(kAudioElementId)
-                       .obu.audio_element_params_[1]
-                       .param_definition,
-                  /*start_timestamp=*/kDurationAsInternalTimestamp,
-                  per_id_metadata_, recon_gain_parameter_blocks_),
-              IsOk());
+  ASSERT_THAT(
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[1]
+                                                 .param_definition),
+          /*start_timestamp=*/kDurationAsInternalTimestamp, per_id_metadata_,
+          recon_gain_parameter_blocks_),
+      IsOk());
   parameters_manager_->AddReconGainParameterBlock(
       &recon_gain_parameter_blocks_[1]);
   ReconGainInfoParameterData recon_gain_parameter_data_1;
@@ -340,11 +343,12 @@ TEST_F(ParametersManagerTest,
                               audio_elements_.at(kAudioElementId).obu,
                               /*param_definitions=*/nullptr);
   ASSERT_THAT(
-      AddOneReconGainParameterBlock(*audio_elements_.at(kAudioElementId)
-                                         .obu.audio_element_params_[1]
-                                         .param_definition,
-                                    /*start_timestamp=*/0, per_id_metadata_,
-                                    recon_gain_parameter_blocks_),
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[1]
+                                                 .param_definition),
+          /*start_timestamp=*/0, per_id_metadata_,
+          recon_gain_parameter_blocks_),
       IsOk());
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   ASSERT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -359,13 +363,14 @@ TEST_F(ParametersManagerTest,
       IsOk());
 
   // Second recon gain parameter block.
-  ASSERT_THAT(AddOneReconGainParameterBlock(
-                  *audio_elements_.at(kAudioElementId)
-                       .obu.audio_element_params_[1]
-                       .param_definition,
-                  /*start_timestamp=*/kDurationAsInternalTimestamp,
-                  per_id_metadata_, recon_gain_parameter_blocks_),
-              IsOk());
+  ASSERT_THAT(
+      AddOneReconGainParameterBlock(
+          std::get<ReconGainParamDefinition>(audio_elements_.at(kAudioElementId)
+                                                 .obu.audio_element_params_[1]
+                                                 .param_definition),
+          /*start_timestamp=*/kDurationAsInternalTimestamp, per_id_metadata_,
+          recon_gain_parameter_blocks_),
+      IsOk());
   parameters_manager_->AddReconGainParameterBlock(
       &recon_gain_parameter_blocks_[1]);
   ReconGainInfoParameterData recon_gain_parameter_data_1;
@@ -422,9 +427,10 @@ TEST_F(ParametersManagerTest, ParameterBlocksRunOutReturnsDefault) {
 TEST_F(ParametersManagerTest, ParameterIdNotFoundReturnsDefault) {
   // Modify the parameter definition of the audio element so it does not
   // correspond to any parameter blocks inside `parameter_blocks_`.
-  auto& audio_element = audio_elements_.at(kAudioElementId);
-  audio_element.obu.audio_element_params_[0].param_definition->parameter_id_ =
-      kParameterId + 1;
+  std::get<DemixingParamDefinition>(audio_elements_.at(kAudioElementId)
+                                        .obu.audio_element_params_[0]
+                                        .param_definition)
+      .parameter_id_ = kParameterId + 1;
 
   // Create the parameters manager and get down mixing parameters; default
   // values are returned because the parameter ID is different from those
@@ -452,13 +458,14 @@ TEST_F(ParametersManagerTest, ParameterIdNotFoundReturnsDefault) {
 
 TEST_F(ParametersManagerTest, GetDownMixingParametersTwiceDifferentW) {
   // Add another parameter block, so we can get down-mix parameters twice.
-  ASSERT_THAT(AddOneDemixingParameterBlock(*audio_elements_.at(kAudioElementId)
+  ASSERT_THAT(
+      AddOneDemixingParameterBlock(
+          std::get<DemixingParamDefinition>(audio_elements_.at(kAudioElementId)
                                                 .obu.audio_element_params_[0]
-                                                .param_definition,
-                                           /*start_timestamp=*/kDuration,
-                                           per_id_metadata_,
-                                           demixing_parameter_blocks_),
-              IsOk());
+                                                .param_definition),
+          /*start_timestamp=*/kDuration, per_id_metadata_,
+          demixing_parameter_blocks_),
+      IsOk());
 
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   ASSERT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -503,13 +510,14 @@ TEST_F(ParametersManagerTest, GetDownMixingParametersTwiceDifferentW) {
 TEST_F(ParametersManagerTest, GetDownMixingParametersTwiceWithoutUpdateSameW) {
   // Add another parameter block, so it is possible to get down-mix parameters
   // twice.
-  ASSERT_THAT(AddOneDemixingParameterBlock(*audio_elements_.at(kAudioElementId)
+  ASSERT_THAT(
+      AddOneDemixingParameterBlock(
+          std::get<DemixingParamDefinition>(audio_elements_.at(kAudioElementId)
                                                 .obu.audio_element_params_[0]
-                                                .param_definition,
-                                           /*start_timestamp=*/kDuration,
-                                           per_id_metadata_,
-                                           demixing_parameter_blocks_),
-              IsOk());
+                                                .param_definition),
+          /*start_timestamp=*/kDuration, per_id_metadata_,
+          demixing_parameter_blocks_),
+      IsOk());
 
   parameters_manager_ = std::make_unique<ParametersManager>(audio_elements_);
   ASSERT_THAT(parameters_manager_->Initialize(), IsOk());
@@ -546,13 +554,14 @@ TEST_F(ParametersManagerTest, GetDownMixingParametersTwiceWithoutUpdateSameW) {
 TEST_F(ParametersManagerTest,
        TwoAudioElementGettingParameterBlocksWithDifferentTimestampsFails) {
   // Add another parameter block, so we can get down-mix parameters twice.
-  ASSERT_THAT(AddOneDemixingParameterBlock(*audio_elements_.at(kAudioElementId)
+  ASSERT_THAT(
+      AddOneDemixingParameterBlock(
+          std::get<DemixingParamDefinition>(audio_elements_.at(kAudioElementId)
                                                 .obu.audio_element_params_[0]
-                                                .param_definition,
-                                           /*start_timestamp=*/kDuration,
-                                           per_id_metadata_,
-                                           demixing_parameter_blocks_),
-              IsOk());
+                                                .param_definition),
+          /*start_timestamp=*/kDuration, per_id_metadata_,
+          demixing_parameter_blocks_),
+      IsOk());
 
   // Add a second audio element sharing the same demixing parameter.
   constexpr DecodedUleb128 kAudioElementId2 = kAudioElementId + 1;
@@ -642,9 +651,10 @@ TEST_F(ParametersManagerTest, UpdateFailsWithWrongTimestamps) {
 TEST_F(ParametersManagerTest, UpdateNotValidatingWhenParameterIdNotFound) {
   // Modify the parameter definition of the audio element so it does not
   // correspond to any parameter blocks inside `parameter_blocks_`.
-  auto& audio_element = audio_elements_.at(kAudioElementId);
-  audio_element.obu.audio_element_params_[0].param_definition->parameter_id_ =
-      kParameterId + 1;
+  std::get<DemixingParamDefinition>(audio_elements_.at(kAudioElementId)
+                                        .obu.audio_element_params_[0]
+                                        .param_definition)
+      .parameter_id_ = kParameterId + 1;
 
   // Create the parameters manager and get down mixing parameters; default
   // values are returned because the parameter ID is not found.
