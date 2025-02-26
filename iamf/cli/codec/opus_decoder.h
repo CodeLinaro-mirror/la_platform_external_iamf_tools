@@ -13,12 +13,10 @@
 #define CLI_OPUS_ENCODER_DECODER_H_
 
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "include/opus.h"
@@ -47,13 +45,10 @@ class OpusDecoder : public DecoderBase {
   /*!\brief Decodes an Opus audio frame.
    *
    * \param encoded_frame Frame to decode.
-   * \param decoded_samples Output decoded frames arranged in (time, sample)
-   *        axes.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   absl::Status DecodeAudioFrame(
-      const std::vector<uint8_t>& encoded_frame,
-      std::vector<std::vector<int32_t>>& decoded_samples) override;
+      const std::vector<uint8_t>& encoded_frame) override;
 
  private:
   // The decoder from `libopus` is in the global namespace.

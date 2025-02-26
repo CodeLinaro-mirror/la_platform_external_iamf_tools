@@ -1,14 +1,15 @@
 # Tests for the IAMF software.
 
+# keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
 cc_library(
     name = "obu_test_base",
     testonly = True,
     srcs = ["obu_test_base.cc"],
     hdrs = ["obu_test_base.h"],
     deps = [
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:obu_header",
         "@com_google_googletest//:gtest",
     ],
@@ -20,7 +21,7 @@ cc_test(
     deps = [
         ":obu_test_base",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:arbitrary_obu",
         "//iamf/obu:obu_header",
         "@com_google_absl//absl/status:status_matchers",
@@ -34,10 +35,10 @@ cc_test(
     srcs = ["audio_element_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:audio_element",
         "//iamf/obu:demixing_param_definition",
         "//iamf/obu:obu_header",
@@ -46,6 +47,7 @@ cc_test(
         "//iamf/obu:types",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -56,7 +58,7 @@ cc_test(
     srcs = ["audio_frame_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/obu:audio_frame",
@@ -64,6 +66,7 @@ cc_test(
         "//iamf/obu:types",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -74,7 +77,7 @@ cc_test(
     srcs = ["codec_config_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/obu:codec_config",
@@ -87,6 +90,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -97,7 +101,7 @@ cc_test(
     srcs = ["ia_sequence_header_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/obu:ia_sequence_header",
@@ -105,6 +109,7 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -115,17 +120,18 @@ cc_test(
     srcs = ["mix_presentation_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
-        "//iamf/common:bit_buffer_util",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils:bit_buffer_util",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:mix_presentation",
         "//iamf/obu:obu_header",
         "//iamf/obu:param_definitions",
         "//iamf/obu:types",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -134,15 +140,16 @@ cc_test(
     name = "obu_base_test",
     srcs = ["obu_base_test.cc"],
     deps = [
-        "//iamf/common:macros",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:obu_base",
         "//iamf/obu:obu_header",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -152,13 +159,14 @@ cc_test(
     size = "small",
     srcs = ["obu_header_test.cc"],
     deps = [
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:obu_header",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -168,16 +176,41 @@ cc_test(
     size = "small",
     srcs = ["param_definitions_test.cc"],
     deps = [
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:demixing_param_definition",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
         "//iamf/obu:types",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "parameter_block_test",
+    size = "small",
+    srcs = ["parameter_block_test.cc"],
+    deps = [
+        ":obu_test_base",
+        "//iamf/common:leb_generator",
+        "//iamf/common:read_bit_buffer",
+        "//iamf/common:write_bit_buffer",
+        "//iamf/common/utils:numeric_utils",
+        "//iamf/obu:demixing_param_definition",
+        "//iamf/obu:obu_header",
+        "//iamf/obu:param_definitions",
+        "//iamf/obu:parameter_block",
+        "//iamf/obu:parameter_data",
+        "//iamf/obu:types",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -194,33 +227,12 @@ cc_test(
     deps = [
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/tests:test_utils",
+        "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "parameter_block_test",
-    size = "small",
-    srcs = ["parameter_block_test.cc"],
-    deps = [
-        ":obu_test_base",
-        "//iamf/cli:leb_generator",
-        "//iamf/common:read_bit_buffer",
-        "//iamf/common:write_bit_buffer",
-        "//iamf/obu:demixing_param_definition",
-        "//iamf/obu:obu_header",
-        "//iamf/obu:param_definitions",
-        "//iamf/obu:parameter_block",
-        "//iamf/obu:parameter_data",
-        "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -231,7 +243,7 @@ cc_test(
     srcs = ["temporal_delimiter_test.cc"],
     deps = [
         ":obu_test_base",
-        "//iamf/cli:leb_generator",
+        "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/obu:obu_header",
@@ -239,6 +251,9 @@ cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
+
+# keep-sorted end

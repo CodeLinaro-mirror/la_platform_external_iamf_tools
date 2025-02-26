@@ -26,9 +26,11 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "absl/types/span.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/demixing_param_definition.h"
 #include "iamf/obu/obu_base.h"
@@ -315,8 +317,9 @@ absl::Status ReadAndValidateAmbisonicsMonoConfig(
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, mono_config.output_channel_count));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, mono_config.substream_count));
   const size_t channel_mapping_size = mono_config.output_channel_count;
+  mono_config.channel_mapping.resize(channel_mapping_size);
   RETURN_IF_NOT_OK(
-      rb.ReadUint8Vector(channel_mapping_size, mono_config.channel_mapping));
+      rb.ReadUint8Span(absl::MakeSpan(mono_config.channel_mapping)));
   RETURN_IF_NOT_OK(mono_config.Validate(num_substreams));
   return OkStatus();
 }
@@ -445,9 +448,8 @@ absl::Status ScalableChannelLayoutConfig::Validate(
     return absl::InvalidArgumentError(
         absl::StrCat("Expected `num_layers` in [1, 6]; got ", num_layers));
   }
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual("channel_audio_layer_configs",
-                                           num_layers,
-                                           channel_audio_layer_configs.size()));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "channel_audio_layer_configs", channel_audio_layer_configs, num_layers));
 
   // Determine whether any binaural layouts are found and the total number of
   // substreams.
@@ -479,10 +481,9 @@ absl::Status ScalableChannelLayoutConfig::Validate(
 
 absl::Status AmbisonicsMonoConfig::Validate(
     DecodedUleb128 num_substreams_in_audio_element) const {
-  RETURN_IF_NOT_OK(ValidateOutputChannelCount(output_channel_count));
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "channel_mapping", channel_mapping.size(),
-      static_cast<DecodedUleb128>(output_channel_count)));
+  MAYBE_RETURN_IF_NOT_OK(ValidateOutputChannelCount(output_channel_count));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "channel_mapping", channel_mapping, output_channel_count));
   if (substream_count > output_channel_count) {
     return absl::InvalidArgumentError(
         absl::StrCat("Expected substream_count=", substream_count,
@@ -549,8 +550,8 @@ absl::Status AmbisonicsProjectionConfig::Validate(
   }
 
   const size_t expected_num_elements = GetNumDemixingMatrixElements(*this);
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "demixing_matrix", demixing_matrix.size(), expected_num_elements));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "demixing_matrix", demixing_matrix, expected_num_elements));
 
   return absl::OkStatus();
 }
@@ -643,8 +644,10 @@ absl::Status AudioElementObu::InitializeScalableChannelLayout(
   }
 
   ScalableChannelLayoutConfig config;
-  RETURN_IF_NOT_OK(Uint32ToUint8(num_layers, config.num_layers));
-  RETURN_IF_NOT_OK(Uint32ToUint8(reserved, config.reserved));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "ScalableChannelLayoutConfig.num_layers", num_layers, config.num_layers));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "ScalableChannelLayoutConfig.reserved", reserved, config.reserved));
   config.channel_audio_layer_configs.resize(num_layers);
   config_ = config;
   return absl::OkStatus();
@@ -665,9 +668,12 @@ absl::Status AudioElementObu::InitializeAmbisonicsMono(
   config.ambisonics_mode = AmbisonicsConfig::kAmbisonicsModeMono;
 
   AmbisonicsMonoConfig mono_config;
-  RETURN_IF_NOT_OK(
-      Uint32ToUint8(output_channel_count, mono_config.output_channel_count));
-  RETURN_IF_NOT_OK(Uint32ToUint8(substream_count, mono_config.substream_count));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "AmbisonicsMonoConfig.output_channel_count", output_channel_count,
+      mono_config.output_channel_count));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "AmbisonicsMonoConfig.substream_count", substream_count,
+      mono_config.substream_count));
   mono_config.channel_mapping.resize(output_channel_count);
   config.ambisonics_config = mono_config;
   config_ = config;
@@ -691,12 +697,15 @@ absl::Status AudioElementObu::InitializeAmbisonicsProjection(
   config.ambisonics_mode = AmbisonicsConfig::kAmbisonicsModeProjection;
 
   AmbisonicsProjectionConfig projection_config;
-  RETURN_IF_NOT_OK(Uint32ToUint8(output_channel_count,
-                                 projection_config.output_channel_count));
-  RETURN_IF_NOT_OK(
-      Uint32ToUint8(substream_count, projection_config.substream_count));
-  RETURN_IF_NOT_OK(Uint32ToUint8(coupled_substream_count,
-                                 projection_config.coupled_substream_count));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "AmbisonicsProjectionConfig.output_channel_count", output_channel_count,
+      projection_config.output_channel_count));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "AmbisonicsProjectionConfig.substream_count", substream_count,
+      projection_config.substream_count));
+  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
+      "AmbisonicsProjectionConfig.coupled_substream_count",
+      coupled_substream_count, projection_config.coupled_substream_count));
   const size_t num_elements = GetNumDemixingMatrixElements(projection_config);
   projection_config.demixing_matrix.resize(num_elements);
   config.ambisonics_config = projection_config;
@@ -747,8 +756,8 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
   RETURN_IF_NOT_OK(wb.WriteUleb128(num_substreams_));
 
   // Loop to write the audio substream IDs portion of the obu.
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "audio_substream_ids", audio_substream_ids_.size(), num_substreams_));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "audio_substream_ids", audio_substream_ids_, num_substreams_));
   for (const auto& audio_substream_id : audio_substream_ids_) {
     RETURN_IF_NOT_OK(wb.WriteUleb128(audio_substream_id));
   }
@@ -756,8 +765,8 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
   RETURN_IF_NOT_OK(wb.WriteUleb128(num_parameters_));
 
   // Loop to write the parameter portion of the obu.
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "num_parameters", audio_element_params_.size(), num_parameters_));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "num_parameters", audio_element_params_, num_parameters_));
   for (const auto& audio_element_param : audio_element_params_) {
     RETURN_IF_NOT_OK(
         ValidateAndWriteAudioElementParam(audio_element_param, wb));
@@ -775,9 +784,9 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
       const auto& extension_config = std::get<ExtensionConfig>(config_);
       RETURN_IF_NOT_OK(
           wb.WriteUleb128(extension_config.audio_element_config_size));
-      RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
+      RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
           "audio_element_config_bytes",
-          extension_config.audio_element_config_bytes.size(),
+          extension_config.audio_element_config_bytes,
           extension_config.audio_element_config_size));
       RETURN_IF_NOT_OK(
           wb.WriteUint8Vector(extension_config.audio_element_config_bytes));
@@ -805,8 +814,8 @@ absl::Status AudioElementObu::ReadAndValidatePayloadDerived(
     RETURN_IF_NOT_OK(rb.ReadULeb128(audio_substream_id));
     audio_substream_ids_.push_back(audio_substream_id);
   }
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "audio_substream_ids", audio_substream_ids_.size(), num_substreams_));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "audio_substream_ids", audio_substream_ids_, num_substreams_));
 
   RETURN_IF_NOT_OK(rb.ReadULeb128(num_parameters_));
 
@@ -817,8 +826,8 @@ absl::Status AudioElementObu::ReadAndValidatePayloadDerived(
         audio_element_param.ReadAndValidate(audio_element_id_, rb));
     audio_element_params_.push_back(std::move(audio_element_param));
   }
-  RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
-      "num_parameters", audio_element_params_.size(), num_parameters_));
+  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
+      "num_parameters", audio_element_params_, num_parameters_));
 
   // Write the specific `audio_element_type`'s config.
   switch (audio_element_type_) {
@@ -840,9 +849,9 @@ absl::Status AudioElementObu::ReadAndValidatePayloadDerived(
         extension_config.audio_element_config_bytes.push_back(config_bytes);
       }
 
-      RETURN_IF_NOT_OK(ValidateVectorSizeEqual(
+      RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
           "audio_element_config_bytes",
-          extension_config.audio_element_config_bytes.size(),
+          extension_config.audio_element_config_bytes,
           extension_config.audio_element_config_size));
 
       return absl::OkStatus();

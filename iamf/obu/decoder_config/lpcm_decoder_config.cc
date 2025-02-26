@@ -16,9 +16,9 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 
 namespace iamf_tools {
@@ -85,7 +85,7 @@ bool LpcmDecoderConfig::IsLittleEndian() const {
 }
 
 absl::Status LpcmDecoderConfig::Validate(int16_t audio_roll_distance) const {
-  RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
+  MAYBE_RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
   RETURN_IF_NOT_OK(ValidatePayload(*this));
 
   return absl::OkStatus();

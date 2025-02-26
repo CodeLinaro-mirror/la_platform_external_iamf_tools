@@ -15,14 +15,16 @@
 #include <cstdint>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "iamf/cli/codec/decoder_base.h"
 #include "iamf/cli/codec/opus_utils.h"
-#include "iamf/cli/proto/codec_config.pb.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/sample_processing_utils.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "include/opus.h"
@@ -33,7 +35,7 @@ namespace iamf_tools {
 namespace {
 
 // Performs validation for values that this implementation assumes are
-// restricted because they are restricted in IAMF V1.
+// restricted because they are restricted in IAMF v1.1.0.
 absl::Status ValidateDecoderConfig(
     const OpusDecoderConfig& opus_decoder_config) {
   // Validate the input. Reject values that would need to be added to this
@@ -41,7 +43,7 @@ absl::Status ValidateDecoderConfig(
   if (opus_decoder_config.output_gain_ != 0 ||
       opus_decoder_config.mapping_family_ != 0) {
     const auto error_message = absl::StrCat(
-        "IAMF V1 expects output_gain: ", opus_decoder_config.output_gain_,
+        "IAMF v1.1.0 expects output_gain: ", opus_decoder_config.output_gain_,
         " and mapping_family: ", opus_decoder_config.mapping_family_,
         " to be 0.");
     return absl::InvalidArgumentError(error_message);
@@ -67,7 +69,7 @@ OpusDecoder::~OpusDecoder() {
 }
 
 absl::Status OpusDecoder::Initialize() {
-  RETURN_IF_NOT_OK(ValidateDecoderConfig(opus_decoder_config_));
+  MAYBE_RETURN_IF_NOT_OK(ValidateDecoderConfig(opus_decoder_config_));
 
   // Initialize the decoder.
   int opus_error_code;
@@ -80,14 +82,14 @@ absl::Status OpusDecoder::Initialize() {
 }
 
 absl::Status OpusDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame,
-    std::vector<std::vector<int32_t>>& decoded_samples) {
+    const std::vector<uint8_t>& encoded_frame) {
+  num_valid_ticks_ = 0;
+
   // `opus_decode_float` decodes to `float` samples with channels interlaced.
   // Typically these values are in the range of [-1, +1] (always for
   // `iamf_tools`-encoded data). Values outside of that range will be clipped in
   // `NormalizedFloatToInt32`.
-  std::vector<float> output_pcm_float;
-  output_pcm_float.resize(num_samples_per_channel_ * num_channels_);
+  std::vector<float> output_pcm_float(num_samples_per_channel_ * num_channels_);
 
   // Transform the data and feed it to the decoder.
   std::vector<unsigned char> input_data(encoded_frame.size());
@@ -104,25 +106,17 @@ absl::Status OpusDecoder::DecodeAudioFrame(
     return OpusErrorCodeToAbslStatus(num_output_samples,
                                      "Failed to decode Opus frame.");
   }
-  output_pcm_float.resize(num_output_samples * num_channels_);
   LOG_FIRST_N(INFO, 3) << "Opus decoded " << num_output_samples
                        << " samples per channel. With " << num_channels_
                        << " channels.";
-  // Convert data to channels arranged in (time, channel) axes. There can only
-  // be one or two channels.
-  decoded_samples.reserve(decoded_samples.size() +
-                          output_pcm_float.size() / num_channels_);
-  for (int i = 0; i < output_pcm_float.size(); i += num_channels_) {
-    std::vector<int32_t> time_sample(num_channels_, 0);
-    // Grab samples in all channels associated with this time instant.
-    for (int j = 0; j < num_channels_; ++j) {
-      RETURN_IF_NOT_OK(NormalizedFloatingPointToInt32(output_pcm_float[i + j],
-                                                      time_sample[j]));
-    }
-    decoded_samples.push_back(time_sample);
-  }
-
-  return absl::OkStatus();
+  // Convert the interleaved data to (time, channel) axes.
+  return ConvertInterleavedToTimeChannel(
+      absl::MakeConstSpan(output_pcm_float)
+          .first(num_output_samples * num_channels_),
+      num_channels_,
+      absl::AnyInvocable<absl::Status(float, int32_t&) const>(
+          NormalizedFloatingPointToInt32<float>),
+      decoded_samples_, num_valid_ticks_);
 }
 
 }  // namespace iamf_tools

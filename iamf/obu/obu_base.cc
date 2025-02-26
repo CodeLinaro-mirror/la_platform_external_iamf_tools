@@ -18,9 +18,10 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "iamf/cli/leb_generator.h"
-#include "iamf/common/macros.h"
+#include "absl/types/span.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
+#include "iamf/common/utils/macros.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
 
@@ -68,15 +69,11 @@ absl::Status ObuBase::ValidateAndWriteObu(WriteBitBuffer& final_wb) const {
 
 absl::Status ObuBase::ReadAndValidatePayload(int64_t payload_size_bytes,
                                              ReadBitBuffer& rb) {
-  // TODO(b/359588455): Use `ReadBitBuffer::Seek` and `Tell`.
-  const int64_t expected_final_position =
-      (rb.source_bit_offset() - (rb.buffer_size() - rb.buffer_bit_offset())) +
-      (payload_size_bytes * 8);
+  const int64_t expected_final_position = rb.Tell() + (payload_size_bytes * 8);
 
-  // Read the known portion of the payload
+  // Read the known portion of the payload.
   RETURN_IF_NOT_OK(ReadAndValidatePayloadDerived(payload_size_bytes, rb));
-  const int64_t final_position =
-      rb.source_bit_offset() - (rb.buffer_size() - rb.buffer_bit_offset());
+  const int64_t final_position = rb.Tell();
 
   // Read the remaining of the payload (if any) into the footer.
   if (expected_final_position == final_position) {
@@ -90,7 +87,8 @@ absl::Status ObuBase::ReadAndValidatePayload(int64_t payload_size_bytes,
     }
     const int64_t num_bytes_to_read =
         (expected_final_position - final_position) / 8;
-    return rb.ReadUint8Vector(num_bytes_to_read, footer_);
+    footer_.resize(num_bytes_to_read);
+    return rb.ReadUint8Span(absl::MakeSpan(footer_));
   } else {
     // The dispatched function read past the end of the payload. Something could
     // be inconsistent between the parsing logic and the claimed OBU size.

@@ -16,10 +16,11 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/common/read_bit_buffer.h"
-#include "iamf/common/tests/test_utils.h"
+#include "iamf/common/utils/tests/test_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 
 namespace iamf_tools {
@@ -290,9 +291,10 @@ TEST(ReadAndValidate, VaryAllLegalFields) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 2);
@@ -316,9 +318,10 @@ TEST(ReadAndValidate, MaxAllLegalFields) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 15);
@@ -342,9 +345,10 @@ TEST(ReadAndValidate, MinorVersion) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 2);
@@ -366,10 +370,11 @@ TEST(ReadAndValidate, IllegalVersionZero) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_FALSE(opus_decoder_config
                    .ReadAndValidate(num_samples_per_frame, audio_roll_distance,
-                                    read_buffer)
+                                    *read_buffer)
                    .ok());
 }
 
@@ -389,10 +394,11 @@ TEST(ReadAndValidate, IllegalVersionFuture) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_FALSE(opus_decoder_config
                    .ReadAndValidate(num_samples_per_frame, audio_roll_distance,
-                                    read_buffer)
+                                    *read_buffer)
                    .ok());
 }
 
@@ -412,10 +418,11 @@ TEST(ReadAndValidate, IllegalVersionmax) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_FALSE(opus_decoder_config
                    .ReadAndValidate(num_samples_per_frame, audio_roll_distance,
-                                    read_buffer)
+                                    *read_buffer)
                    .ok());
 }
 
@@ -435,10 +442,11 @@ TEST(ReadAndValidate, IllegalChannelCountZero) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_FALSE(opus_decoder_config
                    .ReadAndValidate(num_samples_per_frame, audio_roll_distance,
-                                    read_buffer)
+                                    *read_buffer)
                    .ok());
 }
 
@@ -458,9 +466,10 @@ TEST(ReadAndValidate, ReadPreSkip312) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 1);
@@ -483,9 +492,10 @@ TEST(ReadAndValidate, ReadSampleRate48kHz) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 1);
@@ -508,9 +518,10 @@ TEST(ReadAndValidate, ReadSampleRate192kHz) {
                                  0, 0,
                                  // `mapping_family`.
                                  OpusDecoderConfig::kMappingFamily};
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   EXPECT_THAT(opus_decoder_config.ReadAndValidate(
-                  num_samples_per_frame, audio_roll_distance, read_buffer),
+                  num_samples_per_frame, audio_roll_distance, *read_buffer),
               IsOk());
 
   EXPECT_EQ(opus_decoder_config.version_, 1);

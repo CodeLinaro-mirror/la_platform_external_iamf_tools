@@ -17,10 +17,11 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/common/read_bit_buffer.h"
-#include "iamf/common/tests/test_utils.h"
+#include "iamf/common/utils/tests/test_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 
 namespace iamf_tools {
@@ -275,10 +276,11 @@ TEST(ReadAndValidateTest, ReadAllFields) {
       0x00, 0x00, 0xbb, 0x80  // sample_rate
   };
   int16_t audio_roll_distance = 0;
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   LpcmDecoderConfig lpcm_decoder_config;
   EXPECT_THAT(
-      lpcm_decoder_config.ReadAndValidate(audio_roll_distance, read_buffer),
+      lpcm_decoder_config.ReadAndValidate(audio_roll_distance, *read_buffer),
       IsOk());
   LpcmDecoderConfig expected_lpcm_decoder_config = {
       LpcmDecoderConfig::kLpcmLittleEndian, 16, 48000};
@@ -292,10 +294,11 @@ TEST(ReadAndValidateTest, RejectInvalidAudioRollDistance) {
       0x00, 0x00, 0xbb, 0x80  // sample_rate
   };
   int16_t audio_roll_distance = 1;
-  ReadBitBuffer read_buffer(1024, &source);
+  auto read_buffer = MemoryBasedReadBitBuffer::CreateFromSpan(
+      1024, absl::MakeConstSpan(source));
   LpcmDecoderConfig lpcm_decoder_config;
   EXPECT_FALSE(
-      lpcm_decoder_config.ReadAndValidate(audio_roll_distance, read_buffer)
+      lpcm_decoder_config.ReadAndValidate(audio_roll_distance, *read_buffer)
           .ok());
 }
 
