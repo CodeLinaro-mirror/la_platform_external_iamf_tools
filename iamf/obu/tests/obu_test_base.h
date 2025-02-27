@@ -17,8 +17,8 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "iamf/cli/leb_generator.h"
-#include "iamf/common/tests/test_utils.h"
+#include "iamf/common/leb_generator.h"
+#include "iamf/common/utils/tests/test_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/obu_header.h"
 

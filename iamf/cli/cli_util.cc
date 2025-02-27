@@ -11,7 +11,6 @@
  */
 #include "iamf/cli/cli_util.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -29,17 +28,12 @@
 #include "absl/strings/string_view.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
-#include "iamf/cli/lookup_tables.h"
-#include "iamf/cli/proto/obu_header.pb.h"
-#include "iamf/cli/proto/param_definitions.pb.h"
-#include "iamf/cli/proto/parameter_data.pb.h"
-#include "iamf/common/macros.h"
-#include "iamf/common/obu_util.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/sample_processing_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
-#include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/mix_presentation.h"
-#include "iamf/obu/obu_header.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
 
@@ -95,89 +89,31 @@ absl::Status GetPerIdMetadata(
 
 }  // namespace
 
-absl::Status CopyParamDefinition(
-    const iamf_tools_cli_proto::ParamDefinition& input_param_definition,
-    ParamDefinition& param_definition) {
-  param_definition.parameter_id_ = input_param_definition.parameter_id();
-  param_definition.parameter_rate_ = input_param_definition.parameter_rate();
-
-  param_definition.param_definition_mode_ =
-      input_param_definition.param_definition_mode();
-  RETURN_IF_NOT_OK(Uint32ToUint8(input_param_definition.reserved(),
-                                 param_definition.reserved_));
-  param_definition.duration_ = input_param_definition.duration();
-  param_definition.constant_subblock_duration_ =
-      input_param_definition.constant_subblock_duration();
-
-  if (input_param_definition.constant_subblock_duration() != 0) {
-    // Nothing else to be done. Return.
-    return absl::OkStatus();
-  }
-
-  if (input_param_definition.num_subblocks() <
-      input_param_definition.subblock_durations_size()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Expected at least ", input_param_definition.num_subblocks(),
-        "subblock durations for parameter id = ",
-        input_param_definition.parameter_id()));
-  }
-
-  param_definition.InitializeSubblockDurations(
-      static_cast<DecodedUleb128>(input_param_definition.num_subblocks()));
-  for (int i = 0; i < input_param_definition.num_subblocks(); ++i) {
-    RETURN_IF_NOT_OK(param_definition.SetSubblockDuration(
-        i, input_param_definition.subblock_durations(i)));
-  }
-
-  return absl::OkStatus();
+bool IsStereoLayout(const Layout& layout) {
+  const Layout kStereoLayout = {
+      .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
+      .specific_layout = LoudspeakersSsConventionLayout{
+          .sound_system = LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0}};
+  return layout == kStereoLayout;
 }
 
-ObuHeader GetHeaderFromMetadata(
-    const iamf_tools_cli_proto::ObuHeaderMetadata& input_obu_header) {
-  std::vector<uint8_t> extension_header_bytes(
-      input_obu_header.extension_header_bytes().size());
-  std::transform(input_obu_header.extension_header_bytes().begin(),
-                 input_obu_header.extension_header_bytes().end(),
-                 extension_header_bytes.begin(),
-                 [](char c) { return static_cast<uint8_t>(c); });
-
-  return ObuHeader{
-      .obu_redundant_copy = input_obu_header.obu_redundant_copy(),
-      .obu_trimming_status_flag = input_obu_header.obu_trimming_status_flag(),
-      .obu_extension_flag = input_obu_header.obu_extension_flag(),
-      .num_samples_to_trim_at_end =
-          input_obu_header.num_samples_to_trim_at_end(),
-      .num_samples_to_trim_at_start =
-          input_obu_header.num_samples_to_trim_at_start(),
-      .extension_header_size = input_obu_header.extension_header_size(),
-      .extension_header_bytes = extension_header_bytes};
-}
-
-absl::Status CopyDemixingInfoParameterData(
-    const iamf_tools_cli_proto::DemixingInfoParameterData&
-        input_demixing_info_parameter_data,
-    DemixingInfoParameterData& obu_demixing_param_data) {
-  static const auto kProtoToInternalDMixPMode =
-      BuildStaticMapFromPairs(LookupTables::kProtoAndInternalDMixPModes);
-
-  RETURN_IF_NOT_OK(CopyFromMap(*kProtoToInternalDMixPMode,
-                               input_demixing_info_parameter_data.dmixp_mode(),
-                               "Internal version of proto `dmixp_mode`",
-                               obu_demixing_param_data.dmixp_mode));
-
-  RETURN_IF_NOT_OK(Uint32ToUint8(input_demixing_info_parameter_data.reserved(),
-                                 obu_demixing_param_data.reserved));
-
-  return absl::OkStatus();
-}
-
-absl::Status CopyDMixPMode(DemixingInfoParameterData::DMixPMode obu_dmixp_mode,
-                           iamf_tools_cli_proto::DMixPMode& dmixp_mode) {
-  static const auto kInternalToProtoDMixPMode = BuildStaticMapFromInvertedPairs(
-      LookupTables::kProtoAndInternalDMixPModes);
-
-  return CopyFromMap(*kInternalToProtoDMixPMode, obu_dmixp_mode,
-                     "Proto version of internal `DMixPMode`", dmixp_mode);
+absl::Status GetIndicesForLayout(
+    const std::vector<MixPresentationSubMix>& mix_presentation_sub_mixes,
+    const Layout& layout, int& output_submix_index, int& output_layout_index) {
+  for (int s = 0; s < mix_presentation_sub_mixes.size(); s++) {
+    const auto& sub_mix = mix_presentation_sub_mixes[s];
+    for (int l = 0; l < sub_mix.num_layouts; l++) {
+      const auto& mix_presentation_layout = sub_mix.layouts[l];
+      if (layout == mix_presentation_layout.loudness_layout) {
+        output_submix_index = s;
+        output_layout_index = l;
+        return absl::OkStatus();
+      }
+    }
+  }
+  return absl::InvalidArgumentError(
+      "No match found in the mix presentation submixes for the desired "
+      "layout.");
 }
 
 absl::Status CollectAndValidateParamDefinitions(
@@ -263,8 +199,8 @@ GenerateParamIdToMetadataMap(
   return parameter_id_to_metadata;
 }
 
-absl::Status CompareTimestamps(int32_t expected_timestamp,
-                               int32_t actual_timestamp,
+absl::Status CompareTimestamps(InternalTimestamp expected_timestamp,
+                               InternalTimestamp actual_timestamp,
                                absl::string_view prompt) {
   if (expected_timestamp != actual_timestamp) {
     return absl::InvalidArgumentError(
@@ -288,8 +224,8 @@ absl::Status WritePcmFrameToBuffer(
 
   buffer.resize(num_samples * (bit_depth / 8));
 
-  // The input frame is arranged in (time, channel) axes. Interlace these in the
-  // output PCM and skip over any trimmed samples.
+  // The input frame is arranged in (time, channel) axes. Interlace these in
+  // the output PCM and skip over any trimmed samples.
   int write_position = 0;
   for (int t = samples_to_trim_at_start;
        t < frame.size() - samples_to_trim_at_end; t++) {

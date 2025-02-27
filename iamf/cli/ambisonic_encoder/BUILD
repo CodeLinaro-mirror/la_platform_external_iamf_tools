@@ -1,5 +1,4 @@
-package(default_visibility = ["//iamf:__subpackages__"])
-
+# keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
 cc_library(
     name = "ambisonic_encoder",
     srcs = [
@@ -12,7 +11,7 @@ cc_library(
         ":associated_legendre_polynomials_generator",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log:check",
-        "@eigen3",
+        "@eigen",
     ],
 )
 
@@ -38,3 +37,5 @@ cc_library(
         "@com_google_absl//absl/log:check",
     ],
 )
+
+# keep-sorted end
