@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -37,7 +38,7 @@ absl::Status ObuBase::ValidateAndWriteObu(WriteBitBuffer& final_wb) const {
   // Write the payload to a temporary buffer using the virtual function.
   RETURN_IF_NOT_OK(ValidateAndWritePayload(temp_wb));
   // Write the footer to the temporary buffer.
-  RETURN_IF_NOT_OK(temp_wb.WriteUint8Span(absl::MakeConstSpan(footer_)));
+  RETURN_IF_NOT_OK(temp_wb.WriteUint8Vector(footer_));
   if (!temp_wb.IsByteAligned()) {
     // The header stores the size of the OBU in bytes.
     return absl::InvalidArgumentError(absl::StrCat(
@@ -53,8 +54,7 @@ absl::Status ObuBase::ValidateAndWriteObu(WriteBitBuffer& final_wb) const {
       final_wb.bit_offset() + payload_size_bytes * 8;
 
   // Copy over the payload into the final write buffer.
-  RETURN_IF_NOT_OK(
-      final_wb.WriteUint8Span(absl::MakeConstSpan(temp_wb.bit_buffer())));
+  RETURN_IF_NOT_OK(final_wb.WriteUint8Vector(temp_wb.bit_buffer()));
 
   // Validate the write buffer is at the expected location expected after
   // writing the payload.

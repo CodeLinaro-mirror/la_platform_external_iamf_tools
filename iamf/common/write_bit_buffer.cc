@@ -22,7 +22,6 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "absl/types/span.h"
 #include "iamf/common/leb_generator.h"
 #include "iamf/common/utils/bit_buffer_util.h"
 #include "iamf/common/utils/macros.h"
@@ -207,7 +206,7 @@ absl::Status WriteBitBuffer::WriteUleb128(const DecodedUleb128 data) {
   // Transform data to a temporary buffer. Then write it.
   std::vector<uint8_t> buffer;
   RETURN_IF_NOT_OK(leb_generator_.Uleb128ToUint8Vector(data, buffer));
-  RETURN_IF_NOT_OK(WriteUint8Span(absl::MakeConstSpan(buffer)));
+  RETURN_IF_NOT_OK(WriteUint8Vector(buffer));
   return absl::OkStatus();
 }
 
@@ -229,10 +228,11 @@ absl::Status WriteBitBuffer::WriteIso14496_1Expanded(
   // Ensure the last byte signals the end of the data.
   buffer.back() &= kSizeOfInstanceMask;
 
-  return WriteUint8Span(absl::MakeConstSpan(buffer));
+  return WriteUint8Vector(buffer);
 }
 
-absl::Status WriteBitBuffer::WriteUint8Span(absl::Span<const uint8_t> data) {
+absl::Status WriteBitBuffer::WriteUint8Vector(
+    const std::vector<uint8_t>& data) {
   if (IsByteAligned()) {
     // In the common case we can just copy all of the data over and update
     // `bit_offset_`.

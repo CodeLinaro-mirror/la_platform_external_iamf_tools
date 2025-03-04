@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -151,7 +152,7 @@ absl::Status ValidateUniqueParamDefinitionType(
       collected_param_definition_types;
   collected_param_definition_types.reserve(audio_element_params.size());
   for (const auto& param : audio_element_params) {
-    collected_param_definition_types.push_back(param.GetType());
+    collected_param_definition_types.push_back(param.param_definition_type);
   }
 
   return ValidateUnique(collected_param_definition_types.begin(),
@@ -176,22 +177,17 @@ absl::Status ValidateOutputChannelCount(const uint8_t channel_count) {
 // `AudioElementObu`.
 absl::Status ValidateAndWriteAudioElementParam(const AudioElementParam& param,
                                                WriteBitBuffer& wb) {
-  const auto param_definition_type = param.GetType();
-
   // Write the main portion of the `AudioElementParam`.
-  RETURN_IF_NOT_OK(
-      wb.WriteUleb128(static_cast<DecodedUleb128>(param_definition_type)));
+  RETURN_IF_NOT_OK(wb.WriteUleb128(
+      static_cast<DecodedUleb128>(param.param_definition_type)));
 
-  if (param_definition_type == ParamDefinition::kParameterDefinitionMixGain) {
+  if (param.param_definition_type ==
+      ParamDefinition::kParameterDefinitionMixGain) {
     return absl::InvalidArgumentError(
         "Mix Gain parameter type is explicitly forbidden for "
         "Audio Element OBUs.");
   }
-  RETURN_IF_NOT_OK(std::visit(
-      [&wb](auto& param_definition) {
-        return param_definition.ValidateAndWrite(wb);
-      },
-      param.param_definition));
+  RETURN_IF_NOT_OK(param.param_definition->ValidateAndWrite(wb));
 
   return absl::OkStatus();
 }
@@ -243,8 +239,7 @@ absl::Status ValidateAndWriteAmbisonicsMono(
       wb.WriteUnsignedLiteral(mono_config.output_channel_count, 8));
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(mono_config.substream_count, 8));
 
-  RETURN_IF_NOT_OK(
-      wb.WriteUint8Span(absl::MakeConstSpan(mono_config.channel_mapping)));
+  RETURN_IF_NOT_OK(wb.WriteUint8Vector(mono_config.channel_mapping));
 
   return absl::OkStatus();
 }
@@ -363,9 +358,8 @@ absl::Status AudioElementParam::ReadAndValidate(uint32_t audio_element_id,
   // Reads the main portion of the `AudioElementParam`.
   DecodedUleb128 param_definition_type_uleb;
   RETURN_IF_NOT_OK(rb.ReadULeb128(param_definition_type_uleb));
-  const auto param_definition_type =
-      static_cast<ParamDefinition::ParameterDefinitionType>(
-          param_definition_type_uleb);
+  param_definition_type = static_cast<ParamDefinition::ParameterDefinitionType>(
+      param_definition_type_uleb);
 
   switch (param_definition_type) {
     case ParamDefinition::kParameterDefinitionMixGain: {
@@ -374,22 +368,24 @@ absl::Status AudioElementParam::ReadAndValidate(uint32_t audio_element_id,
           "OBUs.");
     }
     case ParamDefinition::kParameterDefinitionReconGain: {
-      auto& recon_gain_param_definition =
-          param_definition.emplace<ReconGainParamDefinition>(audio_element_id);
-      RETURN_IF_NOT_OK(recon_gain_param_definition.ReadAndValidate(rb));
+      auto recon_gain_param_definition =
+          std::make_unique<ReconGainParamDefinition>(audio_element_id);
+      RETURN_IF_NOT_OK(recon_gain_param_definition->ReadAndValidate(rb));
+      param_definition = std::move(recon_gain_param_definition);
       return absl::OkStatus();
     }
     case ParamDefinition::kParameterDefinitionDemixing: {
-      auto& demixing_param_definition =
-          param_definition.emplace<DemixingParamDefinition>();
-      RETURN_IF_NOT_OK(demixing_param_definition.ReadAndValidate(rb));
+      auto demixing_param_definition =
+          std::make_unique<DemixingParamDefinition>();
+      RETURN_IF_NOT_OK(demixing_param_definition->ReadAndValidate(rb));
+      param_definition = std::move(demixing_param_definition);
       return absl::OkStatus();
     }
     default:
-      auto& extended_param_definition =
-          param_definition.emplace<ExtendedParamDefinition>(
-              param_definition_type);
-      RETURN_IF_NOT_OK(extended_param_definition.ReadAndValidate(rb));
+      auto extended_param_definition =
+          std::make_unique<ExtendedParamDefinition>(param_definition_type);
+      RETURN_IF_NOT_OK(extended_param_definition->ReadAndValidate(rb));
+      param_definition = std::move(extended_param_definition);
       return absl::OkStatus();
   }
 }
@@ -607,6 +603,25 @@ absl::StatusOr<AudioElementObu> AudioElementObu::CreateFromBuffer(
   return audio_element_obu;
 }
 
+AudioElementObu AudioElementObu::Clone(const AudioElementObu& other) {
+  AudioElementObu new_obu(other.header_, other.audio_element_id_,
+                          other.audio_element_type_, other.reserved_,
+                          other.codec_config_id_);
+  new_obu.InitializeAudioSubstreams(other.num_substreams_);
+  new_obu.audio_substream_ids_ = other.audio_substream_ids_;
+  new_obu.InitializeParams(other.num_parameters_);
+  for (int i = 0; i < other.audio_element_params_.size(); ++i) {
+    new_obu.audio_element_params_[i].param_definition_type =
+        other.audio_element_params_[i].param_definition_type;
+    // Clone the underlying specific parameter definition.
+    new_obu.audio_element_params_[i].param_definition =
+        other.audio_element_params_[i].param_definition->Clone();
+  }
+  new_obu.config_ = other.config_;
+
+  return new_obu;
+}
+
 void AudioElementObu::InitializeAudioSubstreams(DecodedUleb128 num_substreams) {
   num_substreams_ = num_substreams;
   audio_substream_ids_.resize(static_cast<size_t>(num_substreams));
@@ -614,7 +629,7 @@ void AudioElementObu::InitializeAudioSubstreams(DecodedUleb128 num_substreams) {
 
 void AudioElementObu::InitializeParams(const DecodedUleb128 num_parameters) {
   num_parameters_ = num_parameters;
-  audio_element_params_.reserve(static_cast<size_t>(num_parameters));
+  audio_element_params_.resize(static_cast<size_t>(num_parameters));
 }
 
 // Initializes the scalable channel portion of an `AudioElementObu`.
@@ -719,8 +734,9 @@ void AudioElementObu::PrintObu() const {
   LOG(INFO) << "  num_parameters= " << num_parameters_;
   for (int i = 0; i < num_parameters_; ++i) {
     LOG(INFO) << "  params[" << i << "]";
-    std::visit([](const auto& param_definition) { param_definition.Print(); },
-               audio_element_params_[i].param_definition);
+    LOG(INFO) << "    param_definition_type= "
+              << absl::StrCat(audio_element_params_[i].param_definition_type);
+    audio_element_params_[i].param_definition->Print();
   }
   if (audio_element_type_ == kAudioElementChannelBased) {
     LogChannelBased(std::get<ScalableChannelLayoutConfig>(config_));
@@ -750,7 +766,7 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
 
   // Loop to write the parameter portion of the obu.
   RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
-      "audio_element_params_", audio_element_params_, num_parameters_));
+      "num_parameters", audio_element_params_, num_parameters_));
   for (const auto& audio_element_param : audio_element_params_) {
     RETURN_IF_NOT_OK(
         ValidateAndWriteAudioElementParam(audio_element_param, wb));
@@ -772,8 +788,8 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
           "audio_element_config_bytes",
           extension_config.audio_element_config_bytes,
           extension_config.audio_element_config_size));
-      RETURN_IF_NOT_OK(wb.WriteUint8Span(
-          absl::MakeConstSpan(extension_config.audio_element_config_bytes)));
+      RETURN_IF_NOT_OK(
+          wb.WriteUint8Vector(extension_config.audio_element_config_bytes));
 
       return absl::OkStatus();
     }

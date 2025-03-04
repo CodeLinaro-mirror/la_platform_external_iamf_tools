@@ -17,15 +17,11 @@
 
 #include <cstdint>
 #include <memory>
-#include <queue>
-#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "iamf/cli/obu_processor.h"
-#include "iamf/common/read_bit_buffer.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/types.h"
 namespace iamf_tools {
@@ -67,7 +63,7 @@ class IamfDecoder {
    * sample usage of the API.
    *
    * Reconfigurable Standalone IAMF Usage
-   * IamfDecoder streaming_decoder = IamfDecoder::Create();
+   * IamfDecoder streaming_decoder;
    * for chunk of data in iamf stream:
    *    Decode()
    *    if (IsDescriptorProcessingComplete()) {
@@ -78,39 +74,18 @@ class IamfDecoder {
    *    }
    * for chunk of data in iamf stream:
    *    Decode()
-   *    while (IsTemporalUnitAvailable()) {
+   *    while (output_temporal_unit!=empty()) {
    *      GetOutputTemporalUnit(output_temporal_unit)
    *      Playback(output_temporal_unit)
    *    }
-   * while (IsTemporalUnitAvailable()) {
+   * while (output_temporal_unit!=empty()) {
    *      Flush(output_temporal_unit)
    *      Playback(output_temporal_unit)
    *  }
    * Close();
    */
 
-  /*!\brief Creates an IamfDecoder.
-   *
-   * This function should be used for pure streaming applications in which the
-   * descriptor OBUs are not known in advance.
-   *
-   * \return IamfDecoder upon success. Other specific statuses on
-   *         failure.
-   */
-  static absl::StatusOr<IamfDecoder> Create();
-
-  /*!\brief Creates an IamfDecoder from a known set of descriptor OBUs.
-   *
-   * This function should be used for applications in which the descriptor OBUs
-   * are known in advance.
-   *
-   * \param descriptor_obus Bitstream containing all the descriptor OBUs and
-   *        only descriptor OBUs.
-   * \return IamfDecoder upon success. Other specific statuses on
-   *         failure.
-   */
-  static absl::StatusOr<IamfDecoder> CreateFromDescriptors(
-      absl::Span<const uint8_t> descriptor_obus);
+  IamfDecoder() = default;
 
   /*!\brief Configures the decoder with the desired mix presentation.
    *
@@ -163,22 +138,12 @@ class IamfDecoder {
    * user should call Decode() again with more data.
    *
    * \param output_decoded_temporal_unit Output parameter for the next temporal
-   *        unit of decoded audio. The outer vector corresponds to a tick, while
-   *        the inner vector corresponds to a channel.
+   *        unit of decoded audio.
    * \return `absl::OkStatus()` upon success. Other specific statuses on
    *         failure.
    */
   absl::Status GetOutputTemporalUnit(
-      std::vector<std::vector<int32_t>>& output_decoded_temporal_unit);
-
-  /*!\brief Returns true iff a decoded temporal unit is available.
-   *
-   * This function can be used to determine when the user should call
-   * GetOutputTemporalUnit().
-   *
-   * \return true iff a decoded temporal unit is available.
-   */
-  bool IsTemporalUnitAvailable();
+      std::vector<uint8_t>& output_decoded_temporal_unit);
 
   /*!\brief Returns true iff the descriptor OBUs have been parsed.
    *
@@ -233,9 +198,8 @@ class IamfDecoder {
    * \return `absl::OkStatus()` upon success. Other specific statuses on
    *         failure.
    */
-  absl::Status Flush(
-      std::vector<std::vector<int32_t>>& output_decoded_temporal_unit,
-      bool& output_is_done);
+  absl::Status Flush(std::vector<uint8_t>& output_decoded_temporal_unit,
+                     bool& output_is_done);
 
   /*!\brief Closes the decoder.
    *
@@ -249,29 +213,9 @@ class IamfDecoder {
   absl::Status Close();
 
  private:
-  enum State { kAcceptingData, kFlushCalled };
-
-  State state_ = kAcceptingData;
-  /*!\brief Private constructor only used by Create functions.
-   *
-   * \param read_bit_buffer Read bit buffer to use for reading data. Expected to
-   *        not be null.
-   */
-  IamfDecoder(std::unique_ptr<StreamBasedReadBitBuffer> read_bit_buffer)
-      : read_bit_buffer_(std::move(read_bit_buffer)) {}
-
   // Used to process descriptor OBUs and temporal units. Is only created after
   // the descriptor OBUs have been parsed.
   std::unique_ptr<ObuProcessor> obu_processor_;
-
-  // Buffer that is filled with data from Decode().
-  std::unique_ptr<StreamBasedReadBitBuffer> read_bit_buffer_;
-
-  // Rendered PCM samples. Each element in the queue corresponds to a
-  // temporal unit. A temporal unit will never be partially filled, so the
-  // number of elements in the outer vector is equal to the number of decoded
-  // temporal units currently available.
-  std::queue<std::vector<std::vector<int32_t>>> rendered_pcm_samples_;
 };
 }  // namespace iamf_tools
 

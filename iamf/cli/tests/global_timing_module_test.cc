@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
@@ -64,7 +65,7 @@ class GlobalTimingModuleTest : public ::testing::Test {
         parameter_id_to_param_definition_pointer = {};
     for (const auto& [parameter_id, param_definition] : param_definitions_) {
       parameter_id_to_param_definition_pointer[parameter_id] =
-          &param_definition;
+          param_definition.get();
     }
 
     return global_timing_module_->Initialize(
@@ -107,7 +108,8 @@ class GlobalTimingModuleTest : public ::testing::Test {
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus_ = {};
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements_ =
       {};
-  absl::flat_hash_map<DecodedUleb128, ParamDefinition> param_definitions_ = {};
+  absl::flat_hash_map<DecodedUleb128, std::unique_ptr<ParamDefinition>>
+      param_definitions_ = {};
 };
 
 TEST_F(GlobalTimingModuleTest, OneSubstream) {

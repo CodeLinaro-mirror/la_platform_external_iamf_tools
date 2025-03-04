@@ -74,6 +74,7 @@ TEST(CreateFromBuffer, InvalidWhenObuSizeIsTooSmallToReadParameterId) {
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
       .param_definition = MixGainParamDefinition(),
   };
   per_id_metadata[kParameterId].param_definition.parameter_id_ = kParameterId;
@@ -132,6 +133,7 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode1) {
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
       .param_definition = MixGainParamDefinition(),
   };
   per_id_metadata[kParameterId].param_definition.parameter_id_ = kParameterId;
@@ -191,6 +193,7 @@ TEST(ParameterBlockObu, CreateFromBufferParamDefinitionMode0) {
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
       .param_definition = MixGainParamDefinition(),
   };
   auto& param_definition = per_id_metadata[kParameterId].param_definition;
@@ -259,6 +262,7 @@ TEST(ParameterBlockObu,
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
       .param_definition = MixGainParamDefinition(),
   };
   per_id_metadata[kParameterId].param_definition.parameter_id_ = kParameterId;
@@ -291,6 +295,7 @@ TEST(ParameterBlockObu, CreateFromBufferParamRequiresPerIdParameterMetadata) {
       1024, absl::MakeConstSpan(source_data));
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionMixGain,
       .param_definition = MixGainParamDefinition(),
   };
   per_id_metadata[kParameterId].param_definition.parameter_id_ = kParameterId;
@@ -324,6 +329,7 @@ TEST(ParameterBlockObu, CreateFromBufferDemixingParamDefinitionMode0) {
   // Usually metadata would live in the descriptor OBUs.
   absl::flat_hash_map<DecodedUleb128, PerIdParameterMetadata> per_id_metadata;
   per_id_metadata[kParameterId] = {
+      .param_definition_type = ParamDefinition::kParameterDefinitionDemixing,
       .param_definition = DemixingParamDefinition(),
   };
   auto& param_definition = per_id_metadata[kParameterId].param_definition;
@@ -374,8 +380,8 @@ class ParameterBlockObuTestBase : public ObuTestBase {
 
  protected:
   void InitExpectOk() override {
-    InitParamDefinition();
     InitMainParameterBlockObu();
+
     InitParameterBlockTypeSpecificFields();
   }
 
@@ -412,66 +418,47 @@ class ParameterBlockObuTestBase : public ObuTestBase {
   } duration_args_;
 
  private:
-  void InitParamDefinition() {
-    auto& param_definition = metadata_.param_definition;
-    ASSERT_TRUE(param_definition.GetType().has_value());
-    param_definition.parameter_id_ = parameter_id_;
-    param_definition.parameter_rate_ = metadata_args_.parameter_rate;
-    param_definition.param_definition_mode_ =
-        metadata_args_.param_definition_mode;
-    param_definition.reserved_ = metadata_args_.reserved;
-
-    if (param_definition.param_definition_mode_ == 0) {
-      // Values will be referenced from `metadata_.param_definition`; overwrite
-      // them with those from `duration_args_`.
-      param_definition.duration_ = duration_args_.duration;
-      param_definition.constant_subblock_duration_ =
-          duration_args_.constant_subblock_duration;
-
-      // Initialize memory for the metadata. This would typically be the
-      // responsibility of the OBU that this Parameter Block references.
-      param_definition.InitializeSubblockDurations(
-          duration_args_.num_subblocks);
-      for (int i = 0; i < duration_args_.subblock_durations.size(); i++) {
-        EXPECT_THAT(param_definition.SetSubblockDuration(
-                        i, duration_args_.subblock_durations[i]),
-                    IsOk());
-      }
-    }
-  }
-
   void InitMainParameterBlockObu() {
     // Copy over all arguments into the `ParameterBlockObu`.
     //
     // Code within `iamf_tools` will find the associated Audio Element or Mix
     // Presentation OBU and use that metadata. For testing here the metadata is
     // initialized based on `metadata_args_`.
-    obu_ =
-        std::make_unique<ParameterBlockObu>(header_, parameter_id_, metadata_);
-    if (metadata_.param_definition.param_definition_mode_ == 1) {
-      EXPECT_THAT(
-          obu_->InitializeSubblocks(duration_args_.duration,
-                                    duration_args_.constant_subblock_duration,
-                                    duration_args_.num_subblocks),
-          IsOk());
+    ASSERT_TRUE(metadata_.param_definition.GetType().has_value());
+    metadata_.param_definition_type = *metadata_.param_definition.GetType();
+    metadata_.param_definition.parameter_id_ = parameter_id_;
+    metadata_.param_definition.parameter_rate_ = metadata_args_.parameter_rate;
+    metadata_.param_definition.param_definition_mode_ =
+        metadata_args_.param_definition_mode;
+    metadata_.param_definition.reserved_ = metadata_args_.reserved;
+    metadata_.num_layers = metadata_args_.num_layers;
 
-      // With all memory allocated set the subblock durations.
-      for (int i = 0; i < duration_args_.subblock_durations.size(); i++) {
-        EXPECT_THAT(
-            obu_->SetSubblockDuration(i, duration_args_.subblock_durations[i]),
-            IsOk());
-      }
-    } else {
-      EXPECT_THAT(obu_->InitializeSubblocks(), IsOk());
-    }
-
-    // Below are only used for recon gain parameter blocks.
     // Copy the `recon_gain_is_present_flags` vector. Code within `iamf_tools`
     // will already have this array allocated and populated by the
     // `ParameterBlockGenerator`.
     metadata_.recon_gain_is_present_flags =
         metadata_args_.recon_gain_is_present_flags;
-    metadata_.num_layers = metadata_args_.num_layers;
+
+    obu_ =
+        std::make_unique<ParameterBlockObu>(header_, parameter_id_, metadata_);
+    EXPECT_THAT(
+        obu_->InitializeSubblocks(duration_args_.duration,
+                                  duration_args_.constant_subblock_duration,
+                                  duration_args_.num_subblocks),
+        IsOk());
+
+    // Initialize memory for the metadata. This would typically be the
+    // responsibility of the OBU that this Parameter Block references.
+    metadata_.param_definition.InitializeSubblockDurations(
+        duration_args_.num_subblocks);
+
+    // With all memory allocated set the subblock durations. This may write to
+    // the `metadata` or `obu` depending on the mode.
+    for (int i = 0; i < duration_args_.subblock_durations.size(); i++) {
+      EXPECT_THAT(
+          obu_->SetSubblockDuration(i, duration_args_.subblock_durations[i]),
+          IsOk());
+    }
   }
 };
 
@@ -485,6 +472,8 @@ class MixGainParameterBlockTest : public ParameterBlockObuTestBase,
  protected:
   void InitParameterBlockTypeSpecificFields() override {
     ASSERT_EQ(obu_->subblocks_.size(), mix_gain_parameter_data_.size());
+
+    // Moving mix gain parameter subblocks.
     for (int i = 0; i < obu_->subblocks_.size(); i++) {
       obu_->subblocks_[i].param_data =
           std::make_unique<MixGainParameterData>(mix_gain_parameter_data_[i]);
@@ -707,7 +696,6 @@ class DemixingParameterBlockTest : public ParameterBlockObuTestBase,
 
  protected:
   void InitParameterBlockTypeSpecificFields() override {
-    ASSERT_EQ(demixing_info_parameter_data_.size(), obu_->subblocks_.size());
     for (int i = 0; i < demixing_info_parameter_data_.size(); i++) {
       obu_->subblocks_[i].param_data =
           std::make_unique<DemixingInfoParameterData>(
@@ -778,8 +766,10 @@ class ReconGainBlockTest : public ParameterBlockObuTestBase,
   void InitParameterBlockTypeSpecificFields() override {
     // Loop over and populate the recon gain parameter for each layer within
     // each subblock.
-    ASSERT_EQ(recon_gain_parameter_data_.size(), obu_->subblocks_.size());
-    for (int i = 0; i < recon_gain_parameter_data_.size(); i++) {
+    const DecodedUleb128 num_subblocks = obu_->GetNumSubblocks();
+
+    ASSERT_EQ(recon_gain_parameter_data_.size(), num_subblocks);
+    for (int i = 0; i < num_subblocks; i++) {
       // Each element in `recon_gain_parameter_data_[i].recon_gain_elements`
       // corresponds to a single layer.
       ASSERT_EQ(recon_gain_parameter_data_[i].recon_gain_elements.size(),
@@ -987,8 +977,10 @@ class ExtensionParameterBlockTest : public ParameterBlockObuTestBase,
 
  protected:
   void InitParameterBlockTypeSpecificFields() override {
-    ASSERT_EQ(parameter_block_extensions_.size(), obu_->subblocks_.size());
-    for (int i = 0; i < parameter_block_extensions_.size(); i++) {
+    const DecodedUleb128 num_subblocks = obu_->GetNumSubblocks();
+    ASSERT_EQ(parameter_block_extensions_.size(), num_subblocks);
+
+    for (int i = 0; i < num_subblocks; i++) {
       ASSERT_EQ(parameter_block_extensions_[i].parameter_data_size,
                 parameter_block_extensions_[i].parameter_data_bytes.size());
       obu_->subblocks_[i].param_data = std::make_unique<ExtensionParameterData>(

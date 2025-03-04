@@ -45,7 +45,7 @@ void PopulateParameterDefinition(ParamDefinition& param_definition) {
   param_definition.reserved_ = 0;
 }
 
-TEST(ParamDefinitionBase, CopyConstructible) {
+TEST(ParamDefinitionBaseClone, IsDeepCopy) {
   ParamDefinition param_definition;
   param_definition.param_definition_mode_ = 0;
   param_definition.parameter_id_ = kParameterId;
@@ -53,8 +53,9 @@ TEST(ParamDefinitionBase, CopyConstructible) {
   param_definition.duration_ = kDuration;
   param_definition.constant_subblock_duration_ = kDuration;
 
-  const auto other = param_definition;
-  EXPECT_EQ(param_definition, other);
+  auto other = param_definition.Clone();
+
+  EXPECT_EQ(param_definition, *other);
 }
 
 class ParamDefinitionTestBase : public testing::Test {
@@ -96,7 +97,7 @@ TEST(ParamDefinitionTest, GetTypeHasNoValueWithDefaultConstructor) {
   EXPECT_FALSE(param_definition->GetType().has_value());
 }
 
-TEST(MixGainParamDefinition, CopyConstructible) {
+TEST(MixGainParamDefinitionClone, IsDeepCopy) {
   MixGainParamDefinition mix_gain_param_definition;
   mix_gain_param_definition.param_definition_mode_ = 0;
   mix_gain_param_definition.parameter_id_ = kParameterId;
@@ -105,9 +106,9 @@ TEST(MixGainParamDefinition, CopyConstructible) {
   mix_gain_param_definition.constant_subblock_duration_ = kDuration;
   mix_gain_param_definition.default_mix_gain_ = -16;
 
-  const auto other = mix_gain_param_definition;
+  auto other = mix_gain_param_definition.Clone();
 
-  EXPECT_EQ(mix_gain_param_definition, other);
+  EXPECT_EQ(mix_gain_param_definition, *other);
 }
 
 class MixGainParamDefinitionTest : public ParamDefinitionTestBase {
@@ -279,7 +280,7 @@ TEST_F(MixGainParamDefinitionTest, InvalidWhenSubblockDurationIsZero) {
   EXPECT_FALSE(param_definition_->Validate().ok());
 }
 
-TEST(DemixingParamDefinition, CopyConstructible) {
+TEST(DemixingParamDefinitionClone, IsDeepCopy) {
   DemixingParamDefinition demixing_param_definition;
   demixing_param_definition.param_definition_mode_ = 0;
   demixing_param_definition.parameter_id_ = kParameterId;
@@ -293,9 +294,9 @@ TEST(DemixingParamDefinition, CopyConstructible) {
   demixing_param_definition.default_demixing_info_parameter_data_
       .reserved_for_future_use = 0;
 
-  const auto other = demixing_param_definition;
+  auto other = demixing_param_definition.Clone();
 
-  EXPECT_EQ(demixing_param_definition, other);
+  EXPECT_EQ(demixing_param_definition, *other);
 }
 
 class DemixingParamDefinitionTest : public ParamDefinitionTestBase {
@@ -453,7 +454,7 @@ TEST_F(DemixingParamDefinitionTest, InvalidWhenParamDefinitionModeIsOne) {
   EXPECT_FALSE(param_definition_->Validate().ok());
 }
 
-TEST(ReconGainParamDefinition, CopyConstructible) {
+TEST(ReconGainParamDefinitionClone, IsDeepCopy) {
   ReconGainParamDefinition recon_gain_param_definition(0);
   recon_gain_param_definition.param_definition_mode_ = 0;
   recon_gain_param_definition.parameter_id_ = kParameterId;
@@ -461,9 +462,9 @@ TEST(ReconGainParamDefinition, CopyConstructible) {
   recon_gain_param_definition.duration_ = kDuration;
   recon_gain_param_definition.constant_subblock_duration_ = kDuration;
 
-  const auto other = recon_gain_param_definition;
+  auto other = recon_gain_param_definition.Clone();
 
-  EXPECT_EQ(recon_gain_param_definition, other);
+  EXPECT_EQ(recon_gain_param_definition, *other);
 }
 
 class ReconGainParamDefinitionTest : public ParamDefinitionTestBase {
@@ -587,7 +588,7 @@ TEST_F(ReconGainParamDefinitionTest, InvalidWhenParamDefinitionModeIsOne) {
   EXPECT_FALSE(param_definition_->Validate().ok());
 }
 
-TEST(ExtendedParamDefinition, CopyConstructible) {
+TEST(ExtendedParamDefinitionClone, IsDeepCopy) {
   ExtendedParamDefinition extended_param_definition(
       ParamDefinition::kParameterDefinitionReservedStart);
   extended_param_definition.param_definition_mode_ = 1;
@@ -596,9 +597,9 @@ TEST(ExtendedParamDefinition, CopyConstructible) {
   extended_param_definition.param_definition_size_ = 5;
   extended_param_definition.param_definition_bytes_ = {'e', 'x', 't', 'r', 'a'};
 
-  const auto other = extended_param_definition;
+  auto other = extended_param_definition.Clone();
 
-  EXPECT_EQ(extended_param_definition, other);
+  EXPECT_EQ(extended_param_definition, *other);
 }
 
 class ExtendedParamDefinitionTest : public ParamDefinitionTestBase {

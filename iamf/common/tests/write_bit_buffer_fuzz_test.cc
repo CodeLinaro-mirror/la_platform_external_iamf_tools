@@ -13,7 +13,6 @@
 
 #include <cstdint>
 
-#include "absl/types/span.h"
 #include "fuzztest/fuzztest.h"
 #include "gtest/gtest.h"
 #include "iamf/common/write_bit_buffer.h"
@@ -87,9 +86,9 @@ void WriteStringAndValidate(const std::string& data) {
 
 FUZZ_TEST(WriteBitBufferFuzzTest, WriteStringAndValidate);
 
-void WriteUint8Span(const std::vector<uint8_t>& data) {
+void WriteUint8Vector(const std::vector<uint8_t>& data) {
   WriteBitBuffer wb(0);
-  auto status = wb.WriteUint8Span(absl::MakeConstSpan(data));
+  auto status = wb.WriteUint8Vector(data);
   if (status.ok()) {
     EXPECT_EQ(wb.bit_offset(), data.size() * 8);
     EXPECT_EQ(wb.bit_buffer(), data);
@@ -98,7 +97,7 @@ void WriteUint8Span(const std::vector<uint8_t>& data) {
   }
 }
 
-FUZZ_TEST(WriteBitBufferFuzzTest, WriteUint8Span);
+FUZZ_TEST(WriteBitBufferFuzzTest, WriteUint8Vector);
 
 void WriteUleb128(uint32_t data) {
   WriteBitBuffer wb(0);
