@@ -1,5 +1,7 @@
 # Tests for the IAMF software.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
 cc_library(
     name = "obu_test_base",
@@ -11,6 +13,21 @@ cc_library(
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:obu_header",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "obu_test_utils",
+    testonly = True,
+    hdrs = ["obu_test_utils.h"],
+    visibility = ["//iamf:__subpackages__"],
+    deps = [
+        "//iamf/common:read_bit_buffer",
+        "//iamf/common:write_bit_buffer",
+        "//iamf/obu:obu_base",
+        "//iamf/obu:obu_header",
+        "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -40,7 +57,6 @@ cc_test(
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:audio_element",
-        "//iamf/obu:demixing_param_definition",
         "//iamf/obu:obu_header",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
@@ -180,7 +196,6 @@ cc_test(
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils/tests:test_utils",
-        "//iamf/obu:demixing_param_definition",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
         "//iamf/obu:types",
@@ -201,7 +216,6 @@ cc_test(
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils:numeric_utils",
-        "//iamf/obu:demixing_param_definition",
         "//iamf/obu:obu_header",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_block",
@@ -228,7 +242,6 @@ cc_test(
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils/tests:test_utils",
-        "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

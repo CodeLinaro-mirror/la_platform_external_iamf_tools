@@ -20,13 +20,24 @@
 #include "absl/strings/str_cat.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
-#include "iamf/cli/codec/aac_decoder.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/cli/codec/flac_decoder.h"
 #include "iamf/cli/codec/lpcm_decoder.h"
-#include "iamf/cli/codec/opus_decoder.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/obu/codec_config.h"
+
+// These defines are not part of an official API and are likely to change or be
+// removed.  Please do not depend on them.
+#ifndef IAMF_TOOLS_DISABLE_AAC_DECODER
+#include "iamf/cli/codec/aac_decoder.h"
+#endif
+
+#ifndef IAMF_TOOLS_DISABLE_FLAC_DECODER
+#include "iamf/cli/codec/flac_decoder.h"
+#endif
+
+#ifndef IAMF_TOOLS_DISABLE_OPUS_DECODER
+#include "iamf/cli/codec/opus_decoder.h"
+#endif
 
 namespace iamf_tools {
 
@@ -40,19 +51,26 @@ absl::Status InitializeDecoder(const CodecConfigObu& codec_config,
     case kCodecIdLpcm:
       decoder = std::make_unique<LpcmDecoder>(codec_config, num_channels);
       break;
+#ifndef IAMF_TOOLS_DISABLE_OPUS_DECODER
     case kCodecIdOpus:
       decoder = std::make_unique<OpusDecoder>(codec_config, num_channels);
       break;
+#endif
+#ifndef IAMF_TOOLS_DISABLE_AAC_DECODER
     case kCodecIdAacLc:
       decoder = std::make_unique<AacDecoder>(codec_config, num_channels);
       break;
+#endif
+#ifndef IAMF_TOOLS_DISABLE_FLAC_DECODER
     case kCodecIdFlac:
       decoder = std::make_unique<FlacDecoder>(
           num_channels, codec_config.GetNumSamplesPerFrame());
       break;
+#endif
     default:
-      return absl::InvalidArgumentError(absl::StrCat(
-          "Unrecognized codec_id= ", codec_config.GetCodecConfig().codec_id));
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unrecognized or disabled codec_id= ",
+                       codec_config.GetCodecConfig().codec_id));
   }
 
   if (decoder) {
@@ -112,6 +130,8 @@ absl::StatusOr<DecodedAudioFrame> AudioFrameDecoder::Decode(
           audio_frame.obu.header_.num_samples_to_trim_at_start,
       .decoded_samples = decoder.ValidDecodedSamples(),
       .down_mixing_params = audio_frame.down_mixing_params,
+      .recon_gain_info_parameter_data =
+          audio_frame.recon_gain_info_parameter_data,
       .audio_element_with_data = audio_frame.audio_element_with_data,
   };
 }

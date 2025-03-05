@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <list>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -31,12 +32,12 @@
 #include "iamf/cli/proto/obu_header.pb.h"
 #include "iamf/cli/proto/parameter_data.pb.h"
 #include "iamf/cli/tests/cli_test_utils.h"
-#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_header.h"
+#include "iamf/obu/param_definition_variant.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
 
@@ -230,20 +231,6 @@ TEST_F(GetCommonSampleRateAndBitDepthTest, LargeCommonSampleRatesAndBitDepths) {
   Test();
 }
 
-TEST(ValidateAndGetCommonTrim, ValidForEmptyAudioFrames) {
-  constexpr uint32_t kNumSamplesPerFrame = 0;
-  const std::list<AudioFrameWithData> kNoAudioFrames = {};
-
-  uint32_t num_samples_to_trim_at_end = 99;
-  uint32_t num_samples_to_trim_at_start = 99;
-  EXPECT_THAT(ValidateAndGetCommonTrim(kNumSamplesPerFrame, kNoAudioFrames,
-                                       num_samples_to_trim_at_end,
-                                       num_samples_to_trim_at_start),
-              IsOk());
-  EXPECT_EQ(num_samples_to_trim_at_end, 0);
-  EXPECT_EQ(num_samples_to_trim_at_start, 0);
-}
-
 const DecodedUleb128 kFourSamplesPerFrame = 4;
 const uint32_t kZeroSamplesToTrimAtEnd = 0;
 const uint32_t kZeroSamplesToTrimAtStart = 0;
@@ -265,141 +252,6 @@ void AddAudioFrameWithIdAndTrim(int32_t num_samples_per_frame,
       .audio_element_with_data = nullptr});
 }
 
-TEST(ValidateAndGetCommonTrim,
-     AccumulatesSamplesToTrimAtStartForFullyTrimmedFrames) {
-  std::list<AudioFrameWithData> audio_frames;
-  const uint32_t kFirstFrameSamplesToTrimAtStart = kFourSamplesPerFrame;
-  const uint32_t kSecondFrameSamplesToTrimAtStart = 1;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kZeroSamplesToTrimAtEnd,
-                             kFirstFrameSamplesToTrimAtStart, audio_frames);
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kZeroSamplesToTrimAtEnd,
-                             kSecondFrameSamplesToTrimAtStart, audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_THAT(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                       num_samples_to_trim_at_end,
-                                       num_samples_to_trim_at_start),
-              IsOk());
-  EXPECT_EQ(num_samples_to_trim_at_end, kZeroSamplesToTrimAtEnd);
-  EXPECT_EQ(num_samples_to_trim_at_start,
-            kFirstFrameSamplesToTrimAtStart + kSecondFrameSamplesToTrimAtStart);
-}
-
-TEST(ValidateAndGetCommonTrim, FindsCommonTrimBetweenMultipleSubstreams) {
-  const DecodedUleb128 kCommonTrimFromStart = 2;
-  const DecodedUleb128 kCommonTrimFromEnd = 1;
-  const DecodedUleb128 kSecondSubstreamId = 2;
-  std::list<AudioFrameWithData> audio_frames;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kCommonTrimFromEnd, kCommonTrimFromStart,
-                             audio_frames);
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kSecondSubstreamId,
-                             kCommonTrimFromEnd, kCommonTrimFromStart,
-                             audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_TRUE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                       num_samples_to_trim_at_end,
-                                       num_samples_to_trim_at_start)
-                  .ok());
-  EXPECT_EQ(num_samples_to_trim_at_end, kCommonTrimFromEnd);
-  EXPECT_EQ(num_samples_to_trim_at_start, kCommonTrimFromStart);
-}
-
-TEST(ValidateAndGetCommonTrim, InvalidWhenSubstreamsHaveNoCommonTrim) {
-  const DecodedUleb128 kFirstSubstreamTrim = 0;
-  const DecodedUleb128 kMismatchingSecondSubstreamTrim = 1;
-  const DecodedUleb128 kSecondSubstreamId = 2;
-  std::list<AudioFrameWithData> audio_frames;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kZeroSamplesToTrimAtEnd, kFirstSubstreamTrim,
-                             audio_frames);
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kSecondSubstreamId,
-                             kZeroSamplesToTrimAtEnd,
-                             kMismatchingSecondSubstreamTrim, audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_FALSE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                        num_samples_to_trim_at_end,
-                                        num_samples_to_trim_at_start)
-                   .ok());
-}
-
-TEST(ValidateAndGetCommonTrim,
-     InvalidWithConsecutivePartialFramesTrimmedFromStart) {
-  const DecodedUleb128 kPartiallyTrimmedFrameSamplesToTrimAtStart = 1;
-  std::list<AudioFrameWithData> audio_frames;
-  AddAudioFrameWithIdAndTrim(
-      kFourSamplesPerFrame, kFirstSubstreamId, kZeroSamplesToTrimAtEnd,
-      kPartiallyTrimmedFrameSamplesToTrimAtStart, audio_frames);
-  AddAudioFrameWithIdAndTrim(
-      kFourSamplesPerFrame, kFirstSubstreamId, kZeroSamplesToTrimAtEnd,
-      kPartiallyTrimmedFrameSamplesToTrimAtStart, audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_FALSE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                        num_samples_to_trim_at_end,
-                                        num_samples_to_trim_at_start)
-                   .ok());
-}
-
-TEST(ValidateAndGetCommonTrim,
-     InvalidWhenFramesOccurAfterSamplesTrimmedFromEnd) {
-  const uint32_t kFirstFramePartialTrimFromEnd = 1;
-  std::list<AudioFrameWithData> audio_frames;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kFirstFramePartialTrimFromEnd,
-                             kZeroSamplesToTrimAtStart, audio_frames);
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kZeroSamplesToTrimAtEnd, kZeroSamplesToTrimAtStart,
-                             audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_FALSE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                        num_samples_to_trim_at_end,
-                                        num_samples_to_trim_at_start)
-                   .ok());
-}
-
-TEST(ValidateAndGetCommonTrim,
-     InvalidWhenCumulativeTrimIsGreaterThanNumSamplesPerFrame) {
-  std::list<AudioFrameWithData> audio_frames;
-  const uint32_t kNumSamplesToTrimAtEnd = kFourSamplesPerFrame - 1;
-  const uint32_t kNumSamplesToTrimAtStart = 2;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kNumSamplesToTrimAtEnd, kNumSamplesToTrimAtStart,
-                             audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_FALSE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                        num_samples_to_trim_at_end,
-                                        num_samples_to_trim_at_start)
-                   .ok());
-}
-
-TEST(ValidateAndGetCommonTrim, InvalidWithFullyTrimmedSamplesFromEnd) {
-  const uint32_t kFullyTrimmedSamplesFromEnd = kFourSamplesPerFrame;
-  std::list<AudioFrameWithData> audio_frames;
-  AddAudioFrameWithIdAndTrim(kFourSamplesPerFrame, kFirstSubstreamId,
-                             kFullyTrimmedSamplesFromEnd,
-                             kZeroSamplesToTrimAtStart, audio_frames);
-
-  uint32_t num_samples_to_trim_at_end;
-  uint32_t num_samples_to_trim_at_start;
-  EXPECT_FALSE(ValidateAndGetCommonTrim(kFourSamplesPerFrame, audio_frames,
-                                        num_samples_to_trim_at_end,
-                                        num_samples_to_trim_at_start)
-                   .ok());
-}
-
 TEST(CollectAndValidateParamDefinitions,
      ReturnsOneUniqueParamDefinitionWhenTheyAreIdentical) {
   // Initialize prerequisites.
@@ -418,7 +270,7 @@ TEST(CollectAndValidateParamDefinitions,
                 .element_mix_gain,
             mix_presentation_obus.back().sub_mixes_[0].output_mix_gain);
 
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> result;
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant> result;
   EXPECT_THAT(CollectAndValidateParamDefinitions(audio_elements,
                                                  mix_presentation_obus, result),
               IsOk());
@@ -447,7 +299,7 @@ TEST(CollectAndValidateParamDefinitions,
                 .element_mix_gain,
             output_mix_gain);
 
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> result;
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant> result;
   EXPECT_FALSE(CollectAndValidateParamDefinitions(audio_elements,
                                                   mix_presentation_obus, result)
                    .ok());
@@ -472,35 +324,17 @@ TEST(CollectAndValidateParamDefinitions,
       AudioElementParam{ExtendedParamDefinition(
           ParamDefinition::kParameterDefinitionReservedStart)});
 
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> result;
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant> result;
   EXPECT_THAT(CollectAndValidateParamDefinitions(
                   audio_elements, kNoMixPresentationObus, result),
               IsOk());
   EXPECT_TRUE(result.empty());
 }
 
-TEST(GenerateParamIdToMetadataMapTest, MixGainParamDefinition) {
-  // Initialize prerequisites.
-  absl::flat_hash_map<DecodedUleb128, AudioElementWithData>
-      audio_elements_with_data = {};
-  auto param_definition = MixGainParamDefinition();
-  param_definition.parameter_id_ = kParameterId;
-  param_definition.parameter_rate_ = kParameterRate;
-  param_definition.param_definition_mode_ = 1;
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> param_definitions;
-  param_definitions[kParameterId] = &param_definition;
-  auto param_id_to_metadata_map =
-      GenerateParamIdToMetadataMap(param_definitions, audio_elements_with_data);
-  EXPECT_THAT(param_id_to_metadata_map, IsOk());
-  EXPECT_EQ(param_id_to_metadata_map->size(), 1);
-  auto iter = param_id_to_metadata_map->find(kParameterId);
-  EXPECT_NE(iter, param_id_to_metadata_map->end());
-  EXPECT_EQ(iter->second.param_definition, param_definition);
-}
-
-TEST(GenerateParamIdToMetadataMapTest, ReconGainParamDefinition) {
+TEST(CollectAndValidateParamDefinitions, ReconGainParamDefinition) {
   absl::flat_hash_map<DecodedUleb128, CodecConfigObu> input_codec_configs;
   AddOpusCodecConfigWithId(kCodecConfigId, input_codec_configs);
+  const std::list<MixPresentationObu> kNoMixPresentationObus = {};
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData>
       audio_elements_with_data;
   AudioElementObu obu(ObuHeader(), kAudioElementId,
@@ -508,7 +342,10 @@ TEST(GenerateParamIdToMetadataMapTest, ReconGainParamDefinition) {
                       kCodecConfigId);
   obu.audio_substream_ids_ = {kFirstSubstreamId, kSecondSubstreamId};
   obu.num_substreams_ = 2;
-  obu.InitializeParams(0);
+  obu.InitializeParams(1);
+  AddReconGainParamDefinition(kParameterId, kParameterRate, /*duration=*/1,
+                              obu);
+
   EXPECT_THAT(obu.InitializeScalableChannelLayout(2, 0), IsOk());
 
   auto& two_layer_stereo_config =
@@ -544,52 +381,39 @@ TEST(GenerateParamIdToMetadataMapTest, ReconGainParamDefinition) {
                                              substream_id_labels_map,
                                              label_gain_map, channel_numbers}});
 
-  auto param_definition = ReconGainParamDefinition(kAudioElementId);
-  param_definition.parameter_id_ = kParameterId;
-  param_definition.parameter_rate_ = kParameterRate;
-  param_definition.param_definition_mode_ = 0;
-  param_definition.duration_ = 1;
-  param_definition.constant_subblock_duration_ = 0;
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> param_definitions;
-  param_definitions[kParameterId] = &param_definition;
-  auto param_id_to_metadata_map =
-      GenerateParamIdToMetadataMap(param_definitions, audio_elements_with_data);
-  EXPECT_THAT(param_id_to_metadata_map, IsOk());
-  EXPECT_EQ(param_id_to_metadata_map->size(), 1);
-  auto param_iter = param_id_to_metadata_map->find(kParameterId);
-  EXPECT_NE(param_iter, param_id_to_metadata_map->end());
-  EXPECT_EQ(param_iter->second.param_definition, param_definition);
-  EXPECT_EQ(param_iter->second.audio_element_id, kAudioElementId);
-  EXPECT_EQ(param_iter->second.num_layers, 2);
-  constexpr ChannelNumbers expected_channel_numbers_mono_layer = {.surround =
-                                                                      1};
-  constexpr ChannelNumbers expected_channel_numbers_stereo_layer = {.surround =
-                                                                        2};
-  EXPECT_EQ(param_iter->second.channel_numbers_for_layers[0],
-            expected_channel_numbers_mono_layer);
-  EXPECT_EQ(param_iter->second.channel_numbers_for_layers[1],
-            expected_channel_numbers_stereo_layer);
-  EXPECT_EQ(param_iter->second.recon_gain_is_present_flags[0], true);
-  EXPECT_EQ(param_iter->second.recon_gain_is_present_flags[1], true);
-}
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant> result;
+  EXPECT_THAT(CollectAndValidateParamDefinitions(
+                  audio_elements_with_data, kNoMixPresentationObus, result),
+              IsOk());
+  EXPECT_EQ(result.size(), 1);
+  auto param_definition_iter = result.find(kParameterId);
+  ASSERT_NE(param_definition_iter, result.end());
+  auto recon_gain_param_definition =
+      std::get_if<ReconGainParamDefinition>(&param_definition_iter->second);
+  ASSERT_NE(recon_gain_param_definition, nullptr);
 
-TEST(GenerateParamIdToMetadataMapTest,
-     RejectReconGainParamDefinitionNotInAudioElement) {
-  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> input_codec_configs;
-  AddOpusCodecConfigWithId(kCodecConfigId, input_codec_configs);
-  absl::flat_hash_map<DecodedUleb128, AudioElementWithData>
-      audio_elements_with_data;
-  AddScalableAudioElementWithSubstreamIds(
-      IamfInputLayout::kMono, kAudioElementId, kCodecConfigId,
-      {kFirstSubstreamId}, input_codec_configs, audio_elements_with_data);
+  // Fields in `ReconGainParamDefinition`.
+  EXPECT_EQ(recon_gain_param_definition->parameter_id_, kParameterId);
+  EXPECT_EQ(recon_gain_param_definition->parameter_rate_, kParameterRate);
+  EXPECT_EQ(recon_gain_param_definition->param_definition_mode_, 0);
+  EXPECT_EQ(recon_gain_param_definition->duration_, 1);
+  EXPECT_EQ(recon_gain_param_definition->constant_subblock_duration_, 1);
+  EXPECT_EQ(recon_gain_param_definition->audio_element_id_, kAudioElementId);
 
-  auto param_definition = ReconGainParamDefinition(kSecondAudioElementId);
-  param_definition.parameter_id_ = kParameterId;
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> param_definitions;
-  param_definitions[kParameterId] = &param_definition;
-  auto param_id_to_metadata_map =
-      GenerateParamIdToMetadataMap(param_definitions, audio_elements_with_data);
-  EXPECT_FALSE(param_id_to_metadata_map.ok());
+  // Auxiliary data.
+  EXPECT_EQ(recon_gain_param_definition->aux_data_.size(), 2);
+  EXPECT_EQ(
+      recon_gain_param_definition->aux_data_[0].recon_gain_is_present_flag,
+      true);
+  EXPECT_EQ(
+      recon_gain_param_definition->aux_data_[1].recon_gain_is_present_flag,
+      true);
+  constexpr ChannelNumbers kExpectedChannelNumbersMonoLayer = {.surround = 1};
+  constexpr ChannelNumbers kExpectedChannelNumbersStereoLayer = {.surround = 2};
+  EXPECT_EQ(recon_gain_param_definition->aux_data_[0].channel_numbers_for_layer,
+            kExpectedChannelNumbersMonoLayer);
+  EXPECT_EQ(recon_gain_param_definition->aux_data_[1].channel_numbers_for_layer,
+            kExpectedChannelNumbersStereoLayer);
 }
 
 TEST(IsStereoLayout, ReturnsTrueForStereoLayout) {
