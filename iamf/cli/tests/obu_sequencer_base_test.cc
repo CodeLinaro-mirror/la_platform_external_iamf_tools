@@ -19,13 +19,17 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
+#include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/parameter_block_with_data.h"
+#include "iamf/cli/temporal_unit_view.h"
 #include "iamf/cli/tests/cli_test_utils.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/arbitrary_obu.h"
 #include "iamf/obu/audio_frame.h"
@@ -36,7 +40,6 @@
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_base.h"
 #include "iamf/obu/obu_header.h"
-#include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_block.h"
 #include "iamf/obu/temporal_delimiter.h"
 #include "iamf/obu/types.h"
@@ -45,10 +48,19 @@ namespace iamf_tools {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::testing::_;
+using ::testing::Not;
+using ::testing::Return;
+
+using absl::MakeConstSpan;
 
 constexpr DecodedUleb128 kCodecConfigId = 1;
 constexpr uint32_t kNumSamplesPerFrame = 8;
 constexpr uint32_t kSampleRate = 48000;
+// Some timestamps consistent with the number of samples per frame.
+constexpr InternalTimestamp kFirstTimestamp = kNumSamplesPerFrame * 0;
+constexpr InternalTimestamp kSecondTimestamp = kNumSamplesPerFrame * 1;
+constexpr InternalTimestamp kThirdTimestamp = kNumSamplesPerFrame * 2;
 constexpr DecodedUleb128 kFirstAudioElementId = 1;
 constexpr DecodedUleb128 kSecondAudioElementId = 2;
 constexpr DecodedUleb128 kFirstSubstreamId = 1;
@@ -61,9 +73,28 @@ constexpr uint32_t kCommonMixGainParameterRate = kSampleRate;
 constexpr bool kIncludeTemporalDelimiters = true;
 constexpr bool kDoNotIncludeTemporalDelimiters = false;
 
+constexpr bool kDelayDescriptorsUntilTrimAtStartIsKnown = true;
+constexpr bool kDoNotDelayDescriptorsUntilTrimAtStartIsKnown = false;
+
 constexpr std::nullopt_t kOriginalSamplesAreIrrelevant = std::nullopt;
 
-// TODO(b/302470464): Add test coverage `ObuSequencer::WriteTemporalUnit()`.
+constexpr absl::Span<ParameterBlockWithData> kNoParameterBlocks = {};
+constexpr absl::Span<ArbitraryObu> kNoArbitraryObus = {};
+
+void InitializeDescriptorObusForOneMonoAmbisonicsAudioElement(
+    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    std::list<MixPresentationObu>& mix_presentation_obus) {
+  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
+                                        codec_config_obus);
+  AddAmbisonicsMonoAudioElementWithSubstreamIds(
+      kFirstAudioElementId, kCodecConfigId, {kFirstSubstreamId},
+      codec_config_obus, audio_elements);
+  AddMixPresentationObuWithAudioElementIds(
+      kFirstMixPresentationId, {kFirstAudioElementId},
+      kCommonMixGainParameterId, kCommonMixGainParameterRate,
+      mix_presentation_obus);
+}
 
 void AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
     uint32_t audio_element_id, uint32_t substream_id,
@@ -81,209 +112,87 @@ void AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
       .audio_element_with_data = &audio_elements.at(audio_element_id)});
 }
 
-TEST(GenerateTemporalUnitMap, SubstreamsOrderedByAudioElementIdSubstreamId) {
-  const std::list<ParameterBlockWithData> kNoParameterBlocks;
-  const std::list<ArbitraryObu> kNoArbitraryObus;
-  // Initialize two audio elements each with two substreams.
-  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus = {};
-  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements = {};
-  const uint32_t kCodecConfigId = 0;
-  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, 48000,
-                                        codec_config_obus);
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      /*audio_element_id=*/100, kCodecConfigId, {2000, 4000}, codec_config_obus,
-      audio_elements);
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      /*audio_element_id=*/200, kCodecConfigId, {3000, 5000}, codec_config_obus,
-      audio_elements);
-
-  // Add some audio frames in an arbitrary order.
-  std::list<AudioFrameWithData> audio_frames;
-  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      200, 5000, 0, 16, audio_elements, audio_frames);
-  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      100, 2000, 0, 16, audio_elements, audio_frames);
-  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      200, 3000, 0, 16, audio_elements, audio_frames);
-  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      100, 4000, 0, 16, audio_elements, audio_frames);
-
-  // By default the results are expected to be sorted by audio element ID then
-  // by substream ID.
-  struct ExpectedAudioElementIdAndSubstreamId {
-    uint32_t audio_element_id;
-    uint32_t substream_id;
-  };
-  std::vector<ExpectedAudioElementIdAndSubstreamId> expected_results = {
-      {100, 2000}, {100, 4000}, {200, 3000}, {200, 5000}};
-
-  // Generate the temporal unit map.
-  TemporalUnitMap temporal_unit_map;
-  EXPECT_THAT(ObuSequencerBase::GenerateTemporalUnitMap(
-                  audio_frames, kNoParameterBlocks, kNoArbitraryObus,
-                  temporal_unit_map),
-              IsOk());
-
-  // The test is hard-coded with one temporal unit and four frames.
-  ASSERT_EQ(temporal_unit_map.size(), 1);
-  ASSERT_TRUE(temporal_unit_map.contains(0));
-  ASSERT_EQ(temporal_unit_map[0].audio_frames.size(), 4);
-
-  // Validate the order of the output frames matches the expected order.
-  auto expected_results_iter = expected_results.begin();
-  for (const auto& audio_frame : temporal_unit_map[0].audio_frames) {
-    EXPECT_EQ(audio_frame->audio_element_with_data->obu.GetAudioElementId(),
-              expected_results_iter->audio_element_id);
-    EXPECT_EQ(audio_frame->obu.GetSubstreamId(),
-              expected_results_iter->substream_id);
-
-    expected_results_iter++;
-  }
-}
-
-PerIdParameterMetadata CreatePerIdMetadataForDemixing(
-    DecodedUleb128 parameter_id) {
-  DemixingParamDefinition expected_demixing_param_definition;
-  expected_demixing_param_definition.parameter_id_ = parameter_id;
-  expected_demixing_param_definition.parameter_rate_ = 48000;
-  expected_demixing_param_definition.param_definition_mode_ = 0;
-  expected_demixing_param_definition.duration_ = 8;
-  expected_demixing_param_definition.constant_subblock_duration_ = 8;
-  expected_demixing_param_definition.reserved_ = 10;
-
-  return PerIdParameterMetadata{.param_definition =
-                                    expected_demixing_param_definition};
-}
-
-TEST(GenerateTemporalUnitMap, ParameterBlocksAreOrderedByAscendingParameterId) {
-  constexpr DecodedUleb128 kLowerParameterId = 9;
-  constexpr DecodedUleb128 kHigherParameterId = 9000;
-  constexpr InternalTimestamp kStartTimestamp = 0;
-  constexpr InternalTimestamp kEndTimestamp = 16;
-  constexpr DecodedUleb128 kSecondParameterId = kCommonMixGainParameterId + 1;
-  std::list<ParameterBlockWithData> parameter_blocks;
-  const std::list<ArbitraryObu> kNoArbitraryObus;
-  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus = {};
-  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements = {};
-  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, 48000,
+void InitializeOneFrameIaSequence(
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    std::list<AudioFrameWithData>& audio_frames) {
+  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
                                         codec_config_obus);
   AddAmbisonicsMonoAudioElementWithSubstreamIds(
       kFirstAudioElementId, kCodecConfigId, {kFirstSubstreamId},
       codec_config_obus, audio_elements);
-  std::list<AudioFrameWithData> audio_frames;
   AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      kFirstAudioElementId, kFirstSubstreamId, kStartTimestamp, kEndTimestamp,
-      audio_elements, audio_frames);
-  PerIdParameterMetadata lower_per_id_metadata =
-      CreatePerIdMetadataForDemixing(kLowerParameterId);
-  PerIdParameterMetadata higher_per_id_metadata =
-      CreatePerIdMetadataForDemixing(kHigherParameterId);
-  auto common_demixing_info_parameter_data =
-      std::make_unique<DemixingInfoParameterData>();
-  common_demixing_info_parameter_data->dmixp_mode =
-      DemixingInfoParameterData::kDMixPMode1;
-  common_demixing_info_parameter_data->reserved = 0;
-  auto higher_id_parameter_block = std::make_unique<ParameterBlockObu>(
-      ObuHeader(), higher_per_id_metadata.param_definition.parameter_id_,
-      higher_per_id_metadata);
-  ASSERT_THAT(higher_id_parameter_block->InitializeSubblocks(), IsOk());
-  higher_id_parameter_block->subblocks_[0].param_data =
-      std::move(common_demixing_info_parameter_data);
-  auto lower_id_parameter_block = std::make_unique<ParameterBlockObu>(
-      ObuHeader(), kSecondParameterId, lower_per_id_metadata);
-  ASSERT_THAT(lower_id_parameter_block->InitializeSubblocks(), IsOk());
-  const auto& higher_id__parameter_block_with_data =
-      parameter_blocks.emplace_back(ParameterBlockWithData{
-          .obu = std::move(higher_id_parameter_block),
-          .start_timestamp = 0,
-          .end_timestamp = 16,
-      });
-  const auto& lower_id_parameter_block_with_data =
-      parameter_blocks.emplace_back(ParameterBlockWithData{
-          .obu = std::move(lower_id_parameter_block),
-          .start_timestamp = 0,
-          .end_timestamp = 16,
-      });
-  const std::vector<const ParameterBlockWithData*>
-      expected_output_in_ascending_parameter_id_order = {
-          &lower_id_parameter_block_with_data,
-          &higher_id__parameter_block_with_data};
-
-  // Generate the temporal unit map.
-  TemporalUnitMap temporal_unit_map;
-  EXPECT_THAT(
-      ObuSequencerBase::GenerateTemporalUnitMap(
-          audio_frames, parameter_blocks, kNoArbitraryObus, temporal_unit_map),
-      IsOk());
-
-  ASSERT_TRUE(temporal_unit_map.contains(0));
-  EXPECT_EQ(temporal_unit_map[0].parameter_blocks,
-            expected_output_in_ascending_parameter_id_order);
+      kFirstAudioElementId, kFirstSubstreamId, kFirstTimestamp,
+      kSecondTimestamp, audio_elements, audio_frames);
 }
 
-TEST(GenerateTemporalUnitMap, OmitsArbitraryObusWithNoInsertionTick) {
-  const std::list<AudioFrameWithData> kNoAudioFrames;
-  const std::list<ParameterBlockWithData> kNoParameterBlocks;
-  const std::optional<int64_t> kNoInsertionTick = std::nullopt;
-  std::list<ArbitraryObu> arbitrary_obus;
-  arbitrary_obus.emplace_back(ArbitraryObu(
-      kObuIaReserved25, ObuHeader(), {},
-      ArbitraryObu::kInsertionHookAfterIaSequenceHeader, kNoInsertionTick));
+void InitializeOneFrameIaSequenceWithMixPresentation(
+    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    std::list<MixPresentationObu>& mix_presentation_obus,
+    std::list<AudioFrameWithData>& audio_frames) {
+  InitializeDescriptorObusForOneMonoAmbisonicsAudioElement(
+      codec_config_obus, audio_elements, mix_presentation_obus);
 
-  // Generate the temporal unit map.
-  TemporalUnitMap temporal_unit_map;
-  EXPECT_THAT(ObuSequencerBase::GenerateTemporalUnitMap(
-                  kNoAudioFrames, kNoParameterBlocks, arbitrary_obus,
-                  temporal_unit_map),
-              IsOk());
-  EXPECT_TRUE(temporal_unit_map.empty());
+  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
+      kFirstAudioElementId, kFirstSubstreamId, 0, 8, audio_elements,
+      audio_frames);
 }
 
-TEST(GenerateTemporalUnitMap, CreatesTemporalUnitsForEachInsertionTick) {
-  const std::list<AudioFrameWithData> kNoAudioFrames;
-  const std::list<ParameterBlockWithData> kNoParameterBlocks;
-  const int64_t kFirstInsertionTick = 99;
-  const int kNumberOfObusAtFirstInsertionTick = 2;
-  const int64_t kSecondInsertionTick = 1999;
-  const int kNumberOfObusAtSecondInsertionTick = 1;
-  std::list<ArbitraryObu> arbitrary_obus;
-  arbitrary_obus.emplace_back(
-      ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
-                   ArbitraryObu::kInsertionHookAfterParameterBlocksAtTick,
-                   kFirstInsertionTick));
-  arbitrary_obus.emplace_back(ArbitraryObu(
-      kObuIaReserved25, ObuHeader(), {},
-      ArbitraryObu::kInsertionHookAfterIaSequenceHeader, kFirstInsertionTick));
-  arbitrary_obus.emplace_back(
-      ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
-                   ArbitraryObu::kInsertionHookAfterParameterBlocksAtTick,
-                   kSecondInsertionTick));
+void InitializeOneParameterBlockAndOneAudioFrame(
+    DemixingParamDefinition& param_definition,
+    std::list<ParameterBlockWithData>& parameter_blocks,
+    std::list<AudioFrameWithData>& audio_frames,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements) {
+  InitializeOneFrameIaSequence(codec_config_obus, audio_elements, audio_frames);
+  auto data = std::make_unique<DemixingInfoParameterData>();
+  data->dmixp_mode = DemixingInfoParameterData::kDMixPMode1;
+  data->reserved = 0;
+  auto parameter_block = std::make_unique<ParameterBlockObu>(
+      ObuHeader(), param_definition.parameter_id_, param_definition);
+  ASSERT_THAT(parameter_block->InitializeSubblocks(), IsOk());
+  parameter_block->subblocks_[0].param_data = std::move(data);
+  parameter_blocks.emplace_back(ParameterBlockWithData{
+      .obu = std::move(parameter_block),
+      .start_timestamp = kFirstTimestamp,
+      .end_timestamp = kSecondTimestamp,
+  });
+}
+void InitializeDescriptorObusForTwoMonoAmbisonicsAudioElement(
+    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
+    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    std::list<MixPresentationObu>& mix_presentation_obus) {
+  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
+                                        codec_config_obus);
+  AddAmbisonicsMonoAudioElementWithSubstreamIds(
+      kFirstAudioElementId, kCodecConfigId, {kFirstSubstreamId},
+      codec_config_obus, audio_elements);
+  AddAmbisonicsMonoAudioElementWithSubstreamIds(
+      kSecondAudioElementId, kCodecConfigId, {kSecondSubstreamId},
+      codec_config_obus, audio_elements);
+  AddMixPresentationObuWithAudioElementIds(
+      kFirstMixPresentationId, {kFirstAudioElementId, kSecondAudioElementId},
+      kCommonMixGainParameterId, kCommonMixGainParameterRate,
+      mix_presentation_obus);
+}
 
-  // Generate the temporal unit map.
-  TemporalUnitMap temporal_unit_map;
-  EXPECT_THAT(ObuSequencerBase::GenerateTemporalUnitMap(
-                  kNoAudioFrames, kNoParameterBlocks, arbitrary_obus,
-                  temporal_unit_map),
-              IsOk());
+DemixingParamDefinition CreateDemixingParamDefinition(
+    const DecodedUleb128 parameter_id) {
+  DemixingParamDefinition demixing_param_definition;
+  demixing_param_definition.parameter_id_ = parameter_id;
+  demixing_param_definition.parameter_rate_ = 48000;
+  demixing_param_definition.param_definition_mode_ = 0;
+  demixing_param_definition.duration_ = 8;
+  demixing_param_definition.constant_subblock_duration_ = 8;
+  demixing_param_definition.reserved_ = 10;
 
-  EXPECT_EQ(temporal_unit_map.size(), 2);
-  ASSERT_TRUE(temporal_unit_map.contains(kFirstInsertionTick));
-  EXPECT_EQ(temporal_unit_map.at(kFirstInsertionTick).arbitrary_obus.size(),
-            kNumberOfObusAtFirstInsertionTick);
-  ASSERT_TRUE(temporal_unit_map.contains(kSecondInsertionTick));
-  EXPECT_EQ(temporal_unit_map.at(kSecondInsertionTick).arbitrary_obus.size(),
-            kNumberOfObusAtSecondInsertionTick);
+  return demixing_param_definition;
 }
 
 void ValidateWriteTemporalUnitSequence(
-    bool include_temporal_delimiters, const TemporalUnit& temporal_unit,
+    bool include_temporal_delimiters, const TemporalUnitView& temporal_unit,
     const std::list<const ObuBase*>& expected_sequence) {
-  WriteBitBuffer expected_wb(128);
-  for (const auto* expected_obu : expected_sequence) {
-    ASSERT_NE(expected_obu, nullptr);
-    EXPECT_THAT(expected_obu->ValidateAndWriteObu(expected_wb), IsOk());
-  }
-
   WriteBitBuffer result_wb(128);
   int unused_num_samples;
   EXPECT_THAT(ObuSequencerBase::WriteTemporalUnit(include_temporal_delimiters,
@@ -291,38 +200,7 @@ void ValidateWriteTemporalUnitSequence(
                                                   unused_num_samples),
               IsOk());
 
-  EXPECT_EQ(result_wb.bit_buffer(), expected_wb.bit_buffer());
-}
-
-void InitializeOneParameterBlockAndOneAudioFrame(
-    PerIdParameterMetadata& per_id_metadata,
-    std::list<ParameterBlockWithData>& parameter_blocks,
-    std::list<AudioFrameWithData>& audio_frames,
-    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
-    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements) {
-  constexpr InternalTimestamp kStartTimestamp = 0;
-  constexpr InternalTimestamp kEndTimestamp = 16;
-  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
-                                        codec_config_obus);
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kFirstAudioElementId, kCodecConfigId, {kFirstSubstreamId},
-      codec_config_obus, audio_elements);
-  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
-      kFirstAudioElementId, kFirstSubstreamId, kStartTimestamp, kEndTimestamp,
-      audio_elements, audio_frames);
-  auto data = std::make_unique<DemixingInfoParameterData>();
-  data->dmixp_mode = DemixingInfoParameterData::kDMixPMode1;
-  data->reserved = 0;
-  auto parameter_block = std::make_unique<ParameterBlockObu>(
-      ObuHeader(), per_id_metadata.param_definition.parameter_id_,
-      per_id_metadata);
-  ASSERT_THAT(parameter_block->InitializeSubblocks(), IsOk());
-  parameter_block->subblocks_[0].param_data = std::move(data);
-  parameter_blocks.emplace_back(ParameterBlockWithData{
-      .obu = std::move(parameter_block),
-      .start_timestamp = 0,
-      .end_timestamp = 16,
-  });
+  EXPECT_EQ(result_wb.bit_buffer(), SerializeObusExpectOk(expected_sequence));
 }
 
 TEST(WriteTemporalUnit, WritesArbitraryObuBeforeParameterBlocksAtTime) {
@@ -330,19 +208,19 @@ TEST(WriteTemporalUnit, WritesArbitraryObuBeforeParameterBlocksAtTime) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
   const std::list<ArbitraryObu> kArbitraryObuBeforeParameterBlocks(
       {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
-                    ArbitraryObu::kInsertionHookBeforeParameterBlocksAtTick)});
-  TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-      .arbitrary_obus = {&kArbitraryObuBeforeParameterBlocks.front()},
-  };
+                    ArbitraryObu::kInsertionHookBeforeParameterBlocksAtTick,
+                    kFirstTimestamp)});
+  const auto temporal_unit = TemporalUnitView::Create(
+      parameter_blocks, audio_frames, kArbitraryObuBeforeParameterBlocks);
+  ASSERT_THAT(temporal_unit, IsOk());
+
   const TemporalDelimiterObu temporal_delimiter_obu(ObuHeader{});
 
   const std::list<const ObuBase*>
@@ -351,7 +229,7 @@ TEST(WriteTemporalUnit, WritesArbitraryObuBeforeParameterBlocksAtTime) {
           parameter_blocks.front().obu.get(), &audio_frames.front().obu};
 
   ValidateWriteTemporalUnitSequence(
-      kIncludeTemporalDelimiters, temporal_unit,
+      kIncludeTemporalDelimiters, *temporal_unit,
       expected_arbitrary_obu_between_temporal_delimiter_and_parameter_block);
 }
 
@@ -360,19 +238,18 @@ TEST(WriteTemporalUnit, WritesArbitraryObuAfterParameterBlocksAtTime) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
   const std::list<ArbitraryObu> kArbitraryObuAfterParameterBlocks(
       {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
-                    ArbitraryObu::kInsertionHookAfterParameterBlocksAtTick)});
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-      .arbitrary_obus = {&kArbitraryObuAfterParameterBlocks.front()},
-  };
+                    ArbitraryObu::kInsertionHookAfterParameterBlocksAtTick,
+                    kFirstTimestamp)});
+  const auto temporal_unit = TemporalUnitView::Create(
+      parameter_blocks, audio_frames, kArbitraryObuAfterParameterBlocks);
+  ASSERT_THAT(temporal_unit, IsOk());
 
   const std::list<const ObuBase*>
       expected_arbitrary_obu_between_parameter_block_and_audio_frame = {
@@ -382,7 +259,7 @@ TEST(WriteTemporalUnit, WritesArbitraryObuAfterParameterBlocksAtTime) {
       };
 
   ValidateWriteTemporalUnitSequence(
-      kDoNotIncludeTemporalDelimiters, temporal_unit,
+      kDoNotIncludeTemporalDelimiters, *temporal_unit,
       expected_arbitrary_obu_between_parameter_block_and_audio_frame);
 }
 
@@ -391,19 +268,17 @@ TEST(WriteTemporalUnit, WritesArbitraryObuAfterAudioFramesAtTime) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
-  const std::list<ArbitraryObu> kArbitraryObuAfterAudioFrames(
-      {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
-                    ArbitraryObu::kInsertionHookAfterAudioFramesAtTick)});
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-      .arbitrary_obus = {&kArbitraryObuAfterAudioFrames.front()},
-  };
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
+  const std::list<ArbitraryObu> kArbitraryObuAfterAudioFrames({ArbitraryObu(
+      kObuIaReserved25, ObuHeader(), {},
+      ArbitraryObu::kInsertionHookAfterAudioFramesAtTick, kFirstTimestamp)});
+  const auto temporal_unit = TemporalUnitView::Create(
+      parameter_blocks, audio_frames, kArbitraryObuAfterAudioFrames);
+  ASSERT_THAT(temporal_unit, IsOk());
 
   const std::list<const ObuBase*> expected_arbitrary_obu_after_audio_frame = {
       parameter_blocks.front().obu.get(),
@@ -412,95 +287,57 @@ TEST(WriteTemporalUnit, WritesArbitraryObuAfterAudioFramesAtTime) {
   };
 
   ValidateWriteTemporalUnitSequence(kDoNotIncludeTemporalDelimiters,
-                                    temporal_unit,
+                                    *temporal_unit,
                                     expected_arbitrary_obu_after_audio_frame);
 }
 
-TEST(WriteTemporalUnit, AddsNumberOfUntrimmedSamplesToNumSamples) {
-  std::list<ParameterBlockWithData> parameter_blocks;
+TEST(WriteTemporalUnit, AccumulatesZeroSamplesForFullyTrimmedAudioFrame) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
+  InitializeOneFrameIaSequence(codec_config_obus, audio_elements, audio_frames);
+  audio_frames.front().obu.header_.num_samples_to_trim_at_end = 0;
+  audio_frames.front().obu.header_.num_samples_to_trim_at_start = 8;
+  constexpr uint32_t kNumUntrimmedSamples = 0;
+  const auto temporal_unit = TemporalUnitView::Create(
+      kNoParameterBlocks, audio_frames, kNoArbitraryObus);
+  ASSERT_THAT(temporal_unit, IsOk());
+
+  WriteBitBuffer wb(128);
+  int num_samples = 0;
+  EXPECT_THAT(
+      ObuSequencerBase::WriteTemporalUnit(kDoNotIncludeTemporalDelimiters,
+                                          *temporal_unit, wb, num_samples),
+      IsOk());
+
+  EXPECT_EQ(num_samples, kNumUntrimmedSamples);
+}
+
+TEST(WriteTemporalUnit, AddsNumberOfUntrimmedSamplesToNumSamples) {
+  std::list<AudioFrameWithData> audio_frames;
+  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  InitializeOneFrameIaSequence(codec_config_obus, audio_elements, audio_frames);
   audio_frames.front().obu.header_.num_samples_to_trim_at_end = 2;
   audio_frames.front().obu.header_.num_samples_to_trim_at_start = 1;
   constexpr uint32_t kNumUntrimmedSamples = kNumSamplesPerFrame - 1 - 2;
-
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-  };
+  const auto temporal_unit = TemporalUnitView::Create(
+      kNoParameterBlocks, audio_frames, kNoArbitraryObus);
+  ASSERT_THAT(temporal_unit, IsOk());
 
   WriteBitBuffer undefined_wb(128);
   int num_samples = 0;
   EXPECT_THAT(ObuSequencerBase::WriteTemporalUnit(
-                  kDoNotIncludeTemporalDelimiters, temporal_unit, undefined_wb,
+                  kDoNotIncludeTemporalDelimiters, *temporal_unit, undefined_wb,
                   num_samples),
               IsOk());
   EXPECT_EQ(num_samples, kNumUntrimmedSamples);
   // Another write keeps adding to the number of samples.
   EXPECT_THAT(ObuSequencerBase::WriteTemporalUnit(
-                  kDoNotIncludeTemporalDelimiters, temporal_unit, undefined_wb,
+                  kDoNotIncludeTemporalDelimiters, *temporal_unit, undefined_wb,
                   num_samples),
               IsOk());
   EXPECT_EQ(num_samples, kNumUntrimmedSamples * 2);
-}
-
-TEST(WriteTemporalUnit, FailsWhenAudioFrameHasNoAudioElement) {
-  std::list<ParameterBlockWithData> parameter_blocks;
-  std::list<AudioFrameWithData> audio_frames;
-  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
-  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
-  // Corrupt the audio frame by disassociating the audio element.
-  audio_frames.front().audio_element_with_data = nullptr;
-
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-  };
-
-  WriteBitBuffer undefined_wb(128);
-  int unused_num_samples;
-  EXPECT_FALSE(ObuSequencerBase::WriteTemporalUnit(
-                   kDoNotIncludeTemporalDelimiters, temporal_unit, undefined_wb,
-                   unused_num_samples)
-                   .ok());
-}
-
-TEST(WriteTemporalUnit, FailsWhenAudioElementHasNoCodecConfig) {
-  std::list<ParameterBlockWithData> parameter_blocks;
-  std::list<AudioFrameWithData> audio_frames;
-  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
-  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
-  // Corrupt the audio element by disassociating the codec config.
-  audio_elements.at(kFirstAudioElementId).codec_config = nullptr;
-  std::list<ArbitraryObu> arbitrary_obus;
-
-  TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-  };
-
-  WriteBitBuffer undefined_wb(128);
-  int unused_num_samples;
-  EXPECT_FALSE(ObuSequencerBase::WriteTemporalUnit(
-                   kDoNotIncludeTemporalDelimiters, temporal_unit, undefined_wb,
-                   unused_num_samples)
-                   .ok());
 }
 
 TEST(WriteTemporalUnit, WritesTemporalDelimiterObuWhenEnabled) {
@@ -508,24 +345,23 @@ TEST(WriteTemporalUnit, WritesTemporalDelimiterObuWhenEnabled) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-  };
-  const TemporalDelimiterObu kTemporalDelimiterObu(ObuHeader{});
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
+  const auto temporal_unit = TemporalUnitView::Create(
+      parameter_blocks, audio_frames, kNoArbitraryObus);
+  ASSERT_THAT(temporal_unit, IsOk());
 
+  const TemporalDelimiterObu kTemporalDelimiterObu(ObuHeader{});
   const std::list<const ObuBase*> expected_sequence = {
       &kTemporalDelimiterObu,
       parameter_blocks.front().obu.get(),
       &audio_frames.front().obu,
   };
 
-  ValidateWriteTemporalUnitSequence(kIncludeTemporalDelimiters, temporal_unit,
+  ValidateWriteTemporalUnitSequence(kIncludeTemporalDelimiters, *temporal_unit,
                                     expected_sequence);
 }
 
@@ -534,15 +370,14 @@ TEST(WriteTemporalUnit, OmitsTemporalDelimiterObuWhenDisabled) {
   std::list<AudioFrameWithData> audio_frames;
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
-  PerIdParameterMetadata per_id_metadata =
-      CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
-  InitializeOneParameterBlockAndOneAudioFrame(per_id_metadata, parameter_blocks,
-                                              audio_frames, codec_config_obus,
-                                              audio_elements);
-  const TemporalUnit temporal_unit = {
-      .audio_frames = {&audio_frames.front()},
-      .parameter_blocks = {&parameter_blocks.front()},
-  };
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
+  const auto temporal_unit = TemporalUnitView::Create(
+      parameter_blocks, audio_frames, kNoArbitraryObus);
+  ASSERT_THAT(temporal_unit, IsOk());
 
   const std::list<const ObuBase*> expected_sequence = {
       parameter_blocks.front().obu.get(),
@@ -550,7 +385,7 @@ TEST(WriteTemporalUnit, OmitsTemporalDelimiterObuWhenDisabled) {
   };
 
   ValidateWriteTemporalUnitSequence(kDoNotIncludeTemporalDelimiters,
-                                    temporal_unit, expected_sequence);
+                                    *temporal_unit, expected_sequence);
 }
 
 class ObuSequencerTest : public ::testing::Test {
@@ -579,10 +414,10 @@ class ObuSequencerTest : public ::testing::Test {
     ia_sequence_header_obu_.emplace(ObuHeader(), IASequenceHeaderObu::kIaCode,
                                     ProfileVersion::kIamfSimpleProfile,
                                     ProfileVersion::kIamfSimpleProfile);
-    per_id_metadata_ =
-        CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
+    param_definition_ =
+        CreateDemixingParamDefinition(kFirstDemixingParameterId);
     InitializeOneParameterBlockAndOneAudioFrame(
-        per_id_metadata_, parameter_blocks_, audio_frames_, codec_config_obus_,
+        param_definition_, parameter_blocks_, audio_frames_, codec_config_obus_,
         audio_elements_);
     AddMixPresentationObuWithAudioElementIds(
         kFirstMixPresentationId, {audio_elements_.begin()->first},
@@ -614,7 +449,7 @@ class ObuSequencerTest : public ::testing::Test {
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements_;
   std::list<MixPresentationObu> mix_presentation_obus_;
 
-  PerIdParameterMetadata per_id_metadata_;
+  DemixingParamDefinition param_definition_;
   std::list<ParameterBlockWithData> parameter_blocks_;
   std::list<AudioFrameWithData> audio_frames_;
 
@@ -802,24 +637,6 @@ TEST_F(ObuSequencerTest, MixPresentationsMaintainOriginalOrder) {
   ValidateWriteDescriptorObuSequence(expected_sequence);
 }
 
-void InitializeDescriptorObusForTwoMonoAmbisonicsAudioElement(
-    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
-    absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
-    std::list<MixPresentationObu>& mix_presentation_obus) {
-  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
-                                        codec_config_obus);
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kFirstAudioElementId, kCodecConfigId, {kFirstSubstreamId},
-      codec_config_obus, audio_elements);
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kSecondAudioElementId, kCodecConfigId, {kSecondSubstreamId},
-      codec_config_obus, audio_elements);
-  AddMixPresentationObuWithAudioElementIds(
-      kFirstMixPresentationId, {kFirstAudioElementId, kSecondAudioElementId},
-      kCommonMixGainParameterId, kCommonMixGainParameterRate,
-      mix_presentation_obus);
-}
-
 TEST(WriteDescriptorObus,
      InvalidWhenMixPresentationDoesNotComplyWithIaSequenceHeader) {
   IASequenceHeaderObu ia_sequence_header_obu(
@@ -854,6 +671,512 @@ TEST(WriteDescriptorObus,
                   ia_sequence_header_obu, codec_config_obus, audio_elements,
                   mix_presentation_obus, /*arbitrary_obus=*/{}, unused_wb),
               IsOk());
+}
+
+TEST(PickAndPlace, SucceedsWithIaSequenceHeaderOnly) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  const absl::flat_hash_map<DecodedUleb128, CodecConfigObu> kNoCodecConfigObus;
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, FailsWhenCalledTwice) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  const absl::flat_hash_map<DecodedUleb128, CodecConfigObu> kNoCodecConfigObus;
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              Not(IsOk()));
+}
+
+TEST(PickAndPlace, ForwardsPropertiesToPushDescriptorObus) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  InitializeDescriptorObusForTwoMonoAmbisonicsAudioElement(
+      codec_config_obus, audio_elements, mix_presentation_obus);
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // Several properties should match values derived from the descriptor OBUs.
+  const auto& codec_config_obu = codec_config_obus.begin()->second;
+  const uint32_t kExpectedCommonSamplesPerFrame =
+      codec_config_obu.GetNumSamplesPerFrame();
+  const uint32_t kExpectedCommonSampleRate =
+      codec_config_obu.GetOutputSampleRate();
+  const uint8_t kExpectedCommonBitDepth =
+      codec_config_obu.GetBitDepthToMeasureLoudness();
+  const std::optional<int64_t> kOmitFirstPts = std::nullopt;
+  const int kExpectedNumChannels = 2;
+  const std::vector<uint8_t> descriptor_obus = {1, 2, 3};
+  EXPECT_CALL(
+      mock_obu_sequencer,
+      PushSerializedDescriptorObus(
+          kExpectedCommonSamplesPerFrame, kExpectedCommonSampleRate,
+          kExpectedCommonBitDepth, kOmitFirstPts, kExpectedNumChannels, _));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, ForwardsDefaultPropertiesForTrivialIaSequences) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  const absl::flat_hash_map<DecodedUleb128, CodecConfigObu> kNoCodecConfigObus;
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(*LebGenerator::Create(),
+                                      kDoNotIncludeTemporalDelimiters,
+                                      kDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // The properties themselves are arbitrary, but "reasonable" defaults. This is
+  // to ensure certain OBU sequencers can have a file with reasonable
+  // properties, even if the IA Sequence is trivial.
+  const uint32_t kExpectedCommonSamplesPerFrame = 0;
+  const uint32_t kExpectedCommonSampleRate = 48000;
+  const uint8_t kExpectedCommonBitDepth = 16;
+  const std::optional<int64_t> kFirstUntrimmedTimestamp = 0;
+  const int kExpectedNumChannels = 2;
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedDescriptorObus(
+                  kExpectedCommonSamplesPerFrame, kExpectedCommonSampleRate,
+                  kExpectedCommonBitDepth, kFirstUntrimmedTimestamp,
+                  kExpectedNumChannels, _));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, ForwardsSerializedDescriptorObusToPushDescriptorObus) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  InitializeDescriptorObusForOneMonoAmbisonicsAudioElement(
+      codec_config_obus, audio_elements, mix_presentation_obus);
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // The spec prescribes an order among different types of descriptor OBUs.
+  const auto descriptor_obus = SerializeObusExpectOk(std::list<const ObuBase*>{
+      &kIaSequenceHeader, &codec_config_obus.begin()->second,
+      &audio_elements.begin()->second.obu, &mix_presentation_obus.front()});
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedDescriptorObus(_, _, _, _, _,
+                                           MakeConstSpan(descriptor_obus)));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, ForwardsArbitraryObusToPushSerializedDescriptorObus) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  const absl::flat_hash_map<DecodedUleb128, CodecConfigObu> kNoCodecConfigObus;
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kArbitraryObuAfterIaSequenceHeader(
+      {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
+                    ArbitraryObu::kInsertionHookAfterIaSequenceHeader)});
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // Custom arbitrary OBUs can be placed according to their hook.
+  const auto descriptor_obus = SerializeObusExpectOk(std::list<const ObuBase*>{
+      &kIaSequenceHeader, &kArbitraryObuAfterIaSequenceHeader.front()});
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedDescriptorObus(_, _, _, _, _,
+                                           MakeConstSpan(descriptor_obus)));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kArbitraryObuAfterIaSequenceHeader),
+              IsOk());
+}
+
+TEST(PickAndPlace, ForwardsPropertiesToPushAllTemporalUnits) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus, audio_frames);
+  audio_frames.front().obu.header_.num_samples_to_trim_at_start = 2;
+  audio_frames.front().obu.header_.num_samples_to_trim_at_end = 1;
+  // We expect eight samples per frame, less the trimmed samples.
+  constexpr int kExpectedTimestamp = 0;
+  constexpr int kExpectedNumSamples = 5;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  EXPECT_CALL(
+      mock_obu_sequencer,
+      PushSerializedTemporalUnit(kExpectedTimestamp, kExpectedNumSamples, _));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, OrdersTemporalUnitsByTimestamp) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> two_audio_frames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus,
+      two_audio_frames);
+  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
+      kFirstAudioElementId, kFirstSubstreamId, kSecondTimestamp,
+      kThirdTimestamp, audio_elements, two_audio_frames);
+  // Ok, it is strange, to have audio frames in the wrong order. But the
+  // sequencer handles this and arranges as per the timestamp.
+  std::swap(two_audio_frames.front(), two_audio_frames.back());
+  MockObuSequencer mock_obu_sequencer(*LebGenerator::Create(),
+                                      kDoNotIncludeTemporalDelimiters,
+                                      kDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // The cumulative number of samples to trim at the start of the IA Sequence
+  // for the initial audio frane(s).
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedTemporalUnit(kFirstTimestamp, _, _));
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedTemporalUnit(kSecondTimestamp, _, _));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, two_audio_frames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace,
+     ForwardsNumUntrimmedSamplesToPushAllTemporalUnitsWhenConfigured) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus, audio_frames);
+  audio_frames.back().obu.header_.num_samples_to_trim_at_start = 8;
+  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
+      kFirstAudioElementId, kFirstSubstreamId, kSecondTimestamp,
+      kThirdTimestamp, audio_elements, audio_frames);
+  audio_frames.back().obu.header_.num_samples_to_trim_at_start = 3;
+  // The first frame is fully trimmed. The second frame is partially trimmed.
+  constexpr std::optional<int64_t> kExpectedFirstUntrimmedTimestamp = 11;
+  MockObuSequencer mock_obu_sequencer(*LebGenerator::Create(),
+                                      kDoNotIncludeTemporalDelimiters,
+                                      kDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // The cumulative number of samples to trim at the start of the IA Sequence
+  // for the initial audio frane(s).
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedDescriptorObus(
+                  _, _, _, kExpectedFirstUntrimmedTimestamp, _, _));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, ReturnsErrorWhenResamplingWouldBeRequired) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  // Theoretically, a future profile may support multiple codec config OBUs with
+  // different sample rates. The underlying code is written to only support IAMF
+  // v1.1.0 profiles, which all only support a single codec config OBU.
+  constexpr uint32_t kCodecConfigId = 1;
+  constexpr uint32_t kSecondCodecConfigId = 2;
+  constexpr uint32_t kSampleRate = 48000;
+  constexpr uint32_t kSecondSampleRate = 44100;
+  AddLpcmCodecConfigWithIdAndSampleRate(kCodecConfigId, kSampleRate,
+                                        codec_config_obus);
+  AddLpcmCodecConfigWithIdAndSampleRate(kSecondCodecConfigId, kSecondSampleRate,
+                                        codec_config_obus);
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(*LebGenerator::Create(),
+                                      kDoNotIncludeTemporalDelimiters,
+                                      kDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              Not(IsOk()));
+}
+
+TEST(PickAndPlace,
+     ReturnsErrorWhenSamplesAreTrimmedFromStartAfterFirstUntrimmedSample) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus, audio_frames);
+  audio_frames.back().obu.header_.num_samples_to_trim_at_start = 0;
+  // Corrupt the data by adding a second frame with samples trimmed from the
+  // start, after the first frame had no trimmed samples.
+  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
+      kFirstAudioElementId, kFirstSubstreamId, kSecondTimestamp,
+      kThirdTimestamp, audio_elements, audio_frames);
+  audio_frames.back().obu.header_.num_samples_to_trim_at_start = 1;
+  MockObuSequencer mock_obu_sequencer(*LebGenerator::Create(),
+                                      kDoNotIncludeTemporalDelimiters,
+                                      kDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              Not(IsOk()));
+}
+
+TEST(PickAndPlace, ForwardsObusToPushSerializedTemporalUnit) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  DemixingParamDefinition param_definition =
+      CreateDemixingParamDefinition(kFirstDemixingParameterId);
+  std::list<ParameterBlockWithData> parameter_blocks;
+  InitializeOneParameterBlockAndOneAudioFrame(
+      param_definition, parameter_blocks, audio_frames, codec_config_obus,
+      audio_elements);
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // The spec prescribes an order among different types of OBUs.
+  const std::vector<uint8_t> serialized_temporal_unit =
+      SerializeObusExpectOk(std::list<const ObuBase*>{
+          parameter_blocks.front().obu.get(), &audio_frames.front().obu});
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedTemporalUnit(
+                  _, _, MakeConstSpan(serialized_temporal_unit)));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, parameter_blocks,
+                  kNoArbitraryObus),
+              IsOk());
+}
+
+TEST(PickAndPlace, ForwardsArbitraryObusToPushSerializedTemporalUnit) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus, audio_frames);
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kArbitraryObuBeforeFirstAudioFrame(
+      {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
+                    ArbitraryObu::kInsertionHookAfterAudioFramesAtTick,
+                    kFirstTimestamp)});
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // Custom arbitrary OBUs can be placed according to their hook.
+  const std::vector<uint8_t> serialized_audio_frame = SerializeObusExpectOk(
+      std::list<const ObuBase*>{&audio_frames.front().obu,
+                                &kArbitraryObuBeforeFirstAudioFrame.front()});
+  EXPECT_CALL(
+      mock_obu_sequencer,
+      PushSerializedTemporalUnit(_, _, MakeConstSpan(serialized_audio_frame)));
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, kNoParameterBlocks,
+                  kArbitraryObuBeforeFirstAudioFrame),
+              IsOk());
+}
+
+TEST(PickAndPlace, CallsFlushWhenDone) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  const absl::flat_hash_map<DecodedUleb128, CodecConfigObu> kNoCodecConfigObus;
+  const absl::flat_hash_map<uint32_t, AudioElementWithData> kNoAudioElements;
+  const std::list<MixPresentationObu> kNoMixPresentationObus;
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kArbitraryObuAfterIaSequenceHeader(
+      {ArbitraryObu(kObuIaReserved25, ObuHeader(), {},
+                    ArbitraryObu::kInsertionHookAfterIaSequenceHeader)});
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // `Flush` is called when done, which allows concrete implementation to
+  // finalize and optionally close their output streams.
+  EXPECT_CALL(mock_obu_sequencer, Flush());
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, kNoCodecConfigObus, kNoAudioElements,
+                  kNoMixPresentationObus, kNoAudioFrames, kNoParameterBlocks,
+                  kArbitraryObuAfterIaSequenceHeader),
+              IsOk());
+}
+
+TEST(PickAndPlace, CallsAbortWhenPushDescriptorObusFails) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  InitializeDescriptorObusForTwoMonoAmbisonicsAudioElement(
+      codec_config_obus, audio_elements, mix_presentation_obus);
+  const std::list<AudioFrameWithData> kNoAudioFrames;
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // If `PushSerializedDescriptorObus` fails, `Abort` is called. This allows
+  // concrete implementation to clean up and remove the file in one place.
+  EXPECT_CALL(mock_obu_sequencer,
+              PushSerializedDescriptorObus(_, _, _, _, _, _))
+      .WillOnce(Return(absl::InternalError("")));
+  EXPECT_CALL(mock_obu_sequencer, Abort()).Times(1);
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, kNoAudioFrames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              Not(IsOk()));
+}
+
+TEST(PickAndPlace, CallsAbortWhenPushAllTemporalUnitsFails) {
+  const IASequenceHeaderObu kIaSequenceHeader(
+      ObuHeader(), IASequenceHeaderObu::kIaCode,
+      ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile);
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentation_obus;
+  std::list<AudioFrameWithData> audio_frames;
+  InitializeOneFrameIaSequenceWithMixPresentation(
+      codec_config_obus, audio_elements, mix_presentation_obus, audio_frames);
+  const std::list<ParameterBlockWithData> kNoParameterBlocks;
+  const std::list<ArbitraryObu> kNoArbitraryObus;
+  MockObuSequencer mock_obu_sequencer(
+      *LebGenerator::Create(), kDoNotIncludeTemporalDelimiters,
+      kDoNotDelayDescriptorsUntilTrimAtStartIsKnown);
+
+  // If `PushSerializedTemporalUnit` fails, `Abort` is called. This allows
+  // concrete implementation to clean up and remove the file in one place.
+  EXPECT_CALL(mock_obu_sequencer, PushSerializedTemporalUnit(_, _, _))
+      .WillOnce(Return(absl::InternalError("")));
+  EXPECT_CALL(mock_obu_sequencer, Abort()).Times(1);
+
+  EXPECT_THAT(mock_obu_sequencer.PickAndPlace(
+                  kIaSequenceHeader, codec_config_obus, audio_elements,
+                  mix_presentation_obus, audio_frames, kNoParameterBlocks,
+                  kNoArbitraryObus),
+              Not(IsOk()));
 }
 
 }  // namespace

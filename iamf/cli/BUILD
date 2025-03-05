@@ -2,6 +2,7 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
 package(default_visibility = [
+    # TODO(b/400697000): Break up visibility for the api directory.
     "//iamf/api:__subpackages__",
     "//iamf/cli:__subpackages__",
 ])
@@ -90,13 +91,10 @@ cc_library(
     hdrs = ["cli_util.h"],
     deps = [
         ":audio_element_with_data",
-        ":audio_frame_with_data",
         "//iamf/common/utils:macros",
         "//iamf/common/utils:sample_processing_utils",
-        "//iamf/common/utils:validation_utils",
         "//iamf/obu:audio_element",
         "//iamf/obu:codec_config",
-        "//iamf/obu:demixing_param_definition",
         "//iamf/obu:mix_presentation",
         "//iamf/obu:param_definitions",
         "//iamf/obu:types",
@@ -104,7 +102,6 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
     ],
@@ -185,6 +182,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ],
@@ -225,6 +223,7 @@ cc_library(
         ":parameters_manager",
         ":renderer_factory",
         ":rendering_mix_presentation_finalizer",
+        "//iamf/cli/proto:encoder_control_metadata_cc_proto",
         "//iamf/cli/proto:test_vector_metadata_cc_proto",
         "//iamf/cli/proto:user_metadata_cc_proto",
         "//iamf/cli/proto_conversion:downmixing_reconstruction_util",
@@ -323,8 +322,10 @@ cc_library(
     deps = [
         ":audio_element_with_data",
         ":audio_frame_with_data",
+        ":cli_util",
         ":parameter_block_with_data",
         ":profile_filter",
+        ":temporal_unit_view",
         "//iamf/common:leb_generator",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils:macros",
@@ -337,12 +338,14 @@ cc_library(
         "//iamf/obu:obu_header",
         "//iamf/obu:parameter_block",
         "//iamf/obu:temporal_delimiter",
+        "//iamf/obu:types",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -351,21 +354,14 @@ cc_library(
     srcs = ["obu_sequencer_iamf.cc"],
     hdrs = ["obu_sequencer_iamf.h"],
     deps = [
-        ":audio_element_with_data",
-        ":audio_frame_with_data",
         ":obu_sequencer_base",
-        ":parameter_block_with_data",
         "//iamf/common:leb_generator",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils:macros",
-        "//iamf/obu:arbitrary_obu",
-        "//iamf/obu:codec_config",
-        "//iamf/obu:ia_sequence_header",
-        "//iamf/obu:mix_presentation",
-        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -439,7 +435,6 @@ cc_library(
         ":cli_util",
         ":parameter_block_with_data",
         "//iamf/common/utils:macros",
-        "//iamf/obu:demixing_param_definition",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_block",
         "//iamf/obu:parameter_data",
@@ -550,6 +545,28 @@ cc_library(
     deps = [
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "temporal_unit_view",
+    srcs = ["temporal_unit_view.cc"],
+    hdrs = ["temporal_unit_view.h"],
+    deps = [
+        ":audio_frame_with_data",
+        ":parameter_block_with_data",
+        "//iamf/common/utils:macros",
+        "//iamf/common/utils:validation_utils",
+        "//iamf/obu:arbitrary_obu",
+        "//iamf/obu:types",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
     ],
 )

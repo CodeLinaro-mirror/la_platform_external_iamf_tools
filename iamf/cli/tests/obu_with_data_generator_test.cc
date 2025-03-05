@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -40,6 +41,7 @@
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/demixing_param_definition.h"
 #include "iamf/obu/obu_header.h"
+#include "iamf/obu/param_definition_variant.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_block.h"
 #include "iamf/obu/recon_gain_info_parameter_data.h"
@@ -50,6 +52,7 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::testing::ElementsAreArray;
+using ::testing::NotNull;
 
 using enum ChannelLabel::Label;
 
@@ -246,9 +249,7 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
         dmixp_mode;
     param_definition.default_demixing_info_parameter_data_.default_w = 0;
     AudioElementParam param = {.param_definition = param_definition};
-    AddAudioParam(parameter_id,
-                  DemixingParamDefinition::kParameterDefinitionDemixing,
-                  std::move(param), param_definition);
+    AddAudioParam(parameter_id, param_definition, std::move(param));
   }
 
   void AddReconGainAudioParam(DecodedUleb128 parameter_id) {
@@ -257,16 +258,14 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
     FillCommonParamDefinition(parameter_id, param_definition);
 
     AudioElementParam param = {.param_definition = param_definition};
-    AddAudioParam(parameter_id,
-                  DemixingParamDefinition::kParameterDefinitionReconGain,
-                  std::move(param), param_definition);
+    AddAudioParam(parameter_id, param_definition, std::move(param));
   }
 
   void SetUpModules() {
     // Set up the global timing module.
-    ASSERT_THAT(global_timing_module_.Initialize(audio_elements_with_data_,
-                                                 param_definitions_),
-                IsOk());
+    global_timing_module_ = GlobalTimingModule::Create(
+        audio_elements_with_data_, param_definition_variants_);
+    ASSERT_THAT(global_timing_module_, NotNull());
 
     // Set up the parameters manager.
     parameters_manager_ =
@@ -284,19 +283,6 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
     const int num_ids = (recon_gain_parameter_id.has_value() ? 1 : 0) +
                         (demixing_parameter_id.has_value() ? 1 : 0);
 
-    std::optional<PerIdParameterMetadata> recon_gain_per_id_metadata =
-        std::nullopt;
-    if (recon_gain_parameter_id.has_value()) {
-      recon_gain_per_id_metadata =
-          parameter_id_to_metadata_[*recon_gain_parameter_id];
-    }
-    std::optional<PerIdParameterMetadata> demixing_per_id_metadata =
-        std::nullopt;
-    if (demixing_parameter_id.has_value()) {
-      demixing_per_id_metadata =
-          parameter_id_to_metadata_[*demixing_parameter_id];
-    }
-
     // Add parameter block OBUs in temporal order.
     for (int i = 0;
          i < recon_gain_values_vector.size() || i < dmixp_mode_vector.size();
@@ -304,7 +290,8 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
       if (recon_gain_parameter_id.has_value()) {
         parameter_block_obus.push_back(std::make_unique<ParameterBlockObu>(
             ObuHeader(), *recon_gain_parameter_id,
-            *recon_gain_per_id_metadata));
+            std::get<ReconGainParamDefinition>(
+                param_definition_variants_.at(*recon_gain_parameter_id))));
         EXPECT_THAT(parameter_block_obus.back()->InitializeSubblocks(), IsOk());
 
         // Data specific to recon gain parameter blocks.
@@ -318,7 +305,9 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
       }
       if (demixing_parameter_id.has_value()) {
         parameter_block_obus.push_back(std::make_unique<ParameterBlockObu>(
-            ObuHeader(), *demixing_parameter_id, *demixing_per_id_metadata));
+            ObuHeader(), *demixing_parameter_id,
+            std::get<DemixingParamDefinition>(
+                param_definition_variants_.at(*demixing_parameter_id))));
         EXPECT_THAT(parameter_block_obus.back()->InitializeSubblocks(), IsOk());
 
         // Data specific to demixing parameter blocks.
@@ -343,7 +332,7 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
               {parameter_id, kStartTimestamp});
       auto parameter_block_with_data =
           ObuWithDataGenerator::GenerateParameterBlockWithData(
-              last_end_timestamp_iter->second, global_timing_module_,
+              last_end_timestamp_iter->second, *global_timing_module_,
               std::move(parameter_block_obu));
       ASSERT_THAT(parameter_block_with_data, IsOk());
       last_end_timestamp_iter->second =
@@ -372,7 +361,7 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
       std::list<ParameterBlockWithData>::iterator& parameter_block_iter) {
     std::optional<int32_t> global_timestamp = std::nullopt;
     ASSERT_THAT(
-        global_timing_module_.GetGlobalAudioFrameTimestamp(global_timestamp),
+        global_timing_module_->GetGlobalAudioFrameTimestamp(global_timestamp),
         IsOk());
     for (; parameter_block_iter != parameter_blocks_with_data_.end();
          parameter_block_iter++) {
@@ -381,9 +370,11 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
           parameter_block.start_timestamp != *global_timestamp) {
         return;
       }
-      auto param_definition_type =
-          parameter_id_to_metadata_.at(parameter_block.obu->parameter_id_)
-              .param_definition.GetType();
+      auto param_definition_type = std::visit(
+          [](const auto& param_definition) {
+            return param_definition.GetType();
+          },
+          param_definition_variants_.at(parameter_block.obu->parameter_id_));
       if (param_definition_type ==
           ParamDefinition::kParameterDefinitionDemixing) {
         parameters_manager_->AddDemixingParameterBlock(&parameter_block);
@@ -397,7 +388,7 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
   void UpdateParameterStatesIfNeeded() {
     std::optional<int32_t> global_timestamp = std::nullopt;
     EXPECT_THAT(
-        global_timing_module_.GetGlobalAudioFrameTimestamp(global_timestamp),
+        global_timing_module_->GetGlobalAudioFrameTimestamp(global_timestamp),
         IsOk());
     if (!global_timestamp.has_value()) {
       return;
@@ -438,8 +429,9 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
     EXPECT_EQ(recon_gain_info_parameter_data.recon_gain_elements.size(), 1);
     const auto& recon_gain_element =
         recon_gain_info_parameter_data.recon_gain_elements[0];
-    EXPECT_EQ(recon_gain_element.recon_gain_flag, DecodedUleb128(1));
-    EXPECT_THAT(recon_gain_element.recon_gain,
+    ASSERT_TRUE(recon_gain_element.has_value());
+    EXPECT_EQ(recon_gain_element->recon_gain_flag, DecodedUleb128(1));
+    EXPECT_THAT(recon_gain_element->recon_gain,
                 ElementsAreArray(expected_recon_gain_values));
   }
 
@@ -452,14 +444,10 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
       audio_elements_with_data_;
 
   std::list<AudioFrameObu> audio_frame_obus_;
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*>
-      param_definitions_;
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant>
+      param_definition_variants_;
   std::list<ParameterBlockWithData> parameter_blocks_with_data_;
-
-  // Using `node_hash_map` because pointer stability is desired.
-  absl::node_hash_map<DecodedUleb128, PerIdParameterMetadata>
-      parameter_id_to_metadata_;
-  GlobalTimingModule global_timing_module_;
+  std::unique_ptr<GlobalTimingModule> global_timing_module_;
   std::unique_ptr<ParametersManager> parameters_manager_;
 
  private:
@@ -472,21 +460,14 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
     param_definition.InitializeSubblockDurations(1);
   }
 
-  void AddAudioParam(
-      DecodedUleb128 parameter_id,
-      DemixingParamDefinition::ParameterDefinitionType param_definition_type,
-      AudioElementParam&& param, const ParamDefinition& param_definition) {
+  void AddAudioParam(DecodedUleb128 parameter_id,
+                     const ParamDefinitionVariant& param_definition_variant,
+                     AudioElementParam&& param) {
     auto& audio_element_obu =
         audio_elements_with_data_.at(kFirstAudioElementId).obu;
     audio_element_obu.num_parameters_++;
     audio_element_obu.audio_element_params_.push_back(std::move(param));
-
-    // Create per-ID metadata for this parameter.
-    parameter_id_to_metadata_[parameter_id] =
-        PerIdParameterMetadata{.param_definition = param_definition};
-    param_definitions_.emplace(
-        parameter_id,
-        &parameter_id_to_metadata_.at(parameter_id).param_definition);
+    param_definition_variants_.emplace(parameter_id, param_definition_variant);
   }
 };
 
@@ -501,7 +482,7 @@ TEST_F(GenerateAudioFrameWithDataTest, ValidAudioFrame) {
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     ASSERT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
   }
@@ -541,7 +522,7 @@ TEST_F(GenerateAudioFrameWithDataTest,
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
   }
@@ -583,7 +564,7 @@ TEST_F(GenerateAudioFrameWithDataTest,
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
     UpdateParameterStatesIfNeeded();
@@ -642,7 +623,7 @@ TEST_F(GenerateAudioFrameWithDataTest,
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
     UpdateParameterStatesIfNeeded();
@@ -715,7 +696,7 @@ TEST_F(GenerateAudioFrameWithDataTest,
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
     UpdateParameterStatesIfNeeded();
@@ -772,7 +753,7 @@ TEST_F(GenerateAudioFrameWithDataTest,
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_THAT(audio_frame_with_data, IsOk());
     audio_frames_with_data.push_back(std::move(*audio_frame_with_data));
     UpdateParameterStatesIfNeeded();
@@ -808,7 +789,7 @@ TEST_F(GenerateAudioFrameWithDataTest, RejectMismatchingAudioElement) {
   // Set up inputs. Notice that the substream ID recorded in the audio element
   // (`kSecondSubstreamId`) is different from that in the audio frame OBU
   // (`kFirstSubstreamId`). This will cause `GenerateAudioFrameWithData()`
-  // to fail, because it cannot find the correspoinding audio element of the
+  // to fail, because it cannot find the corresponding audio element of the
   // audio frame being processed.
   SetUpObus({kSecondSubstreamId}, {kFirstSubstreamAudioFrameObu}, 1);
   SetUpModules();
@@ -818,7 +799,7 @@ TEST_F(GenerateAudioFrameWithDataTest, RejectMismatchingAudioElement) {
     auto audio_frame_with_data =
         ObuWithDataGenerator::GenerateAudioFrameWithData(
             audio_elements_with_data_.at(kFirstAudioElementId), audio_frame_obu,
-            global_timing_module_, *parameters_manager_);
+            *global_timing_module_, *parameters_manager_);
     EXPECT_FALSE(audio_frame_with_data.ok());
   }
 }
@@ -834,21 +815,19 @@ TEST(GenerateParameterBlockWithData, ValidParameterBlock) {
       /*substream_ids=*/{kFirstSubstreamId}, codec_config_obus,
       audio_elements_with_data);
 
-  absl::flat_hash_map<DecodedUleb128, const ParamDefinition*> param_definitions;
-  ParamDefinition param_definition = ParamDefinition();
+  absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant>
+      param_definition_variants;
+  DemixingParamDefinition param_definition;
   param_definition.param_definition_mode_ = 0;
   param_definition.duration_ = static_cast<DecodedUleb128>(kDuration);
   param_definition.parameter_rate_ = 1;
-  param_definitions.emplace(kFirstParameterId, &param_definition);
-  GlobalTimingModule global_timing_module;
-  ASSERT_THAT(global_timing_module.Initialize(audio_elements_with_data,
-                                              param_definitions),
-              IsOk());
+  param_definition_variants.emplace(kFirstParameterId, param_definition);
+  auto global_timing_module = GlobalTimingModule::Create(
+      audio_elements_with_data, param_definition_variants);
+  ASSERT_THAT(global_timing_module, NotNull());
   std::list<std::unique_ptr<ParameterBlockObu>> parameter_block_obus;
-  PerIdParameterMetadata per_id_metadata = {.param_definition =
-                                                param_definition};
   parameter_block_obus.push_back(std::make_unique<ParameterBlockObu>(
-      ObuHeader(), kFirstParameterId, per_id_metadata));
+      ObuHeader(), kFirstParameterId, param_definition));
 
   // Call `GenerateParameterBlockWithData()` iteratively with one OBU at a time.
   auto start_timestamp = kStartTimestamp;
@@ -856,7 +835,7 @@ TEST(GenerateParameterBlockWithData, ValidParameterBlock) {
   for (auto& parameter_block_obu : parameter_block_obus) {
     auto parameter_block_with_data =
         ObuWithDataGenerator::GenerateParameterBlockWithData(
-            start_timestamp, global_timing_module,
+            start_timestamp, *global_timing_module,
             std::move(parameter_block_obu));
     EXPECT_THAT(parameter_block_with_data, IsOk());
     start_timestamp += kDuration;

@@ -25,10 +25,14 @@
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/types/span.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
+#include "iamf/cli/cli_util.h"
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/profile_filter.h"
+#include "iamf/cli/temporal_unit_view.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/arbitrary_obu.h"
@@ -40,10 +44,23 @@
 #include "iamf/obu/obu_header.h"
 #include "iamf/obu/parameter_block.h"
 #include "iamf/obu/temporal_delimiter.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
 namespace {
+
+// Write buffer. Let's start with 64 KB. The buffer will resize for larger
+// OBUs if needed.
+constexpr int64_t kBufferStartSize = 65536;
+
+/*!\brief Map of start timestamp -> OBUs in that temporal unit.
+ *
+ * Map of temporal unit start time -> OBUs that overlap this temporal unit.
+ * Using absl::btree_map for convenience as this allows iterating by
+ * timestamp (which is the key).
+ */
+typedef absl::btree_map<int32_t, TemporalUnitView> TemporalUnitMap;
 
 template <typename KeyValueMap, typename KeyComparator>
 std::vector<uint32_t> SortedKeys(const KeyValueMap& map,
@@ -56,97 +73,102 @@ std::vector<uint32_t> SortedKeys(const KeyValueMap& map,
   std::sort(keys.begin(), keys.end(), comparator);
   return keys;
 }
+// Some IA Sequences can be "trivial" and missing descriptor OBUs or audio
+// frames. These would decode to an empty stream. Fallback to some reasonable,
+// but arbitrary default values, when the true value is undefined.
 
-}  // namespace
+// Fallback sample rate when there are no Codec Config OBUs.
+constexpr uint32_t kFallbackSampleRate = 48000;
+// Fallback bit-depth when there are no Codec Config OBUs.
+constexpr uint8_t kFallbackBitDepth = 16;
+// Fallback number of channels when there are no audio elements.
+constexpr uint32_t kFallbackNumChannels = 2;
+// Fallback first PTS when there are no audio frames.
+constexpr int64_t kFallbackFirstPts = 0;
 
-absl::Status ObuSequencerBase::GenerateTemporalUnitMap(
-    const std::list<AudioFrameWithData>& audio_frames,
-    const std::list<ParameterBlockWithData>& parameter_blocks,
-    const std::list<ArbitraryObu>& arbitrary_obus,
-    TemporalUnitMap& temporal_unit_map) {
-  // Put all audio frames into the map based on their start time.
-  for (auto& audio_frame : audio_frames) {
-    auto& temporal_unit_audio_frames =
-        temporal_unit_map[audio_frame.start_timestamp].audio_frames;
-    if (!temporal_unit_audio_frames.empty() &&
-        temporal_unit_audio_frames.back()->end_timestamp !=
-            audio_frame.end_timestamp) {
-      return absl::InvalidArgumentError(
-          "Temporal units must have the same start time and duration.");
-    }
-    temporal_unit_audio_frames.push_back(&audio_frame);
+// Gets the sum of the number of channels for the given audio elements. Or falls
+// back to a default value if there are no audio elements.
+int32_t GetNumberOfChannels(
+    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements) {
+  if (audio_elements.empty()) {
+    // The muxer fails if we return the true value (0 channels).
+    return kFallbackNumChannels;
   }
 
-  // Sort within each temporal unit, first by Audio Element ID and then
-  // by Audio Substream ID.
-  auto compare_audio_element_id_audio_substream_id =
-      [](const AudioFrameWithData* a, const AudioFrameWithData* b) {
-        const auto audio_element_id_a =
-            a->audio_element_with_data->obu.GetAudioElementId();
-        const auto audio_element_id_b =
-            b->audio_element_with_data->obu.GetAudioElementId();
-        if (audio_element_id_a == audio_element_id_b) {
-          return a->obu.GetSubstreamId() < b->obu.GetSubstreamId();
-        } else {
-          return audio_element_id_a < audio_element_id_b;
-        }
-      };
-
-  for (auto& [unused_timestamp, temporal_unit] : temporal_unit_map) {
-    std::sort(temporal_unit.audio_frames.begin(),
-              temporal_unit.audio_frames.end(),
-              compare_audio_element_id_audio_substream_id);
-  }
-
-  // Put all parameter blocks into every temporal unit they overlap.
-  for (const auto& parameter_block : parameter_blocks) {
-    // Get the start and end time of the parameter block.
-    const int32_t obu_start_time = parameter_block.start_timestamp;
-    const int32_t obu_end_time = parameter_block.end_timestamp;
-
-    for (auto& temporal_unit : temporal_unit_map) {
-      const int32_t temporal_unit_start = temporal_unit.first;
-      if (temporal_unit.second.audio_frames.empty()) {
-        return absl::InvalidArgumentError("Temporal unit has no audio frames.");
-      }
-      const int32_t temporal_unit_end =
-          temporal_unit.second.audio_frames[0]->end_timestamp;
-
-      // Check if the temporal unit starts or ends during the parameter block.
-      if ((obu_start_time < temporal_unit_start &&
-           temporal_unit_start < obu_end_time) ||
-          (temporal_unit_start <= obu_start_time &&
-           obu_start_time < temporal_unit_end)) {
-        temporal_unit.second.parameter_blocks.push_back(&parameter_block);
-      }
+  int32_t num_channels = 0;
+  for (const auto& [audio_element_id, audio_element] : audio_elements) {
+    // Add the number of channels for every substream in every audio element.
+    for (const auto& [substream_id, labels] :
+         audio_element.substream_id_to_labels) {
+      num_channels += static_cast<int32_t>(labels.size());
     }
   }
+  return num_channels;
+}
 
-  // Sort within each temporal unit by Parameter ID.
-  auto compare_parameter_id = [](const ParameterBlockWithData* a,
-                                 const ParameterBlockWithData* b) {
-    return a->obu->parameter_id_ < b->obu->parameter_id_;
-  };
-
-  for (auto& [unused_timestamp, temporal_unit] : temporal_unit_map) {
-    std::sort(temporal_unit.parameter_blocks.begin(),
-              temporal_unit.parameter_blocks.end(), compare_parameter_id);
+// Gets the first Presentation Timestamp (PTS); the timestamp of the first
+// sample that is not trimmed. Or zero of there are no untrimmed samples.
+absl::StatusOr<int64_t> GetFirstUntrimmedTimestamp(
+    const TemporalUnitMap& temporal_unit_map) {
+  if (temporal_unit_map.empty()) {
+    return kFallbackFirstPts;
   }
 
-  for (const auto& arbitrary_obu : arbitrary_obus) {
-    if (arbitrary_obu.insertion_tick_ == std::nullopt) {
+  std::optional<int64_t> first_untrimmed_timestamp;
+  for (const auto& [start_timestamp, temporal_unit] : temporal_unit_map) {
+    if (temporal_unit.num_untrimmed_samples_ == 0) {
+      // Fully trimmed frame. Wait for more.
       continue;
     }
-    temporal_unit_map[*arbitrary_obu.insertion_tick_].arbitrary_obus.push_back(
-        &arbitrary_obu);
+    if (temporal_unit.num_samples_to_trim_at_start_ > 0 &&
+        first_untrimmed_timestamp.has_value()) {
+      return absl::InvalidArgumentError(
+          "Temporal units must not have samples trimmed from the start, after "
+          "the first untrimmed sample.");
+    }
+
+    // Found the first untrimmed sample. Get the timestamp. We only continue
+    // looping to check that no more temporal units have samples trimmed from
+    // the start, after the first untrimmed sample.
+    first_untrimmed_timestamp =
+        start_timestamp + temporal_unit.num_samples_to_trim_at_start_;
   }
 
-  return absl::OkStatus();
+  return first_untrimmed_timestamp.has_value() ? *first_untrimmed_timestamp
+                                               : kFallbackFirstPts;
+}
+
+// Gets the common sample rate and bit depth for the given codec config OBUs. Or
+// falls back to default values if there are no codec configs.
+absl::Status GetCommonSampleRateAndBitDepth(
+    const absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
+    uint32_t& common_sample_rate, uint8_t& common_bit_depth,
+    bool& requires_resampling) {
+  if (codec_config_obus.empty()) {
+    // The true value is undefined, but the muxer requires non-zero values.
+    common_sample_rate = kFallbackSampleRate;
+    common_bit_depth = kFallbackBitDepth;
+    requires_resampling = false;
+    return absl::OkStatus();
+  }
+
+  requires_resampling = false;
+  absl::flat_hash_set<uint32_t> sample_rates;
+  absl::flat_hash_set<uint8_t> bit_depths;
+  for (const auto& [unused_id, obu] : codec_config_obus) {
+    sample_rates.insert(obu.GetOutputSampleRate());
+    bit_depths.insert(obu.GetBitDepthToMeasureLoudness());
+  }
+
+  return ::iamf_tools::GetCommonSampleRateAndBitDepth(
+      sample_rates, bit_depths, common_sample_rate, common_bit_depth,
+      requires_resampling);
 }
 
 absl::Status WriteObusWithHook(
     ArbitraryObu::InsertionHook insertion_hook,
-    const std::list<const ArbitraryObu*>& arbitrary_obus, WriteBitBuffer& wb) {
+    const std::vector<const ArbitraryObu*>& arbitrary_obus,
+    WriteBitBuffer& wb) {
   for (const auto& arbitrary_obu : arbitrary_obus) {
     if (arbitrary_obu->insertion_hook_ == insertion_hook) {
       RETURN_IF_NOT_OK(arbitrary_obu->ValidateAndWriteObu(wb));
@@ -155,36 +177,58 @@ absl::Status WriteObusWithHook(
   return absl::OkStatus();
 }
 
-absl::Status AccumulateNumSamples(const TemporalUnit& temporal_unit,
-                                  int& num_samples) {
-  if (temporal_unit.audio_frames.empty()) {
-    // Exit early even when `IGNORE_ERRORS_USE_ONLY_FOR_IAMF_TEST_SUITE` is set.
-    return absl::InvalidArgumentError(
-        "Every temporal unit must have an audio frame.");
-  }
-  const auto& first_audio_frame = temporal_unit.audio_frames[0];
-  if (first_audio_frame->audio_element_with_data == nullptr ||
-      first_audio_frame->audio_element_with_data->codec_config == nullptr) {
-    return absl::InvalidArgumentError(
-        "Every temporal unit must have an audio frame with a codec config.");
-  }
-  const uint32_t num_samples_per_frame =
-      temporal_unit.audio_frames[0]
-          ->audio_element_with_data->codec_config->GetNumSamplesPerFrame();
+absl::Status GenerateTemporalUnitMap(
+    const std::list<AudioFrameWithData>& audio_frames,
+    const std::list<ParameterBlockWithData>& parameter_blocks,
+    const std::list<ArbitraryObu>& arbitrary_obus,
+    TemporalUnitMap& temporal_unit_map) {
+  // Initially, guess the temporal units by the start time. Deeper validation
+  // and sanitization occurs when creating the TemporalUnitView.
+  struct UnsanitizedTemporalUnit {
+    std::vector<const ParameterBlockWithData*> parameter_blocks;
+    std::vector<const AudioFrameWithData*> audio_frames;
+    std::vector<const ArbitraryObu*> arbitrary_obus;
+  };
+  typedef absl::flat_hash_map<InternalTimestamp, UnsanitizedTemporalUnit>
+      UnsanitizedTemporalUnitMap;
+  UnsanitizedTemporalUnitMap unsanitized_temporal_unit_map;
 
-  num_samples +=
-      (num_samples_per_frame -
-       (temporal_unit.audio_frames[0]
-            ->obu.header_.num_samples_to_trim_at_start +
-        temporal_unit.audio_frames[0]->obu.header_.num_samples_to_trim_at_end));
+  for (const auto& parameter_block : parameter_blocks) {
+    unsanitized_temporal_unit_map[parameter_block.start_timestamp]
+        .parameter_blocks.push_back(&parameter_block);
+  }
+  for (auto& audio_frame : audio_frames) {
+    unsanitized_temporal_unit_map[audio_frame.start_timestamp]
+        .audio_frames.push_back(&audio_frame);
+  }
+  for (const auto& arbitrary_obu : arbitrary_obus) {
+    if (arbitrary_obu.insertion_tick_ == std::nullopt) {
+      continue;
+    }
+    unsanitized_temporal_unit_map[*arbitrary_obu.insertion_tick_]
+        .arbitrary_obus.push_back(&arbitrary_obu);
+  }
+  // Sanitize and build a map on the sanitized temporal units.
+  for (const auto& [timestamp, unsanitized_temporal_unit] :
+       unsanitized_temporal_unit_map) {
+    auto temporal_unit_view = TemporalUnitView::CreateFromPointers(
+        unsanitized_temporal_unit.parameter_blocks,
+        unsanitized_temporal_unit.audio_frames,
+        unsanitized_temporal_unit.arbitrary_obus);
+    if (!temporal_unit_view.ok()) {
+      return temporal_unit_view.status();
+    }
+    temporal_unit_map.emplace(timestamp, *std::move(temporal_unit_view));
+  }
 
   return absl::OkStatus();
 }
+}  // namespace
 
 absl::Status ObuSequencerBase::WriteTemporalUnit(
-    bool include_temporal_delimiters, const TemporalUnit& temporal_unit,
+    bool include_temporal_delimiters, const TemporalUnitView& temporal_unit,
     WriteBitBuffer& wb, int& num_samples) {
-  MAYBE_RETURN_IF_NOT_OK(AccumulateNumSamples(temporal_unit, num_samples));
+  num_samples += temporal_unit.num_untrimmed_samples_;
 
   if (include_temporal_delimiters) {
     // Temporal delimiter has no payload.
@@ -194,20 +238,20 @@ absl::Status ObuSequencerBase::WriteTemporalUnit(
 
   RETURN_IF_NOT_OK(
       WriteObusWithHook(ArbitraryObu::kInsertionHookBeforeParameterBlocksAtTick,
-                        temporal_unit.arbitrary_obus, wb));
+                        temporal_unit.arbitrary_obus_, wb));
 
   // Write the Parameter Block OBUs.
-  for (const auto& parameter_blocks : temporal_unit.parameter_blocks) {
+  for (const auto& parameter_blocks : temporal_unit.parameter_blocks_) {
     const auto& parameter_block = parameter_blocks;
     RETURN_IF_NOT_OK(parameter_block->obu->ValidateAndWriteObu(wb));
   }
 
   RETURN_IF_NOT_OK(
       WriteObusWithHook(ArbitraryObu::kInsertionHookAfterParameterBlocksAtTick,
-                        temporal_unit.arbitrary_obus, wb));
+                        temporal_unit.arbitrary_obus_, wb));
 
   // Write Audio Frame OBUs.
-  for (const auto& audio_frame : temporal_unit.audio_frames) {
+  for (const auto& audio_frame : temporal_unit.audio_frames_) {
     RETURN_IF_NOT_OK(audio_frame->obu.ValidateAndWriteObu(wb));
     LOG_FIRST_N(INFO, 10) << "wb.bit_offset= " << wb.bit_offset()
                           << " after Audio Frame";
@@ -215,7 +259,7 @@ absl::Status ObuSequencerBase::WriteTemporalUnit(
 
   RETURN_IF_NOT_OK(
       WriteObusWithHook(ArbitraryObu::kInsertionHookAfterAudioFramesAtTick,
-                        temporal_unit.arbitrary_obus, wb));
+                        temporal_unit.arbitrary_obus_, wb));
 
   if (!wb.IsByteAligned()) {
     return absl::InvalidArgumentError("Write buffer not byte-aligned");
@@ -297,6 +341,126 @@ absl::Status ObuSequencerBase::WriteDescriptorObus(
   RETURN_IF_NOT_OK(ArbitraryObu::WriteObusWithHook(
       ArbitraryObu::kInsertionHookAfterMixPresentations, arbitrary_obus, wb));
 
+  return absl::OkStatus();
+}
+
+ObuSequencerBase::ObuSequencerBase(
+    const LebGenerator& leb_generator, bool include_temporal_delimiters,
+    bool delay_descriptors_until_first_untrimmed_sample)
+    : leb_generator_(leb_generator),
+      delay_descriptors_until_first_untrimmed_sample_(
+          delay_descriptors_until_first_untrimmed_sample),
+      include_temporal_delimiters_(include_temporal_delimiters) {}
+
+ObuSequencerBase::~ObuSequencerBase() {};
+
+absl::Status ObuSequencerBase::PickAndPlace(
+    const IASequenceHeaderObu& ia_sequence_header_obu,
+    const absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
+    const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
+    const std::list<MixPresentationObu>& mix_presentation_obus,
+    const std::list<AudioFrameWithData>& audio_frames,
+    const std::list<ParameterBlockWithData>& parameter_blocks,
+    const std::list<ArbitraryObu>& arbitrary_obus) {
+  switch (state_) {
+    case kInitialized:
+      break;
+    case kFlushed:
+      return absl::FailedPreconditionError(
+          "`PickAndPlace` should only be called once per instance.");
+  }
+
+  uint32_t common_sample_rate;
+  uint8_t common_bit_depth;
+  bool requires_resampling;
+  RETURN_IF_NOT_OK(
+      GetCommonSampleRateAndBitDepth(codec_config_obus, common_sample_rate,
+                                     common_bit_depth, requires_resampling));
+  if (requires_resampling) {
+    return absl::UnimplementedError(
+        "Codec Config OBUs with different bit-depths and/or sample "
+        "rates are not in base-enhanced/base/simple profile; they are not "
+        "allowed in ISOBMFF.");
+  }
+
+  // This assumes all Codec Configs have the same sample rate and frame size.
+  // We may need to be more careful if IA Samples do not all (except the
+  // final) have the same duration in the future.
+  uint32_t common_samples_per_frame = 0;
+  RETURN_IF_NOT_OK(
+      GetCommonSamplesPerFrame(codec_config_obus, common_samples_per_frame));
+
+  // Write the descriptor OBUs.
+  WriteBitBuffer wb(kBufferStartSize, leb_generator_);
+
+  RETURN_IF_NOT_OK(ArbitraryObu::WriteObusWithHook(
+      ArbitraryObu::kInsertionHookBeforeDescriptors, arbitrary_obus, wb));
+  // Write out the descriptor OBUs.
+  RETURN_IF_NOT_OK(ObuSequencerBase::WriteDescriptorObus(
+      ia_sequence_header_obu, codec_config_obus, audio_elements,
+      mix_presentation_obus, arbitrary_obus, wb));
+  RETURN_IF_NOT_OK(ArbitraryObu::WriteObusWithHook(
+      ArbitraryObu::kInsertionHookAfterDescriptors, arbitrary_obus, wb));
+
+  TemporalUnitMap temporal_unit_map;
+  RETURN_IF_NOT_OK(GenerateTemporalUnitMap(audio_frames, parameter_blocks,
+                                           arbitrary_obus, temporal_unit_map));
+
+  // If `delay_descriptors_until_first_untrimmed_sample` is true, then concrete
+  // class needs `first_untrimmed_timestamp`. Otherwise, it would cause an
+  // unnecessary delay, because the PTS cannot be determined until the first
+  // untrimmed sample is received.
+  std::optional<int64_t> first_untrimmed_timestamp;
+  if (delay_descriptors_until_first_untrimmed_sample_) {
+    // TODO(b/397637224): When this class can be used iteratively, we need to
+    //                    determine the first PTS from the initial audio frames
+    //                    only.
+    const auto temp_first_untrimmed_timestamp =
+        GetFirstUntrimmedTimestamp(temporal_unit_map);
+    if (!temp_first_untrimmed_timestamp.ok()) {
+      return temp_first_untrimmed_timestamp.status();
+    }
+    first_untrimmed_timestamp = *temp_first_untrimmed_timestamp;
+  }
+
+  int64_t cumulative_num_samples_for_logging = 0;
+  int64_t num_temporal_units_for_logging = 0;
+  const auto wrote_ia_sequence = [&]() -> absl::Status {
+    RETURN_IF_NOT_OK(PushSerializedDescriptorObus(
+        common_samples_per_frame, common_sample_rate, common_bit_depth,
+        first_untrimmed_timestamp, GetNumberOfChannels(audio_elements),
+        absl::MakeConstSpan(wb.bit_buffer())));
+    wb.Reset();
+
+    for (const auto& [timestamp, temporal_unit] : temporal_unit_map) {
+      // Write the IA Sample to a `MediaSample`.
+      int num_samples = 0;
+
+      RETURN_IF_NOT_OK(WriteTemporalUnit(include_temporal_delimiters_,
+                                         temporal_unit, wb, num_samples));
+      RETURN_IF_NOT_OK(PushSerializedTemporalUnit(
+          static_cast<int64_t>(timestamp), num_samples, wb.bit_buffer()));
+
+      cumulative_num_samples_for_logging += num_samples;
+      num_temporal_units_for_logging++;
+      wb.Reset();
+    }
+    return absl::OkStatus();
+  }();
+  if (!wrote_ia_sequence.ok()) {
+    // Something failed when writing the IA Sequence. Signal to clean up the
+    // output, such as removing a bad file.
+    Abort();
+    return wrote_ia_sequence;
+  }
+
+  LOG(INFO) << "Wrote " << num_temporal_units_for_logging
+            << " temporal units with a total of "
+            << cumulative_num_samples_for_logging
+            << " samples excluding padding.";
+
+  Flush();
+  state_ = kFlushed;
   return absl::OkStatus();
 }
 
