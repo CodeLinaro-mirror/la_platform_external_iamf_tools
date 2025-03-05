@@ -30,6 +30,7 @@
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/common/leb_generator.h"
+#include "iamf/common/read_bit_buffer.h"
 #include "iamf/obu/arbitrary_obu.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
@@ -38,7 +39,6 @@
 #include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_header.h"
-#include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_block.h"
 #include "iamf/obu/types.h"
 
@@ -62,6 +62,8 @@ constexpr bool kDoNotIncludeTemporalDelimiters = false;
 
 constexpr std::nullopt_t kOriginalSamplesAreIrrelevant = std::nullopt;
 
+constexpr int64_t kReadBitBufferCapacity = 1024;
+
 // TODO(b/302470464): Add test coverage for `ObuSequencerIamf::PickAndPlace()`
 //                    configured with minimal and fixed-size leb generators.
 
@@ -81,22 +83,21 @@ void AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
       .audio_element_with_data = &audio_elements.at(audio_element_id)});
 }
 
-PerIdParameterMetadata CreatePerIdMetadataForDemixing(
-    DecodedUleb128 parameter_id) {
-  DemixingParamDefinition expected_demixing_param_definition;
-  expected_demixing_param_definition.parameter_id_ = parameter_id;
-  expected_demixing_param_definition.parameter_rate_ = 48000;
-  expected_demixing_param_definition.param_definition_mode_ = 0;
-  expected_demixing_param_definition.duration_ = 8;
-  expected_demixing_param_definition.constant_subblock_duration_ = 8;
-  expected_demixing_param_definition.reserved_ = 10;
+DemixingParamDefinition CreateDemixingParamDefinition(
+    const DecodedUleb128 parameter_id) {
+  DemixingParamDefinition demixing_param_definition;
+  demixing_param_definition.parameter_id_ = parameter_id;
+  demixing_param_definition.parameter_rate_ = 48000;
+  demixing_param_definition.param_definition_mode_ = 0;
+  demixing_param_definition.duration_ = 8;
+  demixing_param_definition.constant_subblock_duration_ = 8;
+  demixing_param_definition.reserved_ = 10;
 
-  return PerIdParameterMetadata{.param_definition =
-                                    expected_demixing_param_definition};
+  return demixing_param_definition;
 }
 
 void InitializeOneParameterBlockAndOneAudioFrame(
-    PerIdParameterMetadata& per_id_metadata,
+    DemixingParamDefinition& param_definition,
     std::list<ParameterBlockWithData>& parameter_blocks,
     std::list<AudioFrameWithData>& audio_frames,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus,
@@ -115,8 +116,7 @@ void InitializeOneParameterBlockAndOneAudioFrame(
   data->dmixp_mode = DemixingInfoParameterData::kDMixPMode1;
   data->reserved = 0;
   auto parameter_block = std::make_unique<ParameterBlockObu>(
-      ObuHeader(), per_id_metadata.param_definition.parameter_id_,
-      per_id_metadata);
+      ObuHeader(), param_definition.parameter_id_, param_definition);
   ASSERT_THAT(parameter_block->InitializeSubblocks(), IsOk());
   parameter_block->subblocks_[0].param_data = std::move(data);
   parameter_blocks.emplace_back(ParameterBlockWithData{
@@ -152,10 +152,10 @@ class ObuSequencerTest : public ::testing::Test {
     ia_sequence_header_obu_.emplace(ObuHeader(), IASequenceHeaderObu::kIaCode,
                                     ProfileVersion::kIamfSimpleProfile,
                                     ProfileVersion::kIamfSimpleProfile);
-    per_id_metadata_ =
-        CreatePerIdMetadataForDemixing(kFirstDemixingParameterId);
+    param_definition_ =
+        CreateDemixingParamDefinition(kFirstDemixingParameterId);
     InitializeOneParameterBlockAndOneAudioFrame(
-        per_id_metadata_, parameter_blocks_, audio_frames_, codec_config_obus_,
+        param_definition_, parameter_blocks_, audio_frames_, codec_config_obus_,
         audio_elements_);
     AddMixPresentationObuWithAudioElementIds(
         kFirstMixPresentationId, {audio_elements_.begin()->first},
@@ -169,7 +169,7 @@ class ObuSequencerTest : public ::testing::Test {
   absl::flat_hash_map<uint32_t, AudioElementWithData> audio_elements_;
   std::list<MixPresentationObu> mix_presentation_obus_;
 
-  PerIdParameterMetadata per_id_metadata_;
+  DemixingParamDefinition param_definition_;
   std::list<ParameterBlockWithData> parameter_blocks_;
   std::list<AudioFrameWithData> audio_frames_;
 
@@ -284,6 +284,47 @@ TEST_F(ObuSequencerTest, PickAndPlaceCreatesFileWithOneFrameIaSequence) {
       IsOk());
 
   EXPECT_TRUE(std::filesystem::exists(kOutputIamfFilename));
+}
+
+TEST_F(ObuSequencerTest, PickAndPlaceFileCanBeReadBacks) {
+  const std::string kOutputIamfFilename = GetAndCleanupOutputFileName(".iamf");
+  InitializeDescriptorObus();
+  AddEmptyAudioFrameWithAudioElementIdSubstreamIdAndTimestamps(
+      kFirstAudioElementId, kFirstSubstreamId, 0, 16, audio_elements_,
+      audio_frames_);
+
+  ObuSequencerIamf sequencer(kOutputIamfFilename,
+                             kDoNotIncludeTemporalDelimiters,
+                             *LebGenerator::Create());
+
+  ASSERT_THAT(
+      sequencer.PickAndPlace(*ia_sequence_header_obu_, codec_config_obus_,
+                             audio_elements_, mix_presentation_obus_,
+                             audio_frames_, parameter_blocks_, arbitrary_obus_),
+      IsOk());
+
+  // Read back the file, we expect all sequenced OBUs to be present.
+  auto read_bit_buffer = FileBasedReadBitBuffer::CreateFromFilePath(
+      kReadBitBufferCapacity, kOutputIamfFilename);
+  ASSERT_NE(read_bit_buffer, nullptr);
+  IASequenceHeaderObu ia_sequence_header;
+  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
+  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements;
+  std::list<MixPresentationObu> mix_presentations;
+  std::list<AudioFrameWithData> audio_frames;
+  std::list<ParameterBlockWithData> parameter_blocks;
+  EXPECT_THAT(CollectObusFromIaSequence(*read_bit_buffer, ia_sequence_header,
+                                        codec_config_obus, audio_elements,
+                                        mix_presentations, audio_frames,
+                                        parameter_blocks),
+              IsOk());
+  EXPECT_EQ(ia_sequence_header, ia_sequence_header_obu_);
+  EXPECT_EQ(codec_config_obus.size(), 1);
+  EXPECT_EQ(codec_config_obus.size(), 1);
+  EXPECT_EQ(audio_elements.size(), 1);
+  EXPECT_EQ(mix_presentations.size(), 1);
+  EXPECT_EQ(audio_frames.size(), 1);
+  EXPECT_TRUE(parameter_blocks.empty());
 }
 
 TEST_F(ObuSequencerTest, PickAndPlaceLeavesNoFileWhenDescriptorsAreInvalid) {

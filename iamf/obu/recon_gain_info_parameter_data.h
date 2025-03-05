@@ -14,13 +14,12 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
-#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
-#include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_data.h"
 #include "iamf/obu/types.h"
 
@@ -62,13 +61,7 @@ struct ReconGainElement {
 };
 
 struct ReconGainInfoParameterData : public ParameterData {
-  /*!\brief Constructor.
-   *
-   * \param input_recon_gain_elements Input vector of recon gain elements.
-   */
-  ReconGainInfoParameterData(
-      const std::vector<ReconGainElement>& input_recon_gain_elements)
-      : ParameterData(), recon_gain_elements(input_recon_gain_elements) {}
+  /*!\brief Default constructor.*/
   ReconGainInfoParameterData() = default;
 
   /*!\brief Overridden destructor.*/
@@ -76,28 +69,32 @@ struct ReconGainInfoParameterData : public ParameterData {
 
   /*!\brief Reads and validates a `ReconGainInfoParameterData` from a buffer.
    *
-   * \param per_id_metadata Per-ID parameter metadata.
    * \param rb Buffer to read from.
    * \return `absl::OkStatus()`. A specific error code on failure.
    */
-  absl::Status ReadAndValidate(const PerIdParameterMetadata& per_id_metadata,
-                               ReadBitBuffer& rb) override;
+  absl::Status ReadAndValidate(ReadBitBuffer& rb) override;
 
   /*!\brief Validates and writes to a buffer.
    *
-   * \param per_id_metadata Per-ID parameter metadata.
    * \param wb Buffer to write to.
    * \return `absl::OkStatus()` if successful. A specific status on failure.
    */
-  absl::Status Write(const PerIdParameterMetadata& per_id_metadata,
-                     WriteBitBuffer& wb) const override;
+  absl::Status Write(WriteBitBuffer& wb) const override;
 
   /*!\brief Prints the recon gain info parameter data.
    */
   void Print() const override;
 
   // Vector of length `num_layers` in the Audio associated Audio Element OBU.
-  std::vector<ReconGainElement> recon_gain_elements;
+  // Each element may hold no value if the corresponding
+  // `recon_gain_is_present_flag` is false.
+  std::vector<std::optional<ReconGainElement>> recon_gain_elements;
+
+  // TODO(b/399599739): Remove. Pass the same information to `ReadAndValidate()`
+  //                    instead.
+  // Whether recon gain is present per layer; only used in `ReadAndValidate()`
+  // and is not present in bitstreams.
+  std::vector<bool> recon_gain_is_present_flags;
 };
 
 }  // namespace iamf_tools
