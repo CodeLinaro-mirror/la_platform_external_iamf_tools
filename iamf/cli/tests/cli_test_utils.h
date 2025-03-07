@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,18 +34,21 @@
 #include "iamf/cli/demixing_module.h"
 #include "iamf/cli/loudness_calculator_base.h"
 #include "iamf/cli/loudness_calculator_factory_base.h"
+#include "iamf/cli/obu_sequencer_base.h"
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
 #include "iamf/cli/renderer/audio_element_renderer_base.h"
 #include "iamf/cli/sample_processor_base.h"
 #include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/cli/wav_reader.h"
+#include "iamf/common/leb_generator.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/utils/numeric_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
+#include "iamf/obu/obu_base.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
 
@@ -166,51 +170,47 @@ void AddMixPresentationObuWithAudioElementIds(
     DecodedUleb128 common_parameter_id, DecodedUleb128 common_parameter_rate,
     std::list<MixPresentationObu>& mix_presentations);
 
-/*!\brief Adds a configurable generic `ParamDefinition` to the output argument.
+/*!\brief Adds a configurable mix gain param definition to the output argument.
  *
- * \param parameter_id `parameter_id` of the `ParamDefinition` to create.
- * \param parameter_rate `parameter_rate` of the `ParamDefinition` to create.
+ * \param parameter_id `parameter_id` of the param definition to create.
+ * \param parameter_rate `parameter_rate` of the param definition to
+ *        create.
  * \param duration `duration` and `constant_subblock_duration` of the
- *        `ParamDefinition` to create.
- * \param param_definitions Map to add the `ParamDefinition` to keyed by
+ *        param definition to create.
+ * \param param_definitions Map to add the param definition to keyed by
  *        `parameter_id`.
  */
 void AddParamDefinitionWithMode0AndOneSubblock(
     DecodedUleb128 parameter_id, DecodedUleb128 parameter_rate,
     DecodedUleb128 duration,
-    absl::flat_hash_map<DecodedUleb128, ParamDefinition>& param_definitions);
+    absl::flat_hash_map<DecodedUleb128, MixGainParamDefinition>&
+        param_definitions);
 
 /*!\brief Adds a demixing parameter definition to an Audio Element OBU.
  *
- * \param parameter_id `parameter_id` of the `ParamDefinition` to add.
- * \param parameter_rate `parameter_rate` of the `ParamDefinition` to add.
+ * \param parameter_id `parameter_id` of the param definition to add.
+ * \param parameter_rate `parameter_rate` of the param definition to add.
  * \param duration `duration` and `constant_subblock_duration` of the
- *        `ParamDefinition` to add.
- * \param audio_element_obu Audio Element OBU to add the `ParamDefinition` to.
- * \param param_definitions Output pointer to the map to add the
- *        `ParamDefinition*` to keyed by `parameter_id`.
+ *        param definition to add.
+ * \param audio_element_obu Audio Element OBU to add the param definition to.
  */
-void AddDemixingParamDefinition(
-    DecodedUleb128 parameter_id, DecodedUleb128 parameter_rate,
-    DecodedUleb128 duration, AudioElementObu& audio_element_obu,
-    absl::flat_hash_map<DecodedUleb128, const ParamDefinition*>*
-        param_definitions);
+void AddDemixingParamDefinition(DecodedUleb128 parameter_id,
+                                DecodedUleb128 parameter_rate,
+                                DecodedUleb128 duration,
+                                AudioElementObu& audio_element_obu);
 
 /*!\brief Adds a recon gain parameter definition to an Audio Element OBU.
  *
- * \param parameter_id `parameter_id` of the `ParamDefinition` to add.
- * \param parameter_rate `parameter_rate` of the `ParamDefinition` to add.
+ * \param parameter_id `parameter_id` of the param definition to add.
+ * \param parameter_rate `parameter_rate` of the param definition to add.
  * \param duration `duration` and `constant_subblock_duration` of the
- *        `ParamDefinition` to add.
- * \param audio_element_obu Audio Element OBU to add the `ParamDefinition` to.
- * \param param_definitions Output pointer to the map to add the
- *        `ParamDefinition*` to keyed by `parameter_id`.
+ *        param definition to add.
+ * \param audio_element_obu Audio Element OBU to add the param definition to.
  */
-void AddReconGainParamDefinition(
-    DecodedUleb128 parameter_id, DecodedUleb128 parameter_rate,
-    DecodedUleb128 duration, AudioElementObu& audio_element_obu,
-    absl::flat_hash_map<DecodedUleb128, const ParamDefinition*>*
-        param_definitions);
+void AddReconGainParamDefinition(DecodedUleb128 parameter_id,
+                                 DecodedUleb128 parameter_rate,
+                                 DecodedUleb128 duration,
+                                 AudioElementObu& audio_element_obu);
 
 /*!\brief Calls `CreateWavReader` and unwraps the `StatusOr`.
  *
@@ -250,6 +250,16 @@ std::string GetAndCleanupOutputFileName(absl::string_view suffix);
  * \return Unique file path based on the current unit test info.
  */
 std::string GetAndCreateOutputDirectory(absl::string_view suffix);
+
+/*!\brief Serializes a list of OBUs.
+ *
+ * \param obus OBUs to serialize.
+ * \param leb_generator Leb generator to use.
+ * \return Vector of serialized OBU data.
+ */
+std::vector<uint8_t> SerializeObusExpectOk(
+    const std::list<const ObuBase*>& obus,
+    const LebGenerator& leb_generator = *LebGenerator::Create());
 
 /*!\brief Parses a textproto file into a `UserMetadata` proto.
  *
@@ -379,6 +389,27 @@ MATCHER(InternalSampleMatchesIntegralSample, "") {
          equivalent_integral_sample == testing::get<1>(arg);
 }
 
+/*!\brief Matches a tag that is the build information of the IAMF encoder.
+ *
+ * A matcher that checks that the tag name is "iamf_encoder" and the tag value
+ * starts with the prefix of the build information of the IAMF encoder. In the
+ * future we may add a suffix, such as the commit hash, to the tag value. This
+ * matcher will match both the old and new formats.
+ *
+ * For example:
+ * const MixPresentationTags::Tag tag{.tag_name = "iamf_encoder",
+ *                                    .tag_value = "GitHub/iamf-tools"};
+ * EXPECT_THAT(tag, TagMatchesBuildInformation());
+ */
+MATCHER(TagMatchesBuildInformation, "") {
+  constexpr absl::string_view kIamfEncoderBuildInformationPrefix =
+      "GitHub/iamf-tools";
+  return arg.tag_name == "iamf_encoder" &&
+         ExplainMatchResult(
+             ::testing::StartsWith(kIamfEncoderBuildInformationPrefix),
+             arg.tag_value, result_listener);
+}
+
 /*!\brief A mock sample processor. */
 class MockSampleProcessor : public SampleProcessorBase {
  public:
@@ -500,6 +531,41 @@ typedef testing::MockFunction<std::unique_ptr<SampleProcessorBase>(
     const Layout& layout, int num_channels, int sample_rate, int bit_depth,
     size_t num_samples_per_frame)>
     MockSampleProcessorFactory;
+
+/*!\brief A mock OBU sequencer. */
+class MockObuSequencer : public ObuSequencerBase {
+ public:
+  /*!\brief Constructor.
+   *
+   * \param leb_generator Leb generator to use when writing OBUs.
+   * \param include_temporal_delimiters Whether the serialized data should
+   *        include a temporal delimiter.
+   * \param delay_descriptors_until_first_untrimmed_sample Whether the
+   *        descriptor OBUs should be delayed until the first untrimmed frame
+   *        is known.
+   */
+  MockObuSequencer(const LebGenerator& leb_generator,
+                   bool include_temporal_delimiters,
+                   bool delay_descriptors_until_first_untrimmed_sample)
+      : ObuSequencerBase(leb_generator, include_temporal_delimiters,
+                         delay_descriptors_until_first_untrimmed_sample) {}
+
+  MOCK_METHOD(void, Abort, (), (override));
+
+  MOCK_METHOD(absl::Status, PushSerializedDescriptorObus,
+              (uint32_t common_samples_per_frame, uint32_t common_sample_rate,
+               uint8_t common_bit_depth,
+               std::optional<int64_t> first_untrimmed_timestamp,
+               int num_channels, absl::Span<const uint8_t> descriptor_obus),
+              (override));
+
+  MOCK_METHOD(absl::Status, PushSerializedTemporalUnit,
+              (int64_t timestamp, int num_samples,
+               absl::Span<const uint8_t> temporal_unit),
+              (override));
+
+  MOCK_METHOD(void, Flush, (), (override));
+};
 
 }  // namespace iamf_tools
 
