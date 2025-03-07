@@ -14,13 +14,13 @@ third_party {
   last_upgrade_date {
     year: 2025
     month: 3
-    day: 5
+    day: 6
   }
   homepage: "https://aomediacodec.github.io/iamf/"
   identifier {
     type: "Git"
     value: "https://github.com/AOMediaCodec/iamf-tools"
-    version: "0e0c206684acb4fd2716ef7f3673d3f75e7cd83c"
+    version: "612bf29777031b1d154a0126ba5ffe7b3b7a3c0f"
     primary_source: true
   }
 }
