@@ -45,6 +45,7 @@
 #include "iamf/cli/sample_processor_base.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
@@ -204,9 +205,9 @@ absl::Status GetAndStoreParameterBlockWithData(
   return absl::OkStatus();
 }
 
-// Returns an iterator to the first supported mix presentation in the list of
-// mix presentation OBUs or nullptr if none are supported.
-std::list<MixPresentationObu>::iterator GetFirstSupportedMixPresentation(
+// Returns a list of pointers to the supported mix presentations. Empty if none
+// are supported.
+std::list<MixPresentationObu*> GetSupportedMixPresentations(
     const absl::flat_hash_map<uint32_t, AudioElementWithData>& audio_elements,
     std::list<MixPresentationObu>& mix_presentation_obus) {
   // TODO(b/377554944): Support `ProfileVersion::kIamfBaseEnhancedProfile`.
@@ -214,6 +215,7 @@ std::list<MixPresentationObu>::iterator GetFirstSupportedMixPresentation(
   const absl::flat_hash_set<ProfileVersion> kSupportedProfiles = {
       ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile};
 
+  std::list<MixPresentationObu*> supported_mix_presentations;
   std::string cumulative_error_message;
   for (auto iter = mix_presentation_obus.begin();
        iter != mix_presentation_obus.end(); ++iter) {
@@ -221,18 +223,51 @@ std::list<MixPresentationObu>::iterator GetFirstSupportedMixPresentation(
     const auto status = ProfileFilter::FilterProfilesForMixPresentation(
         audio_elements, *iter, profiles);
     if (status.ok()) {
-      return iter;
+      supported_mix_presentations.push_back(&*iter);
     }
     absl::StrAppend(&cumulative_error_message, status.message(), "\n");
   }
-  LOG(ERROR) << absl::StrCat(
-      "No supported mix presentation presentation found in the bitstream.",
-      cumulative_error_message);
-  return mix_presentation_obus.end();
+  LOG(INFO) << "Filtered mix presentations: " << cumulative_error_message;
+  return supported_mix_presentations;
 }
 
-// Resets the buffer to `start_position` and sets the `insufficient_data` flag
-// to `true`. Clears the output maps.
+// Searches for the desired layout in the supported mix presentations. If found,
+// the output_playback_layout is the same as the desired_layout. Otherwise, we
+// default to the first layout in the first unsupported mix presentation.
+absl::StatusOr<MixPresentationObu*> GetPlaybackLayoutAndMixPresentation(
+    const std::list<MixPresentationObu*>& supported_mix_presentations,
+    const Layout& desired_layout, Layout& output_playback_layout) {
+  for (const auto& mix_presentation : supported_mix_presentations) {
+    for (const auto& sub_mix : mix_presentation->sub_mixes_) {
+      for (const auto& layout : sub_mix.layouts) {
+        if (layout.loudness_layout == desired_layout) {
+          output_playback_layout = layout.loudness_layout;
+          return mix_presentation;
+        }
+      }
+    }
+  }
+  // If we get here, we didn't find the desired layout in any of the supported
+  // mix presentations. We default to the first layout in the first mix
+  // presentation.
+  MixPresentationObu* output_mix_presentation =
+      supported_mix_presentations.front();
+  if (output_mix_presentation->sub_mixes_.empty()) {
+    return absl::InvalidArgumentError(
+        "No submixes found in the first mix presentation.");
+  }
+  if (output_mix_presentation->sub_mixes_.front().layouts.empty()) {
+    return absl::InvalidArgumentError(
+        "No layouts found in the first submix of the first mix presentation.");
+  }
+  output_playback_layout = output_mix_presentation->sub_mixes_.front()
+                               .layouts.front()
+                               .loudness_layout;
+  return output_mix_presentation;
+}
+
+// Resets the buffer to `start_position` and sets the `insufficient_data`
+// flag to `true`. Clears the output maps.
 absl::Status InsufficientDataReset(
     ReadBitBuffer& read_bit_buffer, const int64_t start_position,
     bool& insufficient_data,
@@ -253,20 +288,36 @@ absl::Status InsufficientDataReset(
       "more data and try again.");
 }
 
+void GetSampleRateAndFrameSize(
+    const absl::flat_hash_map<DecodedUleb128, CodecConfigObu>&
+        output_codec_config_obus,
+    std::optional<uint32_t>& output_sample_rate,
+    std::optional<uint32_t>& output_frame_size) {
+  if (output_codec_config_obus.size() != 1) {
+    LOG(WARNING) << "Expected exactly one codec config OBUs, but found "
+                 << output_codec_config_obus.size();
+    return;
+  }
+  const auto& first_codec_config_obu = output_codec_config_obus.begin()->second;
+  output_sample_rate = first_codec_config_obu.GetOutputSampleRate();
+  output_frame_size = first_codec_config_obu.GetNumSamplesPerFrame();
+}
+
 }  // namespace
 
 absl::Status ObuProcessor::InitializeInternal(bool is_exhaustive_and_exact,
-                                              bool& insufficient_data) {
+                                              bool& output_insufficient_data) {
   // Process the descriptor OBUs.
   LOG(INFO) << "Starting Descriptor OBU processing";
   RETURN_IF_NOT_OK(ObuProcessor::ProcessDescriptorObus(
       is_exhaustive_and_exact, *read_bit_buffer_, ia_sequence_header_,
       codec_config_obus_, audio_elements_, mix_presentations_,
-      insufficient_data));
+      output_insufficient_data));
   LOG(INFO) << "Processed Descriptor OBUs";
   RETURN_IF_NOT_OK(CollectAndValidateParamDefinitions(
       audio_elements_, mix_presentations_, param_definition_variants_));
-
+  GetSampleRateAndFrameSize(codec_config_obus_, output_sample_rate_,
+                            output_frame_size_);
   // Mapping from substream IDs to pointers to audio element with data.
   for (const auto& [audio_element_id, audio_element_with_data] :
        audio_elements_) {
@@ -300,7 +351,10 @@ absl::Status ObuProcessor::ProcessDescriptorObus(
     absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
         output_audio_elements_with_data,
     std::list<MixPresentationObu>& output_mix_presentation_obus,
-    bool& insufficient_data) {
+    bool& output_insufficient_data) {
+  // `output_insufficient_data` indicates a specific error condition and so is
+  // true iff we've received valid data but need more of it.
+  output_insufficient_data = false;
   auto audio_element_obu_map =
       absl::flat_hash_map<DecodedUleb128, AudioElementObu>();
   const int64_t global_position_before_all_obus = read_bit_buffer.Tell();
@@ -314,9 +368,9 @@ absl::Status ObuProcessor::ProcessDescriptorObus(
           absl::StatusCode::kResourceExhausted) {
         // Can't read header because there is not enough data.
         return InsufficientDataReset(
-            read_bit_buffer, global_position_before_all_obus, insufficient_data,
-            output_codec_config_obus, output_audio_elements_with_data,
-            output_mix_presentation_obus);
+            read_bit_buffer, global_position_before_all_obus,
+            output_insufficient_data, output_codec_config_obus,
+            output_audio_elements_with_data, output_mix_presentation_obus);
       } else {
         // Some other error occurred, propagate it.
         return header_metadata.status();
@@ -342,8 +396,7 @@ absl::Status ObuProcessor::ProcessDescriptorObus(
       if (!processed_ia_header) {
         return absl::InvalidArgumentError(
             "An IA Sequence and/or descriptor OBUs must always start with an "
-            "IA "
-            "Header.");
+            "IA Header.");
       }
       // Break out of the while loop since we've reached the end of the
       // descriptor OBUs; should not seek back to the beginning of the buffer
@@ -355,9 +408,9 @@ absl::Status ObuProcessor::ProcessDescriptorObus(
     if (!read_bit_buffer.CanReadBytes(header_metadata->total_obu_size)) {
       // This is a descriptor OBU for which we don't have enough data.
       return InsufficientDataReset(
-          read_bit_buffer, global_position_before_all_obus, insufficient_data,
-          output_codec_config_obus, output_audio_elements_with_data,
-          output_mix_presentation_obus);
+          read_bit_buffer, global_position_before_all_obus,
+          output_insufficient_data, output_codec_config_obus,
+          output_audio_elements_with_data, output_mix_presentation_obus);
     }
     // Now we know we can read the entire obu.
     const int64_t position_before_header = read_bit_buffer.Tell();
@@ -455,7 +508,7 @@ absl::Status ObuProcessor::ProcessTemporalUnitObu(
         audio_elements_with_data,
     const absl::flat_hash_map<DecodedUleb128, CodecConfigObu>&
         codec_config_obus,
-    const absl::flat_hash_map<DecodedUleb128, const AudioElementWithData*>
+    const absl::flat_hash_map<DecodedUleb128, const AudioElementWithData*>&
         substream_id_to_audio_element,
     const absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant>&
         param_definition_variants,
@@ -465,15 +518,31 @@ absl::Status ObuProcessor::ProcessTemporalUnitObu(
     std::optional<ParameterBlockWithData>& output_parameter_block_with_data,
     std::optional<TemporalDelimiterObu>& output_temporal_delimiter,
     bool& continue_processing) {
-  if (!read_bit_buffer.IsDataAvailable()) {
-    continue_processing = false;
-    return absl::OkStatus();
-  }
-
   continue_processing = true;
   output_audio_frame_with_data.reset();
   output_parameter_block_with_data.reset();
   output_temporal_delimiter.reset();
+
+  auto header_metadata = ObuHeader::PeekObuTypeAndTotalObuSize(read_bit_buffer);
+  if (!header_metadata.ok()) {
+    if (header_metadata.status().code() ==
+        absl::StatusCode::kResourceExhausted) {
+      // Can't read header because there is not enough data. This is not an
+      // error, but we're done processing for now.
+      continue_processing = false;
+      return absl::OkStatus();
+    } else {
+      // Some other error occurred, propagate it.
+      return header_metadata.status();
+    }
+  }
+
+  if (!read_bit_buffer.CanReadBytes(header_metadata->total_obu_size)) {
+    // This is a temporal unit OBU for which we don't have enough data. This is
+    // not an error, but we're done processing for now.
+    continue_processing = false;
+    return absl::OkStatus();
+  }
 
   const int64_t position_before_header = read_bit_buffer.Tell();
 
@@ -571,14 +640,17 @@ absl::Status ObuProcessor::ProcessTemporalUnitObu(
 
 std::unique_ptr<ObuProcessor> ObuProcessor::Create(
     bool is_exhaustive_and_exact, ReadBitBuffer* read_bit_buffer,
-    bool& insufficient_data) {
+    bool& output_insufficient_data) {
+  // `output_insufficient_data` indicates a specific error condition and so is
+  // true iff we've received valid data but need more of it.
+  output_insufficient_data = false;
   if (read_bit_buffer == nullptr) {
     return nullptr;
   }
   std::unique_ptr<ObuProcessor> obu_processor =
       absl::WrapUnique(new ObuProcessor(read_bit_buffer));
   if (const auto status = obu_processor->InitializeInternal(
-          is_exhaustive_and_exact, insufficient_data);
+          is_exhaustive_and_exact, output_insufficient_data);
       !status.ok()) {
     LOG(ERROR) << status;
     return nullptr;
@@ -587,25 +659,28 @@ std::unique_ptr<ObuProcessor> ObuProcessor::Create(
 }
 
 std::unique_ptr<ObuProcessor> ObuProcessor::CreateForRendering(
-    const Layout& playback_layout,
+    const Layout& desired_layout,
     const RenderingMixPresentationFinalizer::SampleProcessorFactory&
         sample_processor_factory,
     bool is_exhaustive_and_exact, ReadBitBuffer* read_bit_buffer,
-    bool& insufficient_data) {
+    Layout& output_layout, bool& output_insufficient_data) {
+  // `output_insufficient_data` indicates a specific error condition and so is
+  // true iff we've received valid data but need more of it.
+  output_insufficient_data = false;
   if (read_bit_buffer == nullptr) {
     return nullptr;
   }
   std::unique_ptr<ObuProcessor> obu_processor =
       absl::WrapUnique(new ObuProcessor(read_bit_buffer));
   if (const auto status = obu_processor->InitializeInternal(
-          is_exhaustive_and_exact, insufficient_data);
+          is_exhaustive_and_exact, output_insufficient_data);
       !status.ok()) {
     LOG(ERROR) << status;
     return nullptr;
   }
 
   if (const auto status = obu_processor->InitializeForRendering(
-          playback_layout, sample_processor_factory);
+          desired_layout, sample_processor_factory, output_layout);
       !status.ok()) {
     LOG(ERROR) << status;
     return nullptr;
@@ -613,19 +688,25 @@ std::unique_ptr<ObuProcessor> ObuProcessor::CreateForRendering(
   return obu_processor;
 }
 
+absl::StatusOr<uint32_t> ObuProcessor::GetOutputSampleRate() const {
+  RETURN_IF_NOT_OK(
+      ValidateHasValue(output_sample_rate_,
+                       "Output sample rate, was this a trivial IA Sequence?"));
+  return *output_sample_rate_;
+}
+
+absl::StatusOr<uint32_t> ObuProcessor::GetOutputFrameSize() const {
+  RETURN_IF_NOT_OK(
+      ValidateHasValue(output_frame_size_,
+                       "Output frame size, was this a trivial IA Sequence?"));
+  return *output_frame_size_;
+}
+
 absl::Status ObuProcessor::InitializeForRendering(
-    const Layout& playback_layout,
+    const Layout& desired_layout,
     const RenderingMixPresentationFinalizer::SampleProcessorFactory&
-        sample_processor_factory) {
-  // TODO(b/339500539): Add support for other layouts. Downstream code is simple
-  //                    and assumes there will be a matching layout in the first
-  //                    Mix Presentation OBU. The IAMF spec REQUIRES this for
-  //                    stereo. In general, layouts may require more careful
-  //                    selection according to 7.3.1.
-  // TODO(b/395625514): Add test coverage for this.
-  if (!IsStereoLayout(playback_layout)) {
-    return absl::InvalidArgumentError("Layout type is not supported.");
-  }
+        sample_processor_factory,
+    Layout& output_layout) {
   if (mix_presentations_.empty()) {
     return absl::InvalidArgumentError("No mix presentation OBUs found.");
   }
@@ -652,32 +733,39 @@ absl::Status ObuProcessor::InitializeForRendering(
 
   // TODO(b/340289717): Add a way to select the mix presentation if multiple
   //                    are supported.
-  const auto mix_presentation_to_render =
-      GetFirstSupportedMixPresentation(audio_elements_, mix_presentations_);
-  if (mix_presentation_to_render == mix_presentations_.end()) {
-    return absl::NotFoundError("No supportedmix presentation OBUs found.");
+  const std::list<MixPresentationObu*> supported_mix_presentations =
+      GetSupportedMixPresentations(audio_elements_, mix_presentations_);
+  if (supported_mix_presentations.empty()) {
+    return absl::NotFoundError("No supported mix presentation OBUs found.");
   }
-  int desired_sub_mix_index;
-  int desired_layout_index;
-  RETURN_IF_NOT_OK(GetIndicesForLayout(mix_presentation_to_render->sub_mixes_,
-                                       playback_layout, desired_sub_mix_index,
-                                       desired_layout_index));
+  Layout playback_layout;
+  auto mix_presentation_to_render = GetPlaybackLayoutAndMixPresentation(
+      supported_mix_presentations, desired_layout, output_layout);
+  if (!mix_presentation_to_render.ok()) {
+    return mix_presentation_to_render.status();
+  }
+  int playback_sub_mix_index;
+  int playback_layout_index;
+  RETURN_IF_NOT_OK(GetIndicesForLayout(
+      (*mix_presentation_to_render)->sub_mixes_, output_layout,
+      playback_sub_mix_index, playback_layout_index));
   decoding_layout_info_ = {
-      .mix_presentation_id = mix_presentation_to_render->GetMixPresentationId(),
-      .sub_mix_index = desired_sub_mix_index,
-      .layout_index = desired_layout_index,
+      .mix_presentation_id =
+          (*mix_presentation_to_render)->GetMixPresentationId(),
+      .sub_mix_index = playback_sub_mix_index,
+      .layout_index = playback_layout_index,
   };
   auto forward_on_desired_layout =
       [&sample_processor_factory, mix_presentation_to_render,
-       desired_sub_mix_index, desired_layout_index](
+       playback_sub_mix_index, playback_layout_index](
           DecodedUleb128 mix_presentation_id, int sub_mix_index,
           int layout_index, const Layout& layout, int num_channels,
           int sample_rate, int bit_depth, size_t max_input_samples_per_frame)
       -> std::unique_ptr<SampleProcessorBase> {
     if (mix_presentation_id ==
-            mix_presentation_to_render->GetMixPresentationId() &&
-        desired_sub_mix_index == sub_mix_index &&
-        desired_layout_index == layout_index) {
+            (*mix_presentation_to_render)->GetMixPresentationId() &&
+        playback_sub_mix_index == sub_mix_index &&
+        playback_layout_index == layout_index) {
       return sample_processor_factory(
           mix_presentation_id, sub_mix_index, layout_index, layout,
           num_channels, sample_rate, bit_depth, max_input_samples_per_frame);
@@ -732,11 +820,11 @@ absl::Status ObuProcessor::ProcessTemporalUnitObu(
 }
 
 absl::Status ObuProcessor::ProcessTemporalUnit(
-    std::list<AudioFrameWithData>& output_audio_frames,
-    std::list<ParameterBlockWithData>& output_parameter_blocks,
-    std::optional<InternalTimestamp>& output_timestamp,
+    bool eos_is_end_of_sequence,
+    std::optional<OutputTemporalUnit>& output_temporal_unit,
     bool& continue_processing) {
-  while (true) {
+  continue_processing = true;
+  while (continue_processing) {
     std::optional<AudioFrameWithData> audio_frame_with_data;
     std::optional<ParameterBlockWithData> parameter_block_with_data;
     std::optional<TemporalDelimiterObu> temporal_delimiter;
@@ -759,17 +847,22 @@ absl::Status ObuProcessor::ProcessTemporalUnit(
 
     // The current temporal unit is considered finished if any of the
     // following conditions is met:
-    // - No more data to consume (i.e. `continue_processing == true`).
+    // - The end of sequence is reached.
     // - The timestamp has advanced (i.e. when the next temporal unit gets its
     //   timestamp).
     // - A temporal delimiter is encountered.
-    if (!continue_processing || next_temporal_unit_.timestamp.has_value() ||
+    if ((!continue_processing && eos_is_end_of_sequence) ||
+        next_temporal_unit_.timestamp.has_value() ||
         current_temporal_unit_.temporal_delimiter.has_value()) {
-      output_audio_frames.splice(output_audio_frames.end(),
-                                 current_temporal_unit_.audio_frames);
-      output_parameter_blocks.splice(output_parameter_blocks.end(),
-                                     current_temporal_unit_.parameter_blocks);
-      output_timestamp = current_temporal_unit_.timestamp;
+      output_temporal_unit = OutputTemporalUnit();
+      output_temporal_unit->output_audio_frames =
+          std::move(current_temporal_unit_.audio_frames);
+      output_temporal_unit->output_parameter_blocks =
+          std::move(current_temporal_unit_.parameter_blocks);
+      if (current_temporal_unit_.timestamp.has_value()) {
+        output_temporal_unit->output_timestamp =
+            current_temporal_unit_.timestamp.value();
+      }
       current_temporal_unit_ = std::move(next_temporal_unit_);
       next_temporal_unit_ = TemporalUnitData();
       break;
@@ -806,8 +899,6 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
   }
 
   // Decode the temporal unit.
-  const std::list<AudioFrameWithData> kIgnoreOriginalAudioFrames;
-  IdLabeledFrameMap unused_original_labeled_frames;
   std::optional<InternalTimestamp> end_timestamp;
 
   // This resizing should happen only once per IA sequence, since all the
@@ -835,18 +926,16 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
   }
 
   // Reconstruct the temporal unit and store the result in the output map.
-  IdLabeledFrameMap decoded_labeled_frames_for_temporal_unit;
-  RETURN_IF_NOT_OK(demixing_module_->DemixAudioSamples(
-      kIgnoreOriginalAudioFrames, decoded_frames_for_temporal_unit_,
-      unused_original_labeled_frames,
-      decoded_labeled_frames_for_temporal_unit));
-
-  // To be safe clear the unused map. But we expect it to be empty.
-  unused_original_labeled_frames.clear();
+  const auto decoded_labeled_frames_for_temporal_unit =
+      demixing_module_->DemixDecodedAudioSamples(
+          decoded_frames_for_temporal_unit_);
+  if (!decoded_labeled_frames_for_temporal_unit.ok()) {
+    return decoded_labeled_frames_for_temporal_unit.status();
+  }
 
   RETURN_IF_NOT_OK(mix_presentation_finalizer_->PushTemporalUnit(
-      decoded_labeled_frames_for_temporal_unit, start_timestamp, *end_timestamp,
-      parameter_blocks));
+      *decoded_labeled_frames_for_temporal_unit, start_timestamp,
+      *end_timestamp, parameter_blocks));
 
   auto rendered_samples =
       mix_presentation_finalizer_->GetPostProcessedSamplesAsSpan(
