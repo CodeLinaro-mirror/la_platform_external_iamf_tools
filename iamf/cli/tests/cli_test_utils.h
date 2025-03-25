@@ -91,6 +91,19 @@ struct DecodeSpecification {
 /*!\brief Adds a configurable LPCM `CodecConfigObu` to the output argument.
  *
  * \param codec_config_id `codec_config_id` of the OBU to create.
+ * \param num_samples_per_frame Number of samples per frame.
+ * \param sample_size Sample size.
+ * \param sample_rate `sample_rate` of the OBU to create.
+ * \param codec_config_obus Map to add the OBU to keyed by `codec_config_id`.
+ */
+void AddLpcmCodecConfig(
+    DecodedUleb128 codec_config_id, uint32_t num_samples_per_frame,
+    uint8_t sample_size, uint32_t sample_rate,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus);
+
+/*!\brief Adds a configurable LPCM `CodecConfigObu` to the output argument.
+ *
+ * \param codec_config_id `codec_config_id` of the OBU to create.
  * \param sample_rate `sample_rate` of the OBU to create.
  * \param codec_config_obus Map to add the OBU to keyed by `codec_config_id`.
  */
@@ -162,13 +175,32 @@ void AddScalableAudioElementWithSubstreamIds(
  *        created OBU.
  * \param common_parameter_rate `parameter_rate` of all parameters within the
  *        created OBU.
- * \param mix_presentations List to add OBU to.
+ * \param output_mix_presentations List to add OBU to.
  */
 void AddMixPresentationObuWithAudioElementIds(
     DecodedUleb128 mix_presentation_id,
     const std::vector<DecodedUleb128>& audio_element_id,
     DecodedUleb128 common_parameter_id, DecodedUleb128 common_parameter_rate,
-    std::list<MixPresentationObu>& mix_presentations);
+    std::list<MixPresentationObu>& output_mix_presentations);
+
+/*!\brief Adds a configurable `MixPresentationObu` to the output argument.
+ *
+ * \param mix_presentation_id `mix_presentation_id` of the OBU to create.
+ * \param audio_element_ids `audio_element_id`s of the OBU to create.
+ * \param common_parameter_id `parameter_id` of all parameters within the
+ *        created OBU.
+ * \param common_parameter_rate `parameter_rate` of all parameters within the
+ *        created OBU.
+ * \param sound_system_layouts `sound_system`s of the OBU to create.
+ * \param output_mix_presentations List to add OBU to.
+ */
+void AddMixPresentationObuWithConfigurableLayouts(
+    DecodedUleb128 mix_presentation_id,
+    const std::vector<DecodedUleb128>& audio_element_id,
+    DecodedUleb128 common_parameter_id, DecodedUleb128 common_parameter_rate,
+    const std::vector<LoudspeakersSsConventionLayout::SoundSystem>&
+        sound_system_layouts,
+    std::list<MixPresentationObu>& output_mix_presentations);
 
 /*!\brief Adds a configurable mix gain param definition to the output argument.
  *
@@ -550,7 +582,7 @@ class MockObuSequencer : public ObuSequencerBase {
       : ObuSequencerBase(leb_generator, include_temporal_delimiters,
                          delay_descriptors_until_first_untrimmed_sample) {}
 
-  MOCK_METHOD(void, Abort, (), (override));
+  MOCK_METHOD(void, AbortDerived, (), (override));
 
   MOCK_METHOD(absl::Status, PushSerializedDescriptorObus,
               (uint32_t common_samples_per_frame, uint32_t common_sample_rate,
@@ -564,7 +596,10 @@ class MockObuSequencer : public ObuSequencerBase {
                absl::Span<const uint8_t> temporal_unit),
               (override));
 
-  MOCK_METHOD(void, Flush, (), (override));
+  MOCK_METHOD(absl::Status, PushFinalizedDescriptorObus,
+              (absl::Span<const uint8_t> descriptor_obus), (override));
+
+  MOCK_METHOD(void, CloseDerived, (), (override));
 };
 
 }  // namespace iamf_tools
