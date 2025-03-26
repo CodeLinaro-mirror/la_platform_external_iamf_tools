@@ -13,14 +13,14 @@ third_party {
   license_note: "Alliance for Open Media Patent License and BSD 3-Clause Clear License as described in iamf_tools/LICENSE and iamf_tools/PATENTS and in the headers for all code files in iamf_tools/iamf/, such as iamf_tools/iamf/common/read_bit_buffer.h."
   last_upgrade_date {
     year: 2025
-    month: 2
-    day: 24
+    month: 3
+    day: 6
   }
   homepage: "https://aomediacodec.github.io/iamf/"
   identifier {
     type: "Git"
     value: "https://github.com/AOMediaCodec/iamf-tools"
-    version: "f84e8447fc6ed4b68852fb25f1b28d4542bda04c"
+    version: "612bf29777031b1d154a0126ba5ffe7b3b7a3c0f"
     primary_source: true
   }
 }
