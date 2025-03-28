@@ -35,26 +35,29 @@ class IamfDecoder {
    * sample usage of the API.
    *
    * Reconfigurable Standalone IAMF Usage
-   * IamfDecoder streaming_decoder = IamfDecoder::Create();
+   *
+   * StatusOr<IamfDecoder> decoder = IamfDecoder::Create(output_layout);
    * for chunk of data in iamf stream:
-   *    Decode()
+   *    decoder.Decode()
    *    if (IsDescriptorProcessingComplete()) {
-   *      GetMixPresentations(output_mix_presentation_ids)
-   *      ConfigureMixPresentationId(mix_presentation_id)
-   *      ConfigureOutputLayout(output_layout)
-   *      ConfigureBitDepth(bit_depth)
+   *      decoder.GetMixPresentations(output_mix_presentation_ids)
+   *      decoder.ConfigureMixPresentationId(mix_presentation_id)
+   *      decoder.ConfigureOutputSampleType(output_sample_type)
    *    }
    * for chunk of data in iamf stream:
-   *    Decode()
-   *    while (IsTemporalUnitAvailable()) {
-   *      GetOutputTemporalUnit(output_temporal_unit)
-   *      Playback(output_temporal_unit)
+   *    decoder.Decode(chunk)
+   *    while (decoder.IsTemporalUnitAvailable()) {
+   *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
+   *      Playback(output_buffer)
    *    }
-   * while (IsTemporalUnitAvailable()) {
-   *      Flush(output_temporal_unit)
-   *      Playback(output_temporal_unit)
-   *  }
-   * Close();
+   * if (end_of_stream):
+   *    decoder.SignalEndOfStream()
+   *    // Get remaining audio
+   *    while (decoder.IsTemporalUnitAvailable()) {
+   *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
+   *      Playback(output_buffer)
+   *    }
+   * decoder.Close();
    */
 
   // Dtor cannot be inline (so it must be declared and defined in the source
@@ -83,7 +86,8 @@ class IamfDecoder {
   /*!\brief Creates an IamfDecoder from a known set of descriptor OBUs.
    *
    * This function should be used for applications in which the descriptor OBUs
-   * are known in advance.
+   * are known in advance. When creating the decoder via this mode, future calls
+   * to decode must pass complete temporal units.
    *
    * \param requested_layout Specifies the desired output layout. This layout
    *        will be used so long as it is present in the Descriptor OBUs that
@@ -133,17 +137,19 @@ class IamfDecoder {
 
   /*!\brief Outputs the next temporal unit of decoded audio.
    *
-   * If no decoded data is available, output_decoded_temporal_unit will be
-   * empty. The user can continue calling until the output is empty, as there
-   * may be more than one temporal unit available. When this returns empty, the
-   * user should call Decode() again with more data.
+   * If no decoded data is available, bytes_written will be 0. The user can
+   * continue calling until bytes_written is 0, as there may be more than one
+   * temporal unit available. At this point, the user should call Decode() again
+   * with more data.
+   *
+   * The output PCM is arranged based on the configured `OutputLayout` and
+   * `OutputSampleType`.
    *
    * \param output_bytes Output buffer to receive bytes.  Must be large enough
    *        to receive bytes.  Maximum necessary size can be determined by
-   *        GetFrameSize and GetOutputSampleType.
+   *        GetFrameSize * GetNumberOfOutputChannels * bit depth (as determined
+   *        by GetOutputSampleType).
    * \param bytes_written Number of bytes written to the output_bytes.
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
    */
   absl::Status GetOutputTemporalUnit(absl::Span<uint8_t> output_bytes,
                                      size_t& bytes_written);
@@ -239,28 +245,17 @@ class IamfDecoder {
    */
   absl::StatusOr<uint32_t> GetFrameSize() const;
 
-  /*!\brief Outputs the last temporal unit(s) of decoded audio.
+  /*!\brief Signals to the decoder that no more data will be provided.
    *
-   * Signals to the decoder that no more data will be provided; therefore it
-   * should only be called once the user has finished providing data to
-   * Decode(). Temporal units are output one at a time, so this function should
-   * be called until output_is_done is true.
-   *
-   * \param output_decoded_temporal_unit Output parameter for the next temporal
-   *        unit of decoded audio.
-   * \param output_is_done Output parameter for whether there are more temporal
-   *        units to be output.
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * Decode cannot be called after this method has been called.
    */
-  absl::Status Flush(absl::Span<uint8_t> output_bytes, size_t& bytes_written,
-                     bool& output_is_done);
+  void SignalEndOfStream();
 
   /*!\brief Closes the decoder.
    *
    * This should be called once the user has finished providing data into
-   * Decode() and has called Flush() until output_is_done is true. Will close
-   * all underlying decoders.
+   * Decode(), has called SignalEndOfStream(), and gotten all output units.
+   * Will close all underlying decoders.
    *
    * \return `absl::OkStatus()` upon success. Other specific statuses on
    *         failure.
