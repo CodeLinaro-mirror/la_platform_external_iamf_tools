@@ -36,6 +36,7 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "gmock/gmock.h"
@@ -128,15 +129,14 @@ absl::Status CollectObusFromIaSequence(
   int temporal_unit_count = 0;
   LOG(INFO) << "Starting Temporal Unit OBU processing";
   while (continue_processing) {
-    std::list<AudioFrameWithData> audio_frames_for_temporal_unit;
-    std::list<ParameterBlockWithData> parameter_blocks_for_temporal_unit;
-    std::optional<int32_t> timestamp_for_temporal_unit;
+    std::optional<ObuProcessor::OutputTemporalUnit> output_temporal_unit;
     RETURN_IF_NOT_OK(obu_processor->ProcessTemporalUnit(
-        audio_frames_for_temporal_unit, parameter_blocks_for_temporal_unit,
-        timestamp_for_temporal_unit, continue_processing));
-    audio_frames.splice(audio_frames.end(), audio_frames_for_temporal_unit);
+        /*eos_is_end_of_sequence=*/true, output_temporal_unit,
+        continue_processing));
+    audio_frames.splice(audio_frames.end(),
+                        output_temporal_unit->output_audio_frames);
     parameter_blocks.splice(parameter_blocks.end(),
-                            parameter_blocks_for_temporal_unit);
+                            output_temporal_unit->output_parameter_blocks);
     temporal_unit_count++;
   }
   LOG(INFO) << "Processed " << temporal_unit_count << " Temporal Unit OBUs";
@@ -149,8 +149,9 @@ absl::Status CollectObusFromIaSequence(
   return absl::OkStatus();
 }
 
-void AddLpcmCodecConfigWithIdAndSampleRate(
-    uint32_t codec_config_id, uint32_t sample_rate,
+void AddLpcmCodecConfig(
+    DecodedUleb128 codec_config_id, uint32_t num_samples_per_frame,
+    uint8_t sample_size, uint32_t sample_rate,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
@@ -158,13 +159,24 @@ void AddLpcmCodecConfigWithIdAndSampleRate(
   CodecConfigObu obu(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdLpcm,
-       .num_samples_per_frame = 8,
+       .num_samples_per_frame = num_samples_per_frame,
        .decoder_config = LpcmDecoderConfig{
            .sample_format_flags_bitmask_ = LpcmDecoderConfig::kLpcmLittleEndian,
-           .sample_size_ = 16,
+           .sample_size_ = sample_size,
            .sample_rate_ = sample_rate}});
   EXPECT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
   codec_config_obus.emplace(codec_config_id, std::move(obu));
+}
+
+void AddLpcmCodecConfigWithIdAndSampleRate(
+    uint32_t codec_config_id, uint32_t sample_rate,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
+  // Many tests either don't care about the details. Or assumed these "default"
+  // values.
+  constexpr uint32_t kNumSamplesPerFrame = 8;
+  constexpr uint8_t kSampleSize = 16;
+  return AddLpcmCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleSize,
+                            sample_rate, codec_config_obus);
 }
 
 void AddOpusCodecConfigWithId(
@@ -305,30 +317,42 @@ void AddMixPresentationObuWithAudioElementIds(
     const std::vector<DecodedUleb128>& audio_element_ids,
     DecodedUleb128 common_parameter_id, DecodedUleb128 common_parameter_rate,
     std::list<MixPresentationObu>& mix_presentations) {
+  // Configure one of the simplest mix presentation. Mix presentations REQUIRE
+  // at least one sub-mix and a stereo layout.
+  AddMixPresentationObuWithConfigurableLayouts(
+      mix_presentation_id, audio_element_ids, common_parameter_id,
+      common_parameter_rate,
+      {LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0}, mix_presentations);
+}
+
+void AddMixPresentationObuWithConfigurableLayouts(
+    DecodedUleb128 mix_presentation_id,
+    const std::vector<DecodedUleb128>& audio_element_ids,
+    DecodedUleb128 common_parameter_id, DecodedUleb128 common_parameter_rate,
+    const std::vector<LoudspeakersSsConventionLayout::SoundSystem>&
+        sound_system_layouts,
+    std::list<MixPresentationObu>& mix_presentations) {
   MixGainParamDefinition common_mix_gain_param_definition;
   common_mix_gain_param_definition.parameter_id_ = common_parameter_id;
   common_mix_gain_param_definition.parameter_rate_ = common_parameter_rate;
   common_mix_gain_param_definition.param_definition_mode_ = true;
   common_mix_gain_param_definition.default_mix_gain_ = 0;
+  std::vector<MixPresentationLayout> layouts;
+  for (const auto& sound_system : sound_system_layouts) {
+    layouts.push_back(
+        {.loudness_layout = {.layout_type =
+                                 Layout::kLayoutTypeLoudspeakersSsConvention,
+                             .specific_layout =
+                                 LoudspeakersSsConventionLayout{
+                                     .sound_system = sound_system,
+                                     .reserved = 0}},
+         .loudness = {
+             .info_type = 0, .integrated_loudness = 0, .digital_peak = 0}});
+  }
 
-  // Configure one of the simplest mix presentation. Mix presentations REQUIRE
-  // at least one sub-mix and a stereo layout.
   std::vector<MixPresentationSubMix> sub_mixes = {
-      {.num_audio_elements =
-           static_cast<DecodedUleb128>(audio_element_ids.size()),
-       .output_mix_gain = common_mix_gain_param_definition,
-       .num_layouts = 1,
-       .layouts = {
-           {.loudness_layout =
-                {.layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
-                 .specific_layout =
-                     LoudspeakersSsConventionLayout{
-                         .sound_system = LoudspeakersSsConventionLayout::
-                             kSoundSystemA_0_2_0,
-                         .reserved = 0}},
-            .loudness = {.info_type = 0,
-                         .integrated_loudness = 0,
-                         .digital_peak = 0}}}}};
+      {.output_mix_gain = common_mix_gain_param_definition,
+       .layouts = layouts}};
   for (const auto& audio_element_id : audio_element_ids) {
     sub_mixes[0].audio_elements.push_back({
         .audio_element_id = audio_element_id,
@@ -343,9 +367,9 @@ void AddMixPresentationObuWithAudioElementIds(
     });
   }
 
-  mix_presentations.push_back(MixPresentationObu(
-      ObuHeader(), mix_presentation_id,
-      /*count_label=*/0, {}, {}, sub_mixes.size(), sub_mixes));
+  mix_presentations.push_back(
+      MixPresentationObu(ObuHeader(), mix_presentation_id,
+                         /*count_label=*/0, {}, {}, sub_mixes));
 }
 
 void AddParamDefinitionWithMode0AndOneSubblock(
@@ -408,19 +432,17 @@ void RenderAndFlushExpectOk(const LabeledFrame& labeled_frame,
 std::string GetAndCleanupOutputFileName(absl::string_view suffix) {
   const testing::TestInfo* const test_info =
       testing::UnitTest::GetInstance()->current_test_info();
-  std::string file_name =
-      absl::StrCat(test_info->name(), "-", test_info->test_suite_name(), "-",
-                   test_info->test_case_name(), suffix);
+  std::string filename = absl::StrCat(test_info->name(), "-",
+                                      test_info->test_suite_name(), suffix);
 
-  // It is possible that the test suite name and test case name contain the '/'
-  // character. Replace it with '-' to form a legal file name.
-  std::transform(file_name.begin(), file_name.end(), file_name.begin(),
-                 [](char c) { return (c == '/') ? '-' : c; });
-  const std::filesystem::path test_specific_file_name =
-      std::filesystem::path(::testing::TempDir()) / file_name;
+  // It is possible that the test suite name contains the '/' character.
+  // Replace it with '-' to form a legal file name.
+  absl::StrReplaceAll({{"/", "-"}}, &filename);
+  const std::filesystem::path test_specific_filename =
+      std::filesystem::path(::testing::TempDir()) / filename;
 
-  std::filesystem::remove(test_specific_file_name);
-  return test_specific_file_name.string();
+  std::filesystem::remove(test_specific_filename);
+  return test_specific_filename.string();
 }
 
 std::string GetAndCreateOutputDirectory(absl::string_view suffix) {
@@ -474,8 +496,8 @@ std::vector<DecodeSpecification> GetDecodeSpecifications(
   std::vector<DecodeSpecification> decode_specifications;
   for (const auto& mix_presentation :
        user_metadata.mix_presentation_metadata()) {
-    for (int i = 0; i < mix_presentation.num_sub_mixes(); ++i) {
-      for (int j = 0; j < mix_presentation.sub_mixes(i).num_layouts(); ++j) {
+    for (int i = 0; i < mix_presentation.sub_mixes_size(); ++i) {
+      for (int j = 0; j < mix_presentation.sub_mixes(i).layouts_size(); ++j) {
         DecodeSpecification decode_specification;
         decode_specification.mix_presentation_id =
             mix_presentation.mix_presentation_id();

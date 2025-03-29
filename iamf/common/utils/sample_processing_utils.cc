@@ -11,6 +11,7 @@
  */
 #include "iamf/common/utils/sample_processing_utils.h"
 
+#include <cstddef>
 #include <cstdint>
 
 #include "absl/log/check.h"
@@ -22,16 +23,16 @@ namespace iamf_tools {
 
 absl::Status WritePcmSample(uint32_t sample, uint8_t sample_size,
                             bool big_endian, uint8_t* const buffer,
-                            int& write_position) {
+                            size_t& write_position) {
   // Validate assumptions of the logic in the `for` loop below.
-  if (sample_size % 8 != 0 || sample_size > 32) {
+  if (sample_size % 8 != 0 || sample_size > 32) [[unlikely]] {
     return absl::InvalidArgumentError(
         absl::StrCat("Invalid sample size: ", sample_size));
   }
 
   for (int shift = 32 - sample_size; shift < 32; shift += 8) {
     uint8_t byte = 0;
-    if (big_endian) {
+    if (big_endian) [[unlikely]] {
       byte = (sample >> ((32 - sample_size) + (32 - (shift + 8)))) & 0xff;
     } else {
       byte = (sample >> shift) & 0xff;
