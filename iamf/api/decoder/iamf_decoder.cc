@@ -35,7 +35,7 @@
 namespace iamf_tools {
 namespace api {
 
-enum class Status { kAcceptingData, kFlushCalled };
+enum class Status { kAcceptingData, kEndOfStream };
 
 // Holds the internal state of the decoder to hide it and necessary includes
 // from API users.
@@ -68,6 +68,9 @@ struct IamfDecoder::DecoderState {
   // TODO(b/379122580):  Use the bit depth of the underlying content.
   // Defaulting to int32 for now.
   OutputSampleType output_sample_type = OutputSampleType::kInt32LittleEndian;
+
+  // True iff the decoder was created via CreateFromDescriptors().
+  bool created_from_descriptors = false;
 };
 
 namespace {
@@ -80,7 +83,7 @@ absl::StatusOr<std::unique_ptr<ObuProcessor>> CreateObuProcessor(
     bool contains_all_descriptor_obus, absl::Span<const uint8_t> bitstream,
     StreamBasedReadBitBuffer* read_bit_buffer, Layout& in_out_layout) {
   // Happens only in the pure streaming case.
-  auto start_position = read_bit_buffer->Tell();
+  const auto start_position = read_bit_buffer->Tell();
   bool insufficient_data;
   auto obu_processor = ObuProcessor::CreateForRendering(
       in_out_layout,
@@ -97,30 +100,24 @@ absl::StatusOr<std::unique_ptr<ObuProcessor>> CreateObuProcessor(
     }
     return absl::InvalidArgumentError("Failed to create OBU processor.");
   }
-  auto num_bits_read = read_bit_buffer->Tell() - start_position;
+  const auto num_bits_read = read_bit_buffer->Tell() - start_position;
   RETURN_IF_NOT_OK(read_bit_buffer->Flush(num_bits_read / 8));
   return obu_processor;
 }
 
 absl::Status ProcessAllTemporalUnits(
     StreamBasedReadBitBuffer* read_bit_buffer, ObuProcessor* obu_processor,
+    bool created_from_descriptors,
     std::queue<std::vector<std::vector<int32_t>>>& rendered_pcm_samples) {
-  LOG(INFO) << "Processing Temporal Units";
-  int32_t num_bits_read = 0;
+  LOG_FIRST_N(INFO, 10) << "Processing Temporal Units";
   bool continue_processing = true;
+  const auto start_position_bits = read_bit_buffer->Tell();
   while (continue_processing) {
-    auto start_position_for_temporal_unit = read_bit_buffer->Tell();
     std::optional<ObuProcessor::OutputTemporalUnit> output_temporal_unit;
     // TODO(b/395889878): Add support for partial temporal units.
     RETURN_IF_NOT_OK(obu_processor->ProcessTemporalUnit(
-        /*eos_is_end_of_sequence=*/false, output_temporal_unit,
-        continue_processing));
-    if (!output_temporal_unit.has_value()) {
-      break;
-    }
-
-    // Trivial IA Sequences may have empty temporal units. Do not try to
-    // render empty temporal unit.
+        created_from_descriptors, output_temporal_unit, continue_processing));
+    // We may have processed bytes but not a full temporal unit.
     if (output_temporal_unit.has_value()) {
       absl::Span<const std::vector<int32_t>>
           rendered_pcm_samples_for_temporal_unit;
@@ -133,14 +130,12 @@ absl::Status ProcessAllTemporalUnits(
           std::vector(rendered_pcm_samples_for_temporal_unit.begin(),
                       rendered_pcm_samples_for_temporal_unit.end()));
     }
-    num_bits_read +=
-        (read_bit_buffer->Tell() - start_position_for_temporal_unit);
   }
   // Empty the buffer of the data that was processed thus far.
+  const auto num_bits_read = read_bit_buffer->Tell() - start_position_bits;
   RETURN_IF_NOT_OK(read_bit_buffer->Flush(num_bits_read / 8));
-  LOG(INFO) << "Rendered " << rendered_pcm_samples.size()
-            << " temporal units. Please call GetOutputTemporalUnit() to get "
-               "the rendered PCM samples.";
+  LOG_FIRST_N(INFO, 10) << "Rendered " << rendered_pcm_samples.size()
+                        << " temporal units.";
   return absl::OkStatus();
 }
 
@@ -222,13 +217,14 @@ absl::StatusOr<IamfDecoder> IamfDecoder::CreateFromDescriptors(
     return obu_processor.status();
   }
   decoder->state_->obu_processor = *std::move(obu_processor);
+  decoder->state_->created_from_descriptors = true;
   return decoder;
 }
 
 absl::Status IamfDecoder::Decode(absl::Span<const uint8_t> bitstream) {
-  if (state_->status == Status::kFlushCalled) {
+  if (state_->status == Status::kEndOfStream) {
     return absl::FailedPreconditionError(
-        "Decode() cannot be called after Flush() has been called.");
+        "Decode() cannot be called after SignalEndOfStream() has been called.");
   }
   RETURN_IF_NOT_OK(state_->read_bit_buffer->PushBytes(bitstream));
   if (!IsDescriptorProcessingComplete()) {
@@ -249,9 +245,9 @@ absl::Status IamfDecoder::Decode(absl::Span<const uint8_t> bitstream) {
   }
 
   // At this stage, we know that we've processed all descriptor OBUs.
-  RETURN_IF_NOT_OK(ProcessAllTemporalUnits(state_->read_bit_buffer.get(),
-                                           state_->obu_processor.get(),
-                                           state_->rendered_pcm_samples));
+  RETURN_IF_NOT_OK(ProcessAllTemporalUnits(
+      state_->read_bit_buffer.get(), state_->obu_processor.get(),
+      state_->created_from_descriptors, state_->rendered_pcm_samples));
   return absl::OkStatus();
 }
 
@@ -341,13 +337,7 @@ absl::StatusOr<uint32_t> IamfDecoder::GetFrameSize() const {
   return state_->obu_processor->GetOutputFrameSize();
 }
 
-absl::Status IamfDecoder::Flush(absl::Span<uint8_t> output_bytes,
-                                size_t& bytes_written, bool& output_is_done) {
-  state_->status = Status::kFlushCalled;
-  RETURN_IF_NOT_OK(GetOutputTemporalUnit(output_bytes, bytes_written));
-  output_is_done = state_->rendered_pcm_samples.empty();
-  return absl::OkStatus();
-}
+void IamfDecoder::SignalEndOfStream() { state_->status = Status::kEndOfStream; }
 
 absl::Status IamfDecoder::Close() { return absl::OkStatus(); }
 
