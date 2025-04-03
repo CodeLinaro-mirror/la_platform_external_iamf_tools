@@ -42,6 +42,7 @@ cc_library {
     srcs: [
         "iamf/api/conversion/mix_presentation_conversion.cc",
         "iamf/api/decoder/iamf_decoder.cc",
+        "iamf/api/iamf_tools_api_types.cc",
         "iamf/cli/audio_frame_decoder.cc",
         "iamf/cli/channel_label.cc",
         "iamf/cli/cli_util.cc",
