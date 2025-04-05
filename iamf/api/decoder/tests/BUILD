@@ -8,10 +8,8 @@ cc_test(
         "@platforms//os:linux",
     ],
     deps = [
-        "//iamf/api:types",
+        "//iamf/api:iamf_tools_api_types",
         "//iamf/api/decoder:iamf_decoder",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/types:span",
         "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest_main",
     ],
@@ -21,7 +19,7 @@ cc_test(
     name = "iamf_decoder_test",
     srcs = ["iamf_decoder_test.cc"],
     deps = [
-        "//iamf/api:types",
+        "//iamf/api:iamf_tools_api_types",
         "//iamf/api/decoder:iamf_decoder",
         "//iamf/cli:audio_element_with_data",
         "//iamf/cli:audio_frame_with_data",
@@ -36,8 +34,6 @@ cc_test(
         "//iamf/obu:temporal_delimiter",
         "//iamf/obu:types",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )
