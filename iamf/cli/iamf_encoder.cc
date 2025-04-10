@@ -81,8 +81,8 @@ absl::Status InitAudioFrameDecoderForAllAudioElements(
 
 absl::StatusOr<IamfEncoder> IamfEncoder::Create(
     const iamf_tools_cli_proto::UserMetadata& user_metadata,
-    absl::Nullable<const RendererFactoryBase*> renderer_factory,
-    absl::Nullable<const LoudnessCalculatorFactoryBase*>
+    const RendererFactoryBase* /* absl_nullable */ renderer_factory,
+    const LoudnessCalculatorFactoryBase* /* absl_nullable */
         loudness_calculator_factory,
     const RenderingMixPresentationFinalizer::SampleProcessorFactory&
         sample_processor_factory,
@@ -211,8 +211,9 @@ void IamfEncoder::BeginTemporalUnit() {
   }
 }
 
-absl::Status IamfEncoder::GetInputTimestamp(int32_t& input_timestamp) {
-  std::optional<int32_t> timestamp;
+absl::Status IamfEncoder::GetInputTimestamp(
+    InternalTimestamp& input_timestamp) {
+  std::optional<InternalTimestamp> timestamp;
   RETURN_IF_NOT_OK(
       global_timing_module_->GetGlobalAudioFrameTimestamp(timestamp));
   if (!timestamp.has_value()) {

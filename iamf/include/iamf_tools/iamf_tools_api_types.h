@@ -42,6 +42,20 @@ struct [[nodiscard]] IamfStatus {
 
 std::ostream& operator<<(std::ostream& os, const IamfStatus& status);
 
+/*!\brief Indicates the profile version to decode.
+ *
+ * Profiles are defined in the IAMF spec:
+ * https://aomediacodec.github.io/iamf/#obu-iasequenceheader.
+ */
+enum class ProfileVersion {
+  // Simple profile as defined in IAMF v1.0.0-errata.
+  kIamfSimpleProfile = 0,
+  // Base profile as defined in IAMF v1.0.0-errata.
+  kIamfBaseProfile = 1,
+  // Base-Enhanced profile as defined in IAMF v1.1.0.
+  kIamfBaseEnhancedProfile = 2,
+};
+
 /*!\brief Determines the layout of the output file.
  *
  * Typically these correspond with `sound_system`s in the IAMF spec
@@ -72,7 +86,7 @@ enum class OutputLayout {
   kItu2051_SoundSystemE_4_5_1 = 4,
 
   // ITU-R B.S. 2051-3 sound system F (3+7+0).
-  // Ordered as [C, L, R, LH, RH, LS, LB, RB, CH, LFE1, LFE2].
+  // Ordered as [C, L, R, LH, RH, LS, RS, LB, RB, CH, LFE1, LFE2].
   kItu2051_SoundSystemF_3_7_0 = 5,
 
   // ITU-R B.S. 2051-3 sound system G (4+9+0).
@@ -98,7 +112,7 @@ enum class OutputLayout {
   kIAMF_SoundSystemExtension_2_7_0 = 10,
 
   // IAMF extension 3.1.2.
-  // Ordered as [L, R, C, LFE, Lss, Rss, Lrs, Rrs, Ltf, Rtf].
+  // Ordered as [L, R, C, LFE, Ltf, Rtf].
   kIAMF_SoundSystemExtension_2_3_0 = 11,
 
   // Mono.
@@ -122,23 +136,16 @@ enum class OutputSampleType {
   kInt32LittleEndian = 2,
 };
 
-/*!\brief A unique identifier for a `MixPresentation` in the IAMF stream. */
-using MixPresentationId = uint32_t;
-
-/*!\brief A name:value tag describing a `MixPresentation` in the IAMF stream. */
-struct MixPresentationTag {
-  std::string tag_name;
-  std::string tag_value;
-};
-
-/*!\brief Metadata that describes a mix presentation.
- *
- * Used by a user to determine which mix presentation they would like to
- * configure the decoder with.
- */
-struct MixPresentationMetadata {
-  MixPresentationId id;
-  std::vector<MixPresentationTag> tags;
+enum class ChannelOrdering {
+  // Ordering as specified in the above OutputLayout enum, in the ITU/IAMF
+  // order.
+  // This is the default behaviour.
+  kIamfOrdering = 0,
+  // Ordering to match that found in Android's AudioFormat.java.  See
+  // https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/media/java/android/media/AudioFormat.java
+  // Also matches Windows/WAVE for the channels that are defined. See
+  // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ksmedia/ns-ksmedia-waveformatextensible
+  kOrderingForAndroid = 1,
 };
 
 }  // namespace api

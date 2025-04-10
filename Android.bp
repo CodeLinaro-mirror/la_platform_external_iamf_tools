@@ -18,8 +18,7 @@ license {
 cc_library {
     name: "iamf_tools",
     export_include_dirs: [
-        "iamf/api",
-        "iamf/api/decoder",
+        "iamf/include/",
     ],
     cflags: [
         "-DIAMF_TOOLS_DISABLE_AAC_DECODER",
@@ -40,7 +39,9 @@ cc_library {
         "external/libopus",
     ],
     srcs: [
+        "iamf/api/conversion/channel_reorderer.cc",
         "iamf/api/conversion/mix_presentation_conversion.cc",
+        "iamf/api/conversion/profile_conversion.cc",
         "iamf/api/decoder/iamf_decoder.cc",
         "iamf/api/iamf_tools_api_types.cc",
         "iamf/cli/audio_frame_decoder.cc",
@@ -92,6 +93,7 @@ cc_library {
         "iamf/obu/parameter_block.cc",
         "iamf/obu/recon_gain_info_parameter_data.cc",
     ],
+    min_sdk_version: "31",
     apex_available: [
         "com.android.media.swcodec",
     ],
