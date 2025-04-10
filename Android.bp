@@ -99,5 +99,6 @@ cc_library {
     ],
     visibility: [
         "//frameworks/av/media/codec2/components/iamf",
+        "//frameworks/av/media/codec2/components/iamf/tests",
     ],
 }
