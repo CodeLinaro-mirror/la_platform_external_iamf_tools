@@ -50,6 +50,8 @@ namespace iamf_tools {
 
 namespace {
 
+using absl::MakeConstSpan;
+
 // Write buffer. Let's start with 64 KB. The buffer will resize for larger
 // OBUs if needed.
 constexpr int64_t kBufferStartSize = 65536;
@@ -60,7 +62,7 @@ constexpr int64_t kBufferStartSize = 65536;
  * Using absl::btree_map for convenience as this allows iterating by
  * timestamp (which is the key).
  */
-typedef absl::btree_map<int32_t, TemporalUnitView> TemporalUnitMap;
+typedef absl::btree_map<InternalTimestamp, TemporalUnitView> TemporalUnitMap;
 
 /*!\brief Helper class to abort an `ObuSequencerBase` on destruction.
  *
@@ -257,11 +259,9 @@ absl::Status GenerateTemporalUnitMap(
   return absl::OkStatus();
 }
 
-}  // namespace
-
-absl::Status ObuSequencerBase::WriteTemporalUnit(
-    bool include_temporal_delimiters, const TemporalUnitView& temporal_unit,
-    WriteBitBuffer& wb, int& num_samples) {
+absl::Status WriteTemporalUnit(bool include_temporal_delimiters,
+                               const TemporalUnitView& temporal_unit,
+                               WriteBitBuffer& wb, int& num_samples) {
   num_samples += temporal_unit.num_untrimmed_samples_;
 
   if (include_temporal_delimiters) {
@@ -301,6 +301,8 @@ absl::Status ObuSequencerBase::WriteTemporalUnit(
 
   return absl::OkStatus();
 }
+
+}  // namespace
 
 // Writes the descriptor OBUs. Section 5.1.1
 // (https://aomediacodec.github.io/iamf/#standalone-descriptor-obus) orders the
@@ -481,8 +483,7 @@ absl::Status ObuSequencerBase::PushTemporalUnit(
   wb_.Reset();
 
   // Cache the frame for later
-  const int64_t start_timestamp =
-      static_cast<int64_t>(temporal_unit.start_timestamp_);
+  const InternalTimestamp start_timestamp = temporal_unit.start_timestamp_;
   int num_samples = 0;
   RETURN_IF_NOT_OK(WriteTemporalUnit(include_temporal_delimiters_,
                                      temporal_unit, wb_, num_samples));
@@ -563,34 +564,41 @@ absl::Status ObuSequencerBase::UpdateDescriptorObusAndClose(
       mix_presentation_obus, arbitrary_obus, wb_));
   RETURN_IF_NOT_OK(ArbitraryObu::WriteObusWithHook(
       ArbitraryObu::kInsertionHookAfterDescriptors, arbitrary_obus, wb_));
+  const auto updated_descriptor_obus = MakeConstSpan(wb_.bit_buffer());
+  if (updated_descriptor_obus != descriptor_statistics_->descriptor_obus) {
+    // Descriptors changed. We're a bit loose with what types of metadata we
+    // allow to change. Check at least the "functional" statistics are
+    // equivalent.
+    DescriptorStatistics descriptor_statistics{
+        .descriptor_obus = std::vector<uint8_t>(updated_descriptor_obus.begin(),
+                                                updated_descriptor_obus.end())};
 
-  // We're a bit loose with what types of metadata we allow to change. Check
-  // at least the "functional" statistics are equivalent.
-  DescriptorStatistics descriptor_statistics{.descriptor_obus =
-                                                 wb_.bit_buffer()};
-  RETURN_IF_NOT_OK(
-      FillDescriptorStatistics(codec_config_obus, descriptor_statistics));
-  if (descriptor_statistics_->common_samples_per_frame !=
-          descriptor_statistics.common_samples_per_frame ||
-      descriptor_statistics_->common_sample_rate !=
-          descriptor_statistics.common_sample_rate ||
-      descriptor_statistics_->common_bit_depth !=
-          descriptor_statistics.common_bit_depth ||
-      descriptor_statistics_->num_channels !=
-          descriptor_statistics.num_channels) {
-    return absl::FailedPreconditionError(
-        "Descriptor OBUs have changed size between finalizing and "
-        "closing.");
-  }
-  if (descriptor_statistics_->descriptor_obus.size() !=
-      descriptor_statistics.descriptor_obus.size()) {
-    return absl::UnimplementedError(
-        "Descriptor OBUs have changed size between finalizing and closing.");
-  }
+    RETURN_IF_NOT_OK(
+        FillDescriptorStatistics(codec_config_obus, descriptor_statistics));
+    if (descriptor_statistics_->common_samples_per_frame !=
+            descriptor_statistics.common_samples_per_frame ||
+        descriptor_statistics_->common_sample_rate !=
+            descriptor_statistics.common_sample_rate ||
+        descriptor_statistics_->common_bit_depth !=
+            descriptor_statistics.common_bit_depth ||
+        descriptor_statistics_->num_channels !=
+            descriptor_statistics.num_channels) {
+      return absl::FailedPreconditionError(
+          "Descriptor OBUs have changed properties between finalizing and "
+          "closing.");
+    }
+    if (descriptor_statistics_->descriptor_obus.size() !=
+        descriptor_statistics.descriptor_obus.size()) {
+      return absl::UnimplementedError(
+          "Descriptor OBUs have changed size between finalizing and closing.");
+    }
 
-  RETURN_IF_NOT_OK(
-      PushFinalizedDescriptorObus(absl::MakeConstSpan(wb_.bit_buffer())));
-  state_ = kPushSerializedDescriptorsCalled;
+    RETURN_IF_NOT_OK(PushFinalizedDescriptorObus(updated_descriptor_obus));
+    state_ = kPushSerializedDescriptorsCalled;
+  }
+  // OK, regardless of whether the descriptors actually changed, obey the
+  // request to close.
+
   RETURN_IF_NOT_OK(Close());
 
   abort_on_destruct.CancelAbort();

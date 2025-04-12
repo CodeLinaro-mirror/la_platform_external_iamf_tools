@@ -30,6 +30,7 @@
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
@@ -66,23 +67,6 @@ namespace iamf_tools {
  */
 class ObuSequencerBase {
  public:
-  /*!\brief Serializes and writes out a temporal unit.
-   *
-   * Write out the OBUs contained within the input arguments to the output write
-   * buffer.
-   *
-   * \param include_temporal_delimiters Whether the serialized data should
-   *        include a temporal delimiter.
-   * \param temporal_unit Temporal unit to write out.
-   * \param wb Write buffer to write to.
-   * \param num_samples Number of samples written out.
-   * \return `absl::OkStatus()` on success. A specific status on failure.
-   */
-  [[deprecated("Use this class as per the class documentation instead.")]]
-  static absl::Status WriteTemporalUnit(bool include_temporal_delimiters,
-                                        const TemporalUnitView& temporal_unit,
-                                        WriteBitBuffer& wb, int& num_samples);
-
   /*!\brief Writes the input descriptor OBUs.
    *
    * Write out the OBUs contained within the input arguments to the output write
@@ -215,8 +199,8 @@ class ObuSequencerBase {
   virtual absl::Status PushSerializedDescriptorObus(
       uint32_t common_samples_per_frame, uint32_t common_sample_rate,
       uint8_t common_bit_depth,
-      std::optional<int64_t> first_untrimmed_timestamp, int num_channels,
-      absl::Span<const uint8_t> descriptor_obus) = 0;
+      std::optional<InternalTimestamp> first_untrimmed_timestamp,
+      int num_channels, absl::Span<const uint8_t> descriptor_obus) = 0;
 
   /*!\brief Pushes a single temporal unit to some output.
    *
@@ -226,7 +210,7 @@ class ObuSequencerBase {
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   virtual absl::Status PushSerializedTemporalUnit(
-      int64_t timestamp, int num_samples,
+      InternalTimestamp timestamp, int num_samples,
       absl::Span<const uint8_t> temporal_unit) = 0;
 
   /*!\brief Pushes the finalized descriptor OBUs to some output.
@@ -289,7 +273,7 @@ class ObuSequencerBase {
     uint32_t common_sample_rate = 0;
     uint8_t common_bit_depth = 0;
     int num_channels = 0;
-    std::optional<int64_t> first_untrimmed_timestamp;
+    std::optional<InternalTimestamp> first_untrimmed_timestamp;
     std::vector<uint8_t> descriptor_obus;
   };
   std::optional<DescriptorStatistics> descriptor_statistics_;
@@ -305,7 +289,7 @@ class ObuSequencerBase {
   // sample is seen. In practical IA Sequences, this is rarely more than a few
   // temporal units.
   struct SerializedTemporalUnit {
-    int64_t start_timestamp;
+    InternalTimestamp start_timestamp;
     uint32_t num_untrimmed_samples;
     std::vector<uint8_t> data;
   };

@@ -17,8 +17,8 @@
 #include "fuzztest/fuzztest.h"
 #include "gtest/gtest.h"
 // [internal] Placeholder for FLAC fuzzing include.
-#include "iamf/api/decoder/iamf_decoder.h"
-#include "iamf/api/iamf_tools_api_types.h"
+#include "iamf/include/iamf_tools/iamf_decoder.h"
+#include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 
 namespace iamf_tools {
 namespace {
@@ -32,7 +32,10 @@ constexpr OutputLayout kStereoLayout =
 
 void DoesNotDieWithBasicDecode(const std::string& data) {
   std::unique_ptr<api::IamfDecoder> iamf_decoder;
-  ASSERT_TRUE(api::IamfDecoder::Create(kStereoLayout, iamf_decoder).ok());
+  const api::IamfDecoder::Settings kStereoLayoutSettings = {.requested_layout =
+                                                                kStereoLayout};
+  ASSERT_TRUE(
+      api::IamfDecoder::Create(kStereoLayoutSettings, iamf_decoder).ok());
 
   std::vector<uint8_t> bitstream(data.begin(), data.end());
   auto decode_status = iamf_decoder->Decode(bitstream.data(), bitstream.size());
@@ -46,8 +49,10 @@ void DoesNotDieCreateFromDescriptors(const std::string& descriptor_data,
                                    descriptor_data.end());
 
   std::unique_ptr<api::IamfDecoder> iamf_decoder;
+  // Intentionally check that defaulted settings are safe to use.
+  const api::IamfDecoder::Settings kDefaultSettings;
   api::IamfStatus status = api::IamfDecoder::CreateFromDescriptors(
-      kStereoLayout, descriptors.data(), descriptors.size(), iamf_decoder);
+      kDefaultSettings, descriptors.data(), descriptors.size(), iamf_decoder);
 
   if (status.ok()) {
     std::vector<uint8_t> temporal_unit(temporal_unit_data.begin(),
@@ -65,13 +70,13 @@ void DoesNotDieAllParams(api::OutputLayout output_layout,
                          uint32_t mix_presentation_id, std::string data) {
   std::vector<uint8_t> bitstream(data.begin(), data.end());
   std::unique_ptr<api::IamfDecoder> iamf_decoder;
-  ASSERT_TRUE(api::IamfDecoder::Create(output_layout, iamf_decoder).ok());
+  const api::IamfDecoder::Settings kSettings = {.requested_layout =
+                                                    output_layout};
+  ASSERT_TRUE(api::IamfDecoder::Create(kSettings, iamf_decoder).ok());
 
   auto unused_decode_status =
       iamf_decoder->Decode(bitstream.data(), bitstream.size());
   iamf_decoder->ConfigureOutputSampleType(output_sample_type);
-  auto unused_configure_status =
-      iamf_decoder->ConfigureMixPresentationId(mix_presentation_id);
 }
 
 // // TODO(b/378912426): Update this to support all output layouts.

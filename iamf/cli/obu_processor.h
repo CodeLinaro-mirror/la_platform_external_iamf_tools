@@ -19,6 +19,7 @@
 #include <optional>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
@@ -281,7 +282,8 @@ class ObuProcessor {
    *        bitstream.
    * \return ObuProcessor instance.
    */
-  explicit ObuProcessor(ReadBitBuffer* buffer) : read_bit_buffer_(buffer) {}
+  explicit ObuProcessor(ReadBitBuffer* /* absl_nonnull */ buffer)
+      : read_bit_buffer_(buffer) {}
 
   /*!\brief Performs internal initialization of the OBU processor.
    *
@@ -333,7 +335,7 @@ class ObuProcessor {
     std::list<AudioFrameWithData> audio_frames;
 
     std::optional<TemporalDelimiterObu> temporal_delimiter;
-    std::optional<int32_t> timestamp;
+    std::optional<InternalTimestamp> timestamp;
 
     bool Empty() const {
       return parameter_blocks.empty() && audio_frames.empty();
@@ -350,7 +352,7 @@ class ObuProcessor {
     static void AddDataToCorrectTemporalUnit(
         TemporalUnitData& current_temporal_unit,
         TemporalUnitData& next_temporal_unit, T&& obu_with_data) {
-      const auto new_timestamp = obu_with_data.start_timestamp;
+      const InternalTimestamp new_timestamp = obu_with_data.start_timestamp;
       if (!current_temporal_unit.timestamp.has_value()) {
         current_temporal_unit.timestamp = new_timestamp;
       }
@@ -384,7 +386,7 @@ class ObuProcessor {
       substream_id_to_audio_element_;
   std::unique_ptr<GlobalTimingModule> global_timing_module_;
   std::optional<ParametersManager> parameters_manager_;
-  ReadBitBuffer* read_bit_buffer_;
+  ReadBitBuffer* /* absl_nonnull */ read_bit_buffer_;
 
   // Contains target layout information for rendering.
   DecodingLayoutInfo decoding_layout_info_;
