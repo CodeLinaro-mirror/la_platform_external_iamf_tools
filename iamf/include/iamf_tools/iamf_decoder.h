@@ -16,46 +16,73 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
-#include "iamf/api/iamf_tools_api_types.h"
+#include "iamf_tools_api_types.h"
 
 namespace iamf_tools {
 namespace api {
 
-/*!brief The class and entrypoint for decoding IAMF bitstreams. */
+/*!\brief The class and entrypoint for decoding IAMF bitstreams.
+ * WARNING: API is currently in flux and will change.
+ *
+ * The functions below constitute our IAMF Iterative Decoder API. Below is a
+ * sample usage of the API.
+ *
+ * Reconfigurable Standalone IAMF Usage
+ *
+ * IamfDecoderSettings settings = {
+ *   .requested_layout = OutputLayout::kItu2051_SoundSystemA_0_2_0,
+ * };
+ * StatusOr<IamfDecoder> decoder = IamfDecoder::Create(settings);
+ * for chunk of data in iamf stream:
+ *    decoder.Decode()
+ *    if (IsDescriptorProcessingComplete()) {
+ *      decoder.ConfigureOutputSampleType(output_sample_type)
+ *    }
+ * for chunk of data in iamf stream:
+ *    decoder.Decode(chunk)
+ *    while (decoder.IsTemporalUnitAvailable()) {
+ *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
+ *      Playback(output_buffer)
+ *    }
+ * if (end_of_stream):
+ *    decoder.SignalEndOfStream()
+ *    // Get remaining audio
+ *    while (decoder.IsTemporalUnitAvailable()) {
+ *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
+ *      Playback(output_buffer)
+ *    }
+ * decoder.Close();
+ */
 class IamfDecoder {
  public:
-  /* WARNING: API is currently in flux and will change.
-   *
-   * The functions below constitute our IAMF Iterative Decoder API. Below is a
-   * sample usage of the API.
-   *
-   * Reconfigurable Standalone IAMF Usage
-   *
-   * StatusOr<IamfDecoder> decoder = IamfDecoder::Create(output_layout);
-   * for chunk of data in iamf stream:
-   *    decoder.Decode()
-   *    if (IsDescriptorProcessingComplete()) {
-   *      decoder.GetMixPresentations(output_mix_presentation_ids)
-   *      decoder.ConfigureMixPresentationId(mix_presentation_id)
-   *      decoder.ConfigureOutputSampleType(output_sample_type)
-   *    }
-   * for chunk of data in iamf stream:
-   *    decoder.Decode(chunk)
-   *    while (decoder.IsTemporalUnitAvailable()) {
-   *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
-   *      Playback(output_buffer)
-   *    }
-   * if (end_of_stream):
-   *    decoder.SignalEndOfStream()
-   *    // Get remaining audio
-   *    while (decoder.IsTemporalUnitAvailable()) {
-   *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
-   *      Playback(output_buffer)
-   *    }
-   * decoder.Close();
-   */
+  /*!\brief Settings for the `IamfDecoder`. */
+  struct Settings {
+    // Specifies the desired output layout. This layout will be used so long as
+    // it is present in the Descriptor OBUs that are provided. If not, after
+    // `IsDescriptorProcessingComplete` returns true, a default layout will have
+    // been selected and retrievable via `GetOutputLayout`.
+    OutputLayout requested_layout = OutputLayout::kItu2051_SoundSystemA_0_2_0;
+
+    // Specify a different ordering for the output samples.  Only specific
+    // orderings are available, custom or granular control is not possible.
+    ChannelOrdering channel_ordering = ChannelOrdering::kIamfOrdering;
+
+    // Specifies the desired profile versions. Clients should explicitly provide
+    // the profiles they are interested in. Otherwise, the default value will
+    // evolve in the future, based on recommendations or additions to the IAMF
+    // spec.
+    //
+    // If the descriptor OBUs do not contain a mix presentation which is
+    // suitable for one of the matching profiles the decoder will return an
+    // error. Typically all profiles the client is capable of handling should
+    // be provided, to ensure compatibility with as many mixes as possible.
+    std::unordered_set<ProfileVersion> requested_profile_versions = {
+        ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile,
+        ProfileVersion::kIamfBaseEnhancedProfile};
+  };
 
   // Dtor cannot be inline (so it must be declared and defined in the source
   // file) because this class holds a (unique) pointer to the partial class,
@@ -69,14 +96,11 @@ class IamfDecoder {
    * This function should be used for pure streaming applications in which the
    * descriptor OBUs are not known in advance.
    *
-   * \param requested_layout Specifies the desired output layout. This layout
-   *        will be used so long as it is present in the Descriptor OBUs that
-   *        are later provided to Decode(). If not, a default layout will be
-   *        selected.
+   * \param settings Settings to configure the decoder.
    * \param output_decoder An output param for the decoder upon success.
    * \return Ok status upon success. Other specific statuses on  failure.
    */
-  static IamfStatus Create(const OutputLayout& requested_layout,
+  static IamfStatus Create(const IamfDecoder::Settings& settings,
                            std::unique_ptr<IamfDecoder>& output_decoder);
 
   /*!\brief Creates an IamfDecoder from a known set of descriptor OBUs.
@@ -85,9 +109,7 @@ class IamfDecoder {
    * are known in advance. When creating the decoder via this mode, future calls
    * to decode must pass complete temporal units.
    *
-   * \param requested_layout Specifies the desired output layout. This layout
-   *        will be used so long as it is present in the Descriptor OBUs that
-   *        are provided. If not, a default layout will be selected.
+   * \param settings Settings to configure the decoder.
    * \param input_buffer Bitstream containing all the descriptor OBUs and
    *        only descriptor OBUs.
    * \param input_buffer_size Size in bytes of the input buffer.
@@ -95,15 +117,8 @@ class IamfDecoder {
    * \return Ok status upon success. Other specific statuses on failure.
    */
   static IamfStatus CreateFromDescriptors(
-      const OutputLayout& requested_layout, const uint8_t* input_buffer,
+      const IamfDecoder::Settings& settings, const uint8_t* input_buffer,
       size_t input_buffer_size, std::unique_ptr<IamfDecoder>& output_decoder);
-
-  /*!\brief Configures the decoder with the desired mix presentation.
-   *
-   * \param mix_presentation_id Specifies the desired mix presentation.
-   * \return Ok status upon success. Other specific statuses on failure.
-   */
-  IamfStatus ConfigureMixPresentationId(MixPresentationId mix_presentation_id);
 
   /*!\brief Configures the decoder with the desired bit depth.
    *
@@ -196,21 +211,6 @@ class IamfDecoder {
    * \return Ok status upon success. Other specific statuses on failure.
    */
   IamfStatus GetNumberOfOutputChannels(int& output_num_channels) const;
-
-  /*!\brief Provides mix presentation information from the descriptor OBUs.
-   *
-   * This function can be used to determine which mix presentation the user
-   * would like to configure the decoder with.
-   *
-   * This function can only be used after all Descriptor OBUs have been parsed,
-   * i.e. IsDescriptorProcessingComplete() returns true.
-   *
-   * \param output_mix_presentation_metadatas Output parameter for the mix
-   *        presentation metadata.
-   * \return Ok status upon success. Other specific statuses on failure.
-   */
-  IamfStatus GetMixPresentations(std::vector<MixPresentationMetadata>&
-                                     output_mix_presentation_metadatas) const;
 
   /*!\brief Returns the current OutputSampleType.
    *

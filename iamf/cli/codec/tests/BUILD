@@ -8,6 +8,7 @@ cc_library(
         "//iamf/cli:audio_frame_with_data",
         "//iamf/cli/codec:encoder_base",
         "//iamf/obu:audio_frame",
+        "//iamf/obu:types",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
@@ -61,7 +62,6 @@ cc_test(
     name = "flac_decoder_stream_callbacks_test",
     srcs = ["flac_decoder_stream_callbacks_test.cc"],
     deps = [
-        "//iamf/cli/codec:flac_decoder",
         "//iamf/cli/codec:flac_decoder_stream_callbacks",
         "@com_google_googletest//:gtest_main",
         "@flac//:src",
@@ -72,10 +72,10 @@ cc_test(
     name = "flac_decoder_test",
     srcs = ["flac_decoder_test.cc"],
     deps = [
+        "//iamf/cli/codec:decoder_base",
         "//iamf/cli/codec:flac_decoder",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
-        "@flac//:src",
     ],
 )
 
@@ -100,6 +100,7 @@ cc_test(
     size = "small",
     srcs = ["lpcm_decoder_test.cc"],
     deps = [
+        "//iamf/cli/codec:decoder_base",
         "//iamf/cli/codec:lpcm_decoder",
         "//iamf/obu:codec_config",
         "//iamf/obu:obu_header",
