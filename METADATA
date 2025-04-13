@@ -3,7 +3,7 @@
 # DEPENDING ON IT IN YOUR PROJECT.
 
 # This project was upgraded with external_updater.
-# Usage: tools/external_updater/updater.sh update external/iamf_tools
+# Usage: tools/external_updater/updater.sh update external/<absolute path to project>
 # For more info, check https://cs.android.com/android/platform/superproject/main/+/main:tools/external_updater/README.md
 
 name: "iamf_tools"
@@ -14,13 +14,13 @@ third_party {
   last_upgrade_date {
     year: 2025
     month: 3
-    day: 24
+    day: 28
   }
   homepage: "https://aomediacodec.github.io/iamf/"
   identifier {
     type: "Git"
     value: "https://github.com/AOMediaCodec/iamf-tools"
-    version: "e42e82092f6a46df4c1eebc0e67fa1fdd6788696"
+    version: "f0165954bd68c965b8534f13a60c06c997960582"
     primary_source: true
   }
 }
