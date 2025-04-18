@@ -18,10 +18,7 @@
 #include <memory>
 #include <vector>
 
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
-#include "absl/types/span.h"
-#include "iamf/api/types.h"
+#include "iamf/api/iamf_tools_api_types.h"
 
 namespace iamf_tools {
 namespace api {
@@ -76,12 +73,11 @@ class IamfDecoder {
    *        will be used so long as it is present in the Descriptor OBUs that
    *        are later provided to Decode(). If not, a default layout will be
    *        selected.
-   *
-   * \return IamfDecoder upon success. Other specific statuses on
-   *         failure.
+   * \param output_decoder An output param for the decoder upon success.
+   * \return Ok status upon success. Other specific statuses on  failure.
    */
-  static absl::StatusOr<IamfDecoder> Create(
-      const OutputLayout& requested_layout);
+  static IamfStatus Create(const OutputLayout& requested_layout,
+                           std::unique_ptr<IamfDecoder>& output_decoder);
 
   /*!\brief Creates an IamfDecoder from a known set of descriptor OBUs.
    *
@@ -92,23 +88,22 @@ class IamfDecoder {
    * \param requested_layout Specifies the desired output layout. This layout
    *        will be used so long as it is present in the Descriptor OBUs that
    *        are provided. If not, a default layout will be selected.
-   * \param descriptor_obus Bitstream containing all the descriptor OBUs and
+   * \param input_buffer Bitstream containing all the descriptor OBUs and
    *        only descriptor OBUs.
-   * \return IamfDecoder upon success. Other specific statuses on
-   *         failure.
+   * \param input_buffer_size Size in bytes of the input buffer.
+   * \param output_decoder An output param for the decoder upon success.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  static absl::StatusOr<IamfDecoder> CreateFromDescriptors(
-      const OutputLayout& requested_layout,
-      absl::Span<const uint8_t> descriptor_obus);
+  static IamfStatus CreateFromDescriptors(
+      const OutputLayout& requested_layout, const uint8_t* input_buffer,
+      size_t input_buffer_size, std::unique_ptr<IamfDecoder>& output_decoder);
 
   /*!\brief Configures the decoder with the desired mix presentation.
    *
    * \param mix_presentation_id Specifies the desired mix presentation.
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::Status ConfigureMixPresentationId(
-      MixPresentationId mix_presentation_id);
+  IamfStatus ConfigureMixPresentationId(MixPresentationId mix_presentation_id);
 
   /*!\brief Configures the decoder with the desired bit depth.
    *
@@ -129,11 +124,11 @@ class IamfDecoder {
    * temporal units. This provides the user a chance to configure the decoder as
    * they see fit. See sample usages for more details.
    *
-   * \param bitstream Bitstream to decode.
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * \param input_buffer Bitstream to decode.
+   * \param input_buffer_size Size in bytes of the input buffer.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::Status Decode(absl::Span<const uint8_t> bitstream);
+  IamfStatus Decode(const uint8_t* input_buffer, size_t input_buffer_size);
 
   /*!\brief Outputs the next temporal unit of decoded audio.
    *
@@ -145,14 +140,18 @@ class IamfDecoder {
    * The output PCM is arranged based on the configured `OutputLayout` and
    * `OutputSampleType`.
    *
-   * \param output_bytes Output buffer to receive bytes.  Must be large enough
+   * \param output_buffer Output buffer to receive bytes.  Must be large enough
    *        to receive bytes.  Maximum necessary size can be determined by
    *        GetFrameSize * GetNumberOfOutputChannels * bit depth (as determined
    *        by GetOutputSampleType).
-   * \param bytes_written Number of bytes written to the output_bytes.
+   * \param output_buffer_size Available size in bytes of the output buffer.
+   * \param bytes_written Output param for the number of bytes written to the
+   * output_bytes.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::Status GetOutputTemporalUnit(absl::Span<uint8_t> output_bytes,
-                                     size_t& bytes_written);
+  IamfStatus GetOutputTemporalUnit(uint8_t* output_buffer,
+                                   size_t output_buffer_size,
+                                   size_t& bytes_written);
 
   /*!\brief Returns true iff a decoded temporal unit is available.
    *
@@ -182,18 +181,21 @@ class IamfDecoder {
    * This function can only be used after all Descriptor OBUs have been parsed,
    * i.e. IsDescriptorProcessingComplete() returns true.
    *
-   * \return OutputLayout or error statuses on failure.
+   * \param output_layout Output param for the layout upon success.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::StatusOr<OutputLayout> GetOutputLayout() const;
+  IamfStatus GetOutputLayout(OutputLayout& output_layout) const;
 
   /*!\brief Gets the number of output channels.
    *
    * This function can only be used after all Descriptor OBUs have been parsed,
    * i.e. IsDescriptorProcessingComplete() returns true.
    *
-   * \return
+   * \param output_num_channels Output param for the number of output channels
+   * upon success.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::StatusOr<int> GetNumberOfOutputChannels() const;
+  IamfStatus GetNumberOfOutputChannels(int& output_num_channels) const;
 
   /*!\brief Provides mix presentation information from the descriptor OBUs.
    *
@@ -205,11 +207,10 @@ class IamfDecoder {
    *
    * \param output_mix_presentation_metadatas Output parameter for the mix
    *        presentation metadata.
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::Status GetMixPresentations(std::vector<MixPresentationMetadata>&
-                                       output_mix_presentation_metadatas) const;
+  IamfStatus GetMixPresentations(std::vector<MixPresentationMetadata>&
+                                     output_mix_presentation_metadatas) const;
 
   /*!\brief Returns the current OutputSampleType.
    *
@@ -226,30 +227,47 @@ class IamfDecoder {
    * This function can only be used after all Descriptor OBUs have been parsed,
    * i.e. IsDescriptorProcessingComplete() returns true.
    *
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * \param output_sample_rate Output param for the sample rate upon success.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::StatusOr<uint32_t> GetSampleRate() const;
+  IamfStatus GetSampleRate(uint32_t& output_sample_rate) const;
 
   /*!\brief Gets the number of samples per frame.
    *
    * This function can only be used after all Descriptor OBUs have been parsed,
    * i.e. IsDescriptorProcessingComplete() returns true.
    *
-   * Returns the number of samples per frame of the output audio. The total
-   * number of samples in a time tick is the number of channels times the number
-   * of samples per frame.
+   * Returns the number of samples per frame per channel of the output audio.
+   * The total number of samples in a time tick is the number of channels times
+   * this number, the frame size.
    *
-   * \return Number of samples per frame upon success. Other specific statuses
-   *         on failure.
+   * \param output_frame_size Output param for the frame size upon success.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::StatusOr<uint32_t> GetFrameSize() const;
+  IamfStatus GetFrameSize(uint32_t& output_frame_size) const;
+
+  /*!\brief Resets the decoder to a clean state ready to decode new data.
+   *
+   * A clean state refers to a state in which descriptors OBUs have been parsed,
+   * but no other data has been parsed.
+   *
+   * This function can only be used after all Descriptor OBUs have been parsed,
+   * i.e. IsDescriptorProcessingComplete() returns true.
+   *
+   * This function will result in all decoded temporal units that have not been
+   * retrieved by GetOutputTemporalUnit() to be lost. It will also result in any
+   * pending data in the internal buffer being lost.
+   *
+   * return Ok status upon success. Other specific statuses on failure.
+   */
+  IamfStatus Reset();
 
   /*!\brief Signals to the decoder that no more data will be provided.
    *
-   * Decode cannot be called after this method has been called.
+   * Decode cannot be called after this method has been called, unless Reset()
+   * is called first.
    */
-  void SignalEndOfStream();
+  void SignalEndOfDecoding();
 
   /*!\brief Closes the decoder.
    *
@@ -257,10 +275,9 @@ class IamfDecoder {
    * Decode(), has called SignalEndOfStream(), and gotten all output units.
    * Will close all underlying decoders.
    *
-   * \return `absl::OkStatus()` upon success. Other specific statuses on
-   *         failure.
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  absl::Status Close();
+  IamfStatus Close();
 
  private:
   // Forward declaration of the internal state of the decoder.
