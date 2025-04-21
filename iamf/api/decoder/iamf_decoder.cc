@@ -10,7 +10,7 @@
  * www.aomedia.org/license/patent.
  */
 
-#include "iamf/api/decoder/iamf_decoder.h"
+#include "iamf/include/iamf_tools/iamf_decoder.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +19,7 @@
 #include <queue>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
@@ -26,13 +27,15 @@
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
+#include "iamf/api/conversion/channel_reorderer.h"
 #include "iamf/api/conversion/mix_presentation_conversion.h"
-#include "iamf/api/iamf_tools_api_types.h"
+#include "iamf/api/conversion/profile_conversion.h"
 #include "iamf/cli/obu_processor.h"
 #include "iamf/cli/rendering_mix_presentation_finalizer.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/sample_processing_utils.h"
+#include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 #include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 
@@ -49,10 +52,20 @@ struct IamfDecoder::DecoderState {
    * \param read_bit_buffer Buffer to decode from.
    * \param requested_layout User-requested layout, the actual layout may be
    *        different depending on the mix presentations.
+   * \param requested_profile_versions User-requested profile versions, the
+   *        actual profile version may be different depending on the mix
+   *        presentations.
    */
   DecoderState(std::unique_ptr<StreamBasedReadBitBuffer> read_bit_buffer,
-               const Layout& requested_layout)
-      : read_bit_buffer(std::move(read_bit_buffer)), layout(requested_layout) {}
+               const Layout& requested_layout,
+               const absl::flat_hash_set<::iamf_tools::ProfileVersion>&
+                   requested_profile_versions)
+      : read_bit_buffer(std::move(read_bit_buffer)),
+        layout(requested_layout),
+        desired_profile_versions(requested_profile_versions) {}
+
+  /*!\brief Creates an ObuProcessor and maintains related bookeeping. */
+  absl::Status CreateObuProcessor();
 
   // Current status of the decoder.
   DecoderStatus status = DecoderStatus::kAcceptingData;
@@ -81,12 +94,64 @@ struct IamfDecoder::DecoderState {
   // True iff the decoder was created via CreateFromDescriptors().
   bool created_from_descriptors = false;
 
+  // Cache the profile versions that the user is interested in, we use them to
+  // select an appropriate mix presentation.
+  const absl::flat_hash_set<::iamf_tools::ProfileVersion>
+      desired_profile_versions;
+
   // Once descriptors have been processed, they are stored here. This is useful
   // for Reset() purposes, in which we can recreate the ObuProcessor with the
   // original descriptors in order to ensure that the state of the processor is
   // clean.
   std::vector<uint8_t> descriptor_obus;
+
+  ChannelReorderer::RearrangementScheme channel_rearrangement_scheme =
+      ChannelReorderer::RearrangementScheme::kDefaultNoOp;
+  // Created after DescriptorObus are processed and final Layout is known.
+  std::optional<ChannelReorderer> channel_reorderer = std::nullopt;
 };
+
+// Creates an ObuProcessor; an ObuProcessor is only created once all descriptor
+// OBUs have been processed. Contracted to only return a resource exhausted
+// error if there is not enough data to process the descriptor OBUs.
+absl::Status IamfDecoder::DecoderState::CreateObuProcessor() {
+  // When resetting, the `ObuProcessor` is recreated with the original
+  // descriptors. So we force `is_exhaustive_and_exact` to be true in that case.
+  const bool on_reset = obu_processor != nullptr;
+  const bool is_exhaustive_and_exact = on_reset || created_from_descriptors;
+
+  // Happens only in the pure streaming case.
+  const auto start_position = read_bit_buffer->Tell();
+  bool insufficient_data;
+  auto temp_obu_processor = ObuProcessor::CreateForRendering(
+      desired_profile_versions, layout,
+      RenderingMixPresentationFinalizer::ProduceNoSampleProcessors,
+      is_exhaustive_and_exact, read_bit_buffer.get(), layout,
+      insufficient_data);
+  if (temp_obu_processor == nullptr) {
+    // `insufficient_data` is true iff everything so far is valid but more data
+    // is needed.
+    if (insufficient_data && !created_from_descriptors) {
+      return absl::ResourceExhaustedError(
+          "Have not received enough data yet to process descriptor "
+          "OBUs. Please call Decode() again with more data.");
+    }
+    return absl::InvalidArgumentError("Failed to create OBU processor.");
+  }
+  const auto num_bytes_read = (read_bit_buffer->Tell() - start_position) / 8;
+
+  // Seek back to the beginning of the data that was processed so that we can
+  // read and store the binary IAMF descriptor OBUs.
+  RETURN_IF_NOT_OK(read_bit_buffer->Seek(start_position));
+  descriptor_obus.resize(num_bytes_read);
+  RETURN_IF_NOT_OK(
+      read_bit_buffer->ReadUint8Span(absl::MakeSpan(descriptor_obus)));
+  RETURN_IF_NOT_OK(read_bit_buffer->Flush(num_bytes_read));
+
+  // Copy over fields at the end, now that everything is successful.
+  obu_processor = std::move(temp_obu_processor);
+  return absl::OkStatus();
+}
 
 namespace {
 constexpr int kInitialBufferSize = 1024;
@@ -100,55 +165,22 @@ IamfStatus AbslToIamfStatus(const absl::Status& absl_status) {
   }
 }
 
-// TODO(b/377554944, b/392950028): Add API controls for this. Such as adding
-//                                 support for v1.1 via
-//                                 `kIamfBaseEnhancedProfile`.
-// Only permit profiles defined in v1.0.0-errata, for now.
-const absl::flat_hash_set<ProfileVersion> kSimpleAndBaseProfiles = {
-    ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile};
-
-// Creates an ObuProcessor; an ObuProcessor is only created once all descriptor
-// OBUs have been processed. Contracted to only return a resource exhausted
-// error if there is not enough data to process the descriptor OBUs.
-absl::StatusOr<std::unique_ptr<ObuProcessor>> CreateObuProcessor(
-    const absl::flat_hash_set<ProfileVersion>& desired_profile_versions,
-    bool contains_all_descriptor_obus,
-    StreamBasedReadBitBuffer* read_bit_buffer, Layout& in_out_layout,
-    std::vector<uint8_t>& output_descriptor_obus) {
-  // Happens only in the pure streaming case.
-  const auto start_position = read_bit_buffer->Tell();
-  bool insufficient_data;
-  auto obu_processor = ObuProcessor::CreateForRendering(
-      desired_profile_versions, in_out_layout,
-      RenderingMixPresentationFinalizer::ProduceNoSampleProcessors,
-      /*is_exhaustive_and_exact=*/contains_all_descriptor_obus, read_bit_buffer,
-      in_out_layout, insufficient_data);
-  if (obu_processor == nullptr) {
-    // `insufficient_data` is true iff everything so far is valid but more data
-    // is needed.
-    if (insufficient_data && !contains_all_descriptor_obus) {
-      return absl::ResourceExhaustedError(
-          "Have not received enough data yet to process descriptor "
-          "OBUs. Please call Decode() again with more data.");
-    }
-    return absl::InvalidArgumentError("Failed to create OBU processor.");
+ChannelReorderer::RearrangementScheme ChannelOrderingApiToInternalType(
+    ChannelOrdering channel_ordering) {
+  switch (channel_ordering) {
+    case ChannelOrdering::kOrderingForAndroid:
+      return ChannelReorderer::RearrangementScheme::kReorderForAndroid;
+    case ChannelOrdering::kIamfOrdering:
+    default:
+      return ChannelReorderer::RearrangementScheme::kDefaultNoOp;
   }
-  const auto num_bytes_read = (read_bit_buffer->Tell() - start_position) / 8;
-
-  // Seek back to the beginning of the data that was processed so that we can
-  // read and store the binary IAMF descriptor OBUs.
-  RETURN_IF_NOT_OK(read_bit_buffer->Seek(start_position));
-  output_descriptor_obus.resize(num_bytes_read);
-  RETURN_IF_NOT_OK(
-      read_bit_buffer->ReadUint8Span(absl::MakeSpan(output_descriptor_obus)));
-  RETURN_IF_NOT_OK(read_bit_buffer->Flush(num_bytes_read));
-  return obu_processor;
 }
 
 IamfStatus ProcessAllTemporalUnits(
     StreamBasedReadBitBuffer* read_bit_buffer, ObuProcessor* obu_processor,
     bool created_from_descriptors,
-    std::queue<std::vector<std::vector<int32_t>>>& rendered_pcm_samples) {
+    std::queue<std::vector<std::vector<int32_t>>>& rendered_pcm_samples,
+    std::optional<ChannelReorderer> channel_reorderer) {
   LOG_FIRST_N(INFO, 10) << "Processing Temporal Units";
   bool continue_processing = true;
   const auto start_position_bits = read_bit_buffer->Tell();
@@ -172,9 +204,13 @@ IamfStatus ProcessAllTemporalUnits(
       if (!absl_status.ok()) {
         return AbslToIamfStatus(absl_status);
       }
-      rendered_pcm_samples.push(
+      auto temporal_unit =
           std::vector(rendered_pcm_samples_for_temporal_unit.begin(),
-                      rendered_pcm_samples_for_temporal_unit.end()));
+                      rendered_pcm_samples_for_temporal_unit.end());
+      if (channel_reorderer.has_value()) {
+        channel_reorderer->Reorder(temporal_unit);
+      }
+      rendered_pcm_samples.push(std::move(temporal_unit));
     }
   }
   // Empty the buffer of the data that was processed thus far.
@@ -241,7 +277,7 @@ IamfDecoder::~IamfDecoder() = default;
 IamfDecoder::IamfDecoder(IamfDecoder&&) = default;
 IamfDecoder& IamfDecoder::operator=(IamfDecoder&&) = default;
 
-IamfStatus IamfDecoder::Create(const OutputLayout& requested_layout,
+IamfStatus IamfDecoder::Create(const Settings& settings,
                                std::unique_ptr<IamfDecoder>& output_decoder) {
   output_decoder = nullptr;
 
@@ -251,19 +287,30 @@ IamfStatus IamfDecoder::Create(const OutputLayout& requested_layout,
     return IamfStatus::ErrorStatus(
         "Internal Error: Failed to create read bit buffer.");
   }
+
+  // Cache the internal representation of the profile versions. Depending on
+  // creation mode, we may not have all the descriptors yet.
+  absl::flat_hash_set<::iamf_tools::ProfileVersion> desired_profile_versions;
+  for (const auto& profile_version : settings.requested_profile_versions) {
+    desired_profile_versions.insert(ApiToInternalType(profile_version));
+  }
+
   std::unique_ptr<DecoderState> state = std::make_unique<DecoderState>(
-      std::move(read_bit_buffer), ApiToInternalType(requested_layout));
+      std::move(read_bit_buffer), ApiToInternalType(settings.requested_layout),
+      desired_profile_versions);
+  state->channel_rearrangement_scheme =
+      ChannelOrderingApiToInternalType(settings.channel_ordering);
   output_decoder = absl::WrapUnique(new IamfDecoder(std::move(state)));
   return IamfStatus::OkStatus();
 }
 
 IamfStatus IamfDecoder::CreateFromDescriptors(
-    const OutputLayout& requested_layout, const uint8_t* input_buffer,
+    const Settings& settings, const uint8_t* input_buffer,
     size_t input_buffer_size, std::unique_ptr<IamfDecoder>& output_decoder) {
   output_decoder = nullptr;
   absl::Span<const uint8_t> descriptor_obus(input_buffer, input_buffer_size);
 
-  IamfStatus status = Create(requested_layout, output_decoder);
+  IamfStatus status = Create(settings, output_decoder);
   if (!status.ok()) {
     return status;
   }
@@ -276,18 +323,8 @@ IamfStatus IamfDecoder::CreateFromDescriptors(
     return AbslToIamfStatus(absl_status);
   }
 
-  absl::StatusOr<std::unique_ptr<ObuProcessor>> obu_processor =
-      CreateObuProcessor(kSimpleAndBaseProfiles,
-                         /*contains_all_descriptor_obus=*/true,
-                         output_decoder->state_->read_bit_buffer.get(),
-                         output_decoder->state_->layout,
-                         output_decoder->state_->descriptor_obus);
-  if (!obu_processor.ok()) {
-    return AbslToIamfStatus(obu_processor.status());
-  }
-  output_decoder->state_->obu_processor = *std::move(obu_processor);
   output_decoder->state_->created_from_descriptors = true;
-  return IamfStatus::OkStatus();
+  return AbslToIamfStatus(output_decoder->state_->CreateObuProcessor());
 }
 
 IamfStatus IamfDecoder::Decode(const uint8_t* input_buffer,
@@ -304,33 +341,33 @@ IamfStatus IamfDecoder::Decode(const uint8_t* input_buffer,
     return AbslToIamfStatus(push_bytes_status);
   }
   if (!IsDescriptorProcessingComplete()) {
-    auto obu_processor = CreateObuProcessor(
-        kSimpleAndBaseProfiles,
-        /*contains_all_descriptor_obus=*/false, state_->read_bit_buffer.get(),
-        state_->layout, state_->descriptor_obus);
-    if (obu_processor.ok()) {
-      state_->obu_processor = *std::move(obu_processor);
+    const auto created_obu_processor_status = state_->CreateObuProcessor();
+
+    if (created_obu_processor_status.ok()) {
       return IamfStatus::OkStatus();
-    } else if (absl::IsResourceExhausted(obu_processor.status())) {
+    } else if (absl::IsResourceExhausted(created_obu_processor_status)) {
       // Don't have enough data to process the descriptor OBUs yet, but no
       // errors have occurred.
       return IamfStatus::OkStatus();
     } else {
       // Corrupted data or other errors.
-      return AbslToIamfStatus(obu_processor.status());
+      return AbslToIamfStatus(created_obu_processor_status);
     }
   }
 
   // At this stage, we know that we've processed all descriptor OBUs.
+  if (std::holds_alternative<LoudspeakersSsConventionLayout>(
+          state_->layout.specific_layout)) {
+    auto sound_system =
+        std::get<LoudspeakersSsConventionLayout>(state_->layout.specific_layout)
+            .sound_system;
+    state_->channel_reorderer = ChannelReorderer::Create(
+        sound_system, state_->channel_rearrangement_scheme);
+  }
   return ProcessAllTemporalUnits(
       state_->read_bit_buffer.get(), state_->obu_processor.get(),
-      state_->created_from_descriptors, state_->rendered_pcm_samples);
-}
-
-IamfStatus IamfDecoder::ConfigureMixPresentationId(
-    MixPresentationId mix_presentation_id) {
-  return IamfStatus::ErrorStatus(
-      "Unimplemented: ConfigureMixPresentationId is not yet implemented.");
+      state_->created_from_descriptors, state_->rendered_pcm_samples,
+      state_->channel_reorderer);
 }
 
 void IamfDecoder::ConfigureOutputSampleType(
@@ -386,13 +423,6 @@ IamfStatus IamfDecoder::GetNumberOfOutputChannels(
   }
   return AbslToIamfStatus(MixPresentationObu::GetNumChannelsFromLayout(
       state_->layout, output_num_channels));
-}
-
-IamfStatus IamfDecoder::GetMixPresentations(
-    std::vector<MixPresentationMetadata>& output_mix_presentation_metadata)
-    const {
-  return IamfStatus::ErrorStatus(
-      "Unimplemented: GetMixPresentations is not yet implemented.");
 }
 
 OutputSampleType IamfDecoder::GetOutputSampleType() const {
@@ -458,17 +488,7 @@ IamfStatus IamfDecoder::Reset() {
   if (!absl_status.ok()) {
     return AbslToIamfStatus(absl_status);
   }
-  absl::StatusOr<std::unique_ptr<ObuProcessor>> obu_processor =
-      CreateObuProcessor(kSimpleAndBaseProfiles,
-                         /*contains_all_descriptor_obus=*/true,
-                         state_->read_bit_buffer.get(), state_->layout,
-                         state_->descriptor_obus);
-  if (!obu_processor.ok()) {
-    return AbslToIamfStatus(obu_processor.status());
-  }
-  state_->obu_processor = *std::move(obu_processor);
-
-  return IamfStatus::OkStatus();
+  return AbslToIamfStatus(state_->CreateObuProcessor());
 }
 
 void IamfDecoder::SignalEndOfDecoding() {

@@ -660,7 +660,7 @@ absl::Status StoreSamplesForAudioElementId(
   if (audio_frames_or_decoded_audio_frames.empty()) {
     return absl::OkStatus();
   }
-  const int32_t common_start_timestamp =
+  const InternalTimestamp common_start_timestamp =
       audio_frames_or_decoded_audio_frames.begin()->start_timestamp;
 
   for (auto& audio_frame : audio_frames_or_decoded_audio_frames) {
@@ -678,21 +678,26 @@ absl::Status StoreSamplesForAudioElementId(
 
     const auto& labels = substream_id_labels_iter->second;
     int channel_index = 0;
+    const auto num_channels = labels.size();
     for (const auto& label : labels) {
       const auto* input_samples = GetSamples(audio_frame);
       if (input_samples == nullptr) {
         return absl::InvalidArgumentError(
             "Input samples are not available for down-mixing.");
       }
-      const size_t num_ticks = input_samples->size();
 
       ConfigureLabeledFrame(audio_frame, labeled_frame);
 
       auto& samples = labeled_frame.label_to_samples[label];
+      const size_t num_ticks = input_samples->size();
       samples.resize(num_ticks, 0);
-      for (int t = 0; t < samples.size(); t++) {
+      for (int t = 0; t < num_ticks; t++) {
+        const auto& input_tick = (*input_samples)[t];
+        RETURN_IF_NOT_OK(ValidateEqual(
+            input_tick.size(), num_channels,
+            "Decoded number of channels vs. expected number of channels"));
         samples[t] = Int32ToNormalizedFloatingPoint<InternalSampleType>(
-            (*input_samples)[t][channel_index]);
+            input_tick[channel_index]);
       }
       channel_index++;
     }
