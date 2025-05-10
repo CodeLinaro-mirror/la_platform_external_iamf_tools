@@ -15,7 +15,7 @@ license {
     ],
 }
 
-cc_library {
+cc_library_static {
     name: "iamf_tools",
     export_include_dirs: [
         "iamf/include/",
@@ -28,7 +28,7 @@ cc_library {
         "liblog",
         "libopus",
     ],
-    static_libs: [
+    whole_static_libs: [
         "libabsl",
     ],
     local_include_dirs: [
@@ -93,12 +93,11 @@ cc_library {
         "iamf/obu/parameter_block.cc",
         "iamf/obu/recon_gain_info_parameter_data.cc",
     ],
-    min_sdk_version: "31",
+    min_sdk_version: "apex_inherit",
     apex_available: [
         "com.android.media.swcodec",
     ],
     visibility: [
-        "//frameworks/av/media/codec2/components/iamf",
-        "//frameworks/av/media/codec2/components/iamf/tests",
+        "//frameworks/av/media/codec2:__subpackages__",
     ],
 }
