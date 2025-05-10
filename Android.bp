@@ -15,7 +15,7 @@ license {
     ],
 }
 
-cc_library {
+cc_library_static {
     name: "iamf_tools",
     export_include_dirs: [
         "iamf/include/",
@@ -28,7 +28,7 @@ cc_library {
         "liblog",
         "libopus",
     ],
-    static_libs: [
+    whole_static_libs: [
         "libabsl",
     ],
     local_include_dirs: [
@@ -98,7 +98,6 @@ cc_library {
         "com.android.media.swcodec",
     ],
     visibility: [
-        "//frameworks/av/media/codec2/components/iamf",
-        "//frameworks/av/media/codec2/components/iamf/tests",
+        "//frameworks/av/media/codec2:__subpackages__",
     ],
 }
