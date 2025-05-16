@@ -29,13 +29,20 @@ cc_library_static {
         "libopus",
     ],
     whole_static_libs: [
-        "libabsl",
+        "absl_status",
+        "absl_status_statusor",
+        "absl_strings",
+        "absl_types_span",
+        "absl_log",
+        "absl_log_check",
+        "absl_container_flat_hash_map",
+        "absl_container_flat_hash_set",
+        "absl_container_node_hash_map",
     ],
     local_include_dirs: [
         ".",
     ],
     include_dirs: [
-        "external/abseil-cpp",
         "external/libopus",
     ],
     srcs: [
