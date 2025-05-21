@@ -20,11 +20,9 @@ cc_library_static {
     export_include_dirs: [
         "iamf/include/",
     ],
-    cflags: [
-        "-DIAMF_TOOLS_DISABLE_AAC_DECODER",
-        "-DIAMF_TOOLS_DISABLE_FLAC_DECODER",
-    ],
     shared_libs: [
+        "libFLAC",
+        "libFraunhoferAAC",
         "liblog",
         "libopus",
     ],
@@ -42,7 +40,13 @@ cc_library_static {
     local_include_dirs: [
         ".",
     ],
+    // iamf_tools is developed using Bazel/Google C++ style of full include paths
+    // (rather than using include folders inside dependencies), so we add the roots
+    // of these dependencies here.
     include_dirs: [
+        "external/aac",
+        "external/abseil-cpp",
+        "external/flac",
         "external/libopus",
     ],
     srcs: [
@@ -54,6 +58,9 @@ cc_library_static {
         "iamf/cli/audio_frame_decoder.cc",
         "iamf/cli/channel_label.cc",
         "iamf/cli/cli_util.cc",
+        "iamf/cli/codec/aac_decoder.cc",
+        "iamf/cli/codec/flac_decoder_stream_callbacks.cc",
+        "iamf/cli/codec/flac_decoder.cc",
         "iamf/cli/codec/lpcm_decoder.cc",
         "iamf/cli/codec/opus_decoder.cc",
         "iamf/cli/codec/opus_utils.cc",
