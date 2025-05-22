@@ -61,12 +61,28 @@ namespace iamf_tools {
 
 namespace {
 
+// The size of a Codec Config OBU payload (after header) if all fields are
+// minimal size, and `DecoderConfig` is empty. Real Codec Config OBUs would have
+// a non-empty `DecoderConfig` and always be a few bytes larger.
+constexpr size_t kSmallestAcceptedCodecConfigSize = 8;
+
 // Gets a CodecConfigObu from `read_bit_buffer` and stores it into
 // `codec_config_obu_map`, using the `codec_config_id` as the unique key.
 absl::Status GetAndStoreCodecConfigObu(
     const ObuHeader& header, int64_t payload_size,
     absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obu_map,
     ReadBitBuffer& read_bit_buffer) {
+  if (payload_size < kSmallestAcceptedCodecConfigSize) {
+    // The OBU is implausibly small. It is likely the source file is corrupted.
+    // For maximum compatibility, silently skip over the OBU.
+    LOG(WARNING)
+        << "Possible bitstream corruption. Skipping over an "
+           "implausibly small Codec Config OBU with a payload size of: "
+        << payload_size << " bytes.";
+    std::vector<uint8_t> buffer_to_discard(payload_size);
+    return read_bit_buffer.ReadUint8Span(absl::MakeSpan(buffer_to_discard));
+  }
+
   absl::StatusOr<CodecConfigObu> codec_config_obu =
       CodecConfigObu::CreateFromBuffer(header, payload_size, read_bit_buffer);
   if (!codec_config_obu.ok()) {
@@ -882,7 +898,7 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
     InternalTimestamp start_timestamp,
     const std::list<AudioFrameWithData>& audio_frames,
     const std::list<ParameterBlockWithData>& parameter_blocks,
-    absl::Span<const std::vector<int32_t>>& output_rendered_pcm_samples) {
+    absl::Span<const absl::Span<const int32_t>>& output_rendered_pcm_samples) {
   if (audio_frames.empty()) {
     // Nothing to decode, render, or measure loudness of.
     return absl::OkStatus();
@@ -943,7 +959,7 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
       *decoded_labeled_frames_for_temporal_unit, start_timestamp,
       *end_timestamp, parameter_blocks));
 
-  const auto& rendered_samples =
+  auto rendered_samples =
       mix_presentation_finalizer_->GetPostProcessedSamplesAsSpan(
           decoding_layout_info_.mix_presentation_id,
           decoding_layout_info_.sub_mix_index,
