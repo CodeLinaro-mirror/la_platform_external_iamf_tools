@@ -40,6 +40,7 @@ proto_library(
 proto_library(
     name = "encoder_control_metadata_proto",
     srcs = ["encoder_control_metadata.proto"],
+    deps = [":output_audio_format_proto"],
 )
 
 proto_library(
@@ -60,6 +61,11 @@ proto_library(
 proto_library(
     name = "obu_header_proto",
     srcs = ["obu_header.proto"],
+)
+
+proto_library(
+    name = "output_audio_format_proto",
+    srcs = ["output_audio_format.proto"],
 )
 
 proto_library(
@@ -147,6 +153,11 @@ cc_proto_library(
 cc_proto_library(
     name = "obu_header_cc_proto",
     deps = [":obu_header_proto"],
+)
+
+cc_proto_library(
+    name = "output_audio_format_cc_proto",
+    deps = [":output_audio_format_proto"],
 )
 
 cc_proto_library(
