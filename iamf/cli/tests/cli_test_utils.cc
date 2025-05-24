@@ -175,12 +175,13 @@ void AddLpcmCodecConfigWithIdAndSampleRate(
   // values.
   constexpr uint32_t kNumSamplesPerFrame = 8;
   constexpr uint8_t kSampleSize = 16;
-  return AddLpcmCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleSize,
-                            sample_rate, codec_config_obus);
+  AddLpcmCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleSize,
+                     sample_rate, codec_config_obus);
 }
 
-void AddOpusCodecConfigWithId(
-    uint32_t codec_config_id,
+void AddOpusCodecConfig(
+    uint32_t codec_config_id, uint32_t num_samples_per_frame,
+    uint32_t sample_rate,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
@@ -188,15 +189,27 @@ void AddOpusCodecConfigWithId(
   CodecConfigObu obu(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdOpus,
-       .num_samples_per_frame = 8,
-       .decoder_config = OpusDecoderConfig{
-           .version_ = 1, .pre_skip_ = 312, .input_sample_rate_ = 0}});
+       .num_samples_per_frame = num_samples_per_frame,
+       .decoder_config = OpusDecoderConfig{.version_ = 1,
+                                           .pre_skip_ = 312,
+                                           .input_sample_rate_ = sample_rate}});
   ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
   codec_config_obus.emplace(codec_config_id, std::move(obu));
 }
 
-void AddFlacCodecConfigWithId(
+void AddOpusCodecConfigWithId(
     uint32_t codec_config_id,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
+  const uint32_t kNumSamplesPerFrame = 8;
+  const uint32_t kSampleRate = 48000;
+
+  AddOpusCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleRate,
+                     codec_config_obus);
+}
+
+void AddFlacCodecConfig(
+    uint32_t codec_config_id, uint32_t num_samples_per_frame,
+    uint32_t sample_rate, uint8_t sample_size,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
@@ -204,17 +217,43 @@ void AddFlacCodecConfigWithId(
   CodecConfigObu obu(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdFlac,
-       .num_samples_per_frame = 16,
+       .num_samples_per_frame = num_samples_per_frame,
        .decoder_config = FlacDecoderConfig(
            {{{.header = {.last_metadata_block_flag = true,
                          .block_type = FlacMetaBlockHeader::kFlacStreamInfo,
                          .metadata_data_block_length = 34},
-              .payload =
-                  FlacMetaBlockStreamInfo{.minimum_block_size = 16,
-                                          .maximum_block_size = 16,
-                                          .sample_rate = 48000,
-                                          .bits_per_sample = 15,
-                                          .total_samples_in_stream = 0}}}})});
+              .payload = FlacMetaBlockStreamInfo{
+                  .minimum_block_size =
+                      static_cast<uint16_t>(num_samples_per_frame),
+                  .maximum_block_size =
+                      static_cast<uint16_t>(num_samples_per_frame),
+                  .sample_rate = sample_rate,
+                  .bits_per_sample = static_cast<uint8_t>(sample_size - 1),
+                  .total_samples_in_stream = 0}}}})});
+  ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
+  codec_config_obus.emplace(codec_config_id, std::move(obu));
+}
+
+void AddFlacCodecConfigWithId(
+    uint32_t codec_config_id,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
+  const uint32_t kNumSamplesPerFrame = 16;
+  const uint32_t kSampleRate = 48000;
+  const uint8_t kSampleSize = 16;
+  AddFlacCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleRate,
+                     kSampleSize, codec_config_obus);
+}
+
+void AddAacCodecConfig(
+    uint32_t codec_config_id, uint32_t num_samples_per_frame,
+    absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
+  // Initialize the Codec Config OBU.
+  ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
+
+  CodecConfigObu obu(ObuHeader(), codec_config_id,
+                     {.codec_id = CodecConfig::kCodecIdAacLc,
+                      .num_samples_per_frame = num_samples_per_frame,
+                      .decoder_config = AacDecoderConfig{}});
   ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
   codec_config_obus.emplace(codec_config_id, std::move(obu));
 }
@@ -222,15 +261,8 @@ void AddFlacCodecConfigWithId(
 void AddAacCodecConfigWithId(
     uint32_t codec_config_id,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
-  // Initialize the Codec Config OBU.
-  ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
-
-  CodecConfigObu obu(ObuHeader(), codec_config_id,
-                     {.codec_id = CodecConfig::kCodecIdAacLc,
-                      .num_samples_per_frame = 1024,
-                      .decoder_config = AacDecoderConfig{}});
-  ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  const uint32_t kNumSamplesPerFrame = 1024;
+  AddAacCodecConfig(codec_config_id, kNumSamplesPerFrame, codec_config_obus);
 }
 
 void AddAmbisonicsMonoAudioElementWithSubstreamIds(
@@ -552,11 +584,11 @@ std::vector<InternalSampleType> GenerateSineWav(uint64_t start_tick,
 }
 
 void AccumulateZeroCrossings(
-    absl::Span<const std::vector<int32_t>> samples,
+    absl::Span<const absl::Span<const int32_t>> channel_time_samples,
     std::vector<ZeroCrossingState>& zero_crossing_states,
     std::vector<int>& zero_crossing_counts) {
   using enum ZeroCrossingState;
-  const auto num_channels = samples.empty() ? 0 : samples[0].size();
+  const auto num_channels = channel_time_samples.size();
   // Seed the data structures, or check they contain the right number of
   // channels.
   if (zero_crossing_counts.empty()) {
@@ -575,19 +607,20 @@ void AccumulateZeroCrossings(
   // the sine wave stopped.)  Note that -18 dB would correspond to dividing
   // by 8, while dividing by 100 is -40 dB.
   constexpr int32_t kThreshold = std::numeric_limits<int32_t>::max() / 100;
-  for (const auto& tick : samples) {
-    ASSERT_EQ(tick.size(), num_channels);
-    for (int i = 0; i < num_channels; ++i) {
-      ZeroCrossingState next_state = (tick[i] > kThreshold)    ? kPositive
-                                     : (tick[i] < -kThreshold) ? kNegative
-                                                               : kUnknown;
+
+  for (int c = 0; c < num_channels; c++) {
+    const auto& channel = channel_time_samples[c];
+    for (int t = 0; t < channel.size(); ++t) {
+      ZeroCrossingState next_state = (channel[t] > kThreshold)    ? kPositive
+                                     : (channel[t] < -kThreshold) ? kNegative
+                                                                  : kUnknown;
       if (next_state == kUnknown) {
         // Don't do anything if it's not clearly positive or negative.
         continue;
-      } else if (zero_crossing_states[i] != next_state) {
+      } else if (zero_crossing_states[c] != next_state) {
         // If we clearly flipped states, count it as a zero crossing.
-        zero_crossing_counts[i]++;
-        zero_crossing_states[i] = next_state;
+        zero_crossing_counts[c]++;
+        zero_crossing_states[c] = next_state;
       }
     }
   }
@@ -611,43 +644,54 @@ absl::Status ReadFileToBytes(const std::filesystem::path& file_path,
 }
 
 absl::Status EverySecondTickResampler::PushFrameDerived(
-    absl::Span<const std::vector<int32_t>> time_channel_samples) {
-  EXPECT_EQ(num_valid_ticks_, 0);  // `SampleProcessorBase` should ensure this.
-  for (size_t i = 0; i < time_channel_samples.size(); ++i) {
-    if (i % 2 == 1) {
-      output_time_channel_samples_[num_valid_ticks_] = time_channel_samples[i];
-      ++num_valid_ticks_;
+    absl::Span<const absl::Span<const int32_t>> channel_time_samples) {
+  for (int c = 0; c < num_channels_; c++) {
+    // `SampleProcessorBase` should ensure this.
+    EXPECT_TRUE(output_channel_time_samples_[c].empty());
+    for (size_t i = 0; i < channel_time_samples[c].size(); ++i) {
+      if (i % 2 == 1) {
+        output_channel_time_samples_[c].push_back(channel_time_samples[c][i]);
+      }
     }
   }
   return absl::OkStatus();
 }
 
 absl::Status EverySecondTickResampler::FlushDerived() {
-  EXPECT_EQ(num_valid_ticks_, 0);  // `SampleProcessorBase` should ensure this.
+  // `SampleProcessorBase` should ensure this.
+  for (int c = 0; c < num_channels_; c++) {
+    // `SampleProcessorBase` should ensure this.
+    EXPECT_TRUE(output_channel_time_samples_[c].empty());
+  }
   return absl::OkStatus();
 }
 
 absl::Status OneFrameDelayer::PushFrameDerived(
-    absl::Span<const std::vector<int32_t>> time_channel_samples) {
+    absl::Span<const absl::Span<const int32_t>> channel_time_samples) {
   // Swap the delayed samples with the output samples from the base class.
-  std::swap(delayed_samples_, output_time_channel_samples_);
-  std::swap(num_delayed_ticks_, num_valid_ticks_);
+  std::swap(delayed_samples_, output_channel_time_samples_);
 
-  // The fact that the input size is less than the output size should have
-  // already been validated in `SampleProcessorBase`, but for safety we can
-  // check it here.
-  EXPECT_LE(time_channel_samples.size(), delayed_samples_.size());
-  // Cache the new samples to delay.
-  std::copy(time_channel_samples.begin(), time_channel_samples.end(),
-            delayed_samples_.begin());
-  num_delayed_ticks_ = time_channel_samples.size();
+  num_delayed_ticks_ = 0;
+  for (int c = 0; c < num_channels_; c++) {
+    delayed_samples_[c].resize(channel_time_samples[c].size());
+
+    // Cache the new samples to delay.
+    std::copy(channel_time_samples[c].begin(), channel_time_samples[c].end(),
+              delayed_samples_[c].begin());
+
+    if (num_delayed_ticks_ == 0) {
+      num_delayed_ticks_ = channel_time_samples[c].size();
+    }
+    EXPECT_EQ(num_delayed_ticks_, channel_time_samples[c].size());
+  }
 
   return absl::OkStatus();
 }
 
 absl::Status OneFrameDelayer::FlushDerived() {
   // Pushing in an empty frame will cause the delayed frame to be available.
-  return PushFrameDerived({});
+  auto empty_frame = std::vector<absl::Span<const int32_t>>(num_channels_);
+  return PushFrameDerived(absl::MakeConstSpan(empty_frame));
 }
 
 }  // namespace iamf_tools
