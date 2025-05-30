@@ -53,7 +53,7 @@ using DemixingMetadataForAudioElementId =
 
 absl::Status S7ToS5DownMixer(const DownMixingParams& down_mixing_params,
                              LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S7 to S5";
+  VLOG(1) << "S7 to S5";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kL7) == label_to_samples.end() ||
@@ -96,26 +96,26 @@ absl::Status S7ToS5DownMixer(const DownMixingParams& down_mixing_params,
 
 absl::Status S5ToS7Demixer(const DownMixingParams& down_mixing_params,
                            LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S5 to S7";
+  VLOG(1) << "S5 to S7";
 
-  const std::vector<InternalSampleType>* l5_samples;
-  const std::vector<InternalSampleType>* ls5_samples;
-  const std::vector<InternalSampleType>* lss7_samples;
-  const std::vector<InternalSampleType>* r5_samples;
-  const std::vector<InternalSampleType>* rs5_samples;
-  const std::vector<InternalSampleType>* rss7_samples;
+  absl::Span<const InternalSampleType> l5_samples;
+  absl::Span<const InternalSampleType> ls5_samples;
+  absl::Span<const InternalSampleType> lss7_samples;
+  absl::Span<const InternalSampleType> r5_samples;
+  absl::Span<const InternalSampleType> rs5_samples;
+  absl::Span<const InternalSampleType> rss7_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL5, label_to_samples, &l5_samples));
+      kL5, label_to_samples, l5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kLs5, label_to_samples, &ls5_samples));
+      kLs5, label_to_samples, ls5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kLss7, label_to_samples, &lss7_samples));
+      kLss7, label_to_samples, lss7_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR5, label_to_samples, &r5_samples));
+      kR5, label_to_samples, r5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kRs5, label_to_samples, &rs5_samples));
+      kRs5, label_to_samples, rs5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kRss7, label_to_samples, &rss7_samples));
+      kRss7, label_to_samples, rss7_samples));
 
   auto& l7_samples = label_to_samples[kDemixedL7];
   auto& r7_samples = label_to_samples[kDemixedR7];
@@ -123,19 +123,19 @@ absl::Status S5ToS7Demixer(const DownMixingParams& down_mixing_params,
   auto& rrs7_samples = label_to_samples[kDemixedRrs7];
 
   // Directly copy L5/R5 to L7/R7, because they are the same.
-  l7_samples = *l5_samples;
-  r7_samples = *r5_samples;
+  l7_samples = {l5_samples.begin(), l5_samples.end()};
+  r7_samples = {r5_samples.begin(), r5_samples.end()};
 
   // Handle Lrs7 and Rrs7.
-  const size_t num_ticks = l5_samples->size();
+  const size_t num_ticks = l5_samples.size();
   lrs7_samples.resize(num_ticks, 0.0);
   rrs7_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
     lrs7_samples[i] =
-        ((*ls5_samples)[i] - down_mixing_params.alpha * (*lss7_samples)[i]) /
+        (ls5_samples[i] - down_mixing_params.alpha * lss7_samples[i]) /
         down_mixing_params.beta;
     rrs7_samples[i] =
-        ((*rs5_samples)[i] - down_mixing_params.alpha * (*rss7_samples)[i]) /
+        (rs5_samples[i] - down_mixing_params.alpha * rss7_samples[i]) /
         down_mixing_params.beta;
   }
 
@@ -144,7 +144,7 @@ absl::Status S5ToS7Demixer(const DownMixingParams& down_mixing_params,
 
 absl::Status S5ToS3DownMixer(const DownMixingParams& down_mixing_params,
                              LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S5 to S3";
+  VLOG(1) << "S5 to S3";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kL5) == label_to_samples.end() ||
@@ -173,32 +173,30 @@ absl::Status S5ToS3DownMixer(const DownMixingParams& down_mixing_params,
 
 absl::Status S3ToS5Demixer(const DownMixingParams& down_mixing_params,
                            LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S3 to S5";
+  VLOG(1) << "S3 to S5";
 
-  const std::vector<InternalSampleType>* l3_samples;
-  const std::vector<InternalSampleType>* l5_samples;
-  const std::vector<InternalSampleType>* r3_samples;
-  const std::vector<InternalSampleType>* r5_samples;
+  absl::Span<const InternalSampleType> l3_samples;
+  absl::Span<const InternalSampleType> l5_samples;
+  absl::Span<const InternalSampleType> r3_samples;
+  absl::Span<const InternalSampleType> r5_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL3, label_to_samples, &l3_samples));
+      kL3, label_to_samples, l3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL5, label_to_samples, &l5_samples));
+      kL5, label_to_samples, l5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR3, label_to_samples, &r3_samples));
+      kR3, label_to_samples, r3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR5, label_to_samples, &r5_samples));
+      kR5, label_to_samples, r5_samples));
 
   auto& ls5_samples = label_to_samples[kDemixedLs5];
   auto& rs5_samples = label_to_samples[kDemixedRs5];
 
-  const size_t num_ticks = l3_samples->size();
+  const size_t num_ticks = l3_samples.size();
   ls5_samples.resize(num_ticks, 0.0);
   rs5_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
-    ls5_samples[i] =
-        ((*l3_samples)[i] - (*l5_samples)[i]) / down_mixing_params.delta;
-    rs5_samples[i] =
-        ((*r3_samples)[i] - (*r5_samples)[i]) / down_mixing_params.delta;
+    ls5_samples[i] = (l3_samples[i] - l5_samples[i]) / down_mixing_params.delta;
+    rs5_samples[i] = (r3_samples[i] - r5_samples[i]) / down_mixing_params.delta;
   }
 
   return absl::OkStatus();
@@ -206,7 +204,7 @@ absl::Status S3ToS5Demixer(const DownMixingParams& down_mixing_params,
 
 absl::Status S3ToS2DownMixer(const DownMixingParams& /*down_mixing_params*/,
                              LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S3 to S2";
+  VLOG(1) << "S3 to S2";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kL3) == label_to_samples.end() ||
@@ -233,27 +231,27 @@ absl::Status S3ToS2DownMixer(const DownMixingParams& /*down_mixing_params*/,
 
 absl::Status S2ToS3Demixer(const DownMixingParams& /*down_mixing_params*/,
                            LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S2 to S3";
+  VLOG(1) << "S2 to S3";
 
-  const std::vector<InternalSampleType>* l2_samples;
-  const std::vector<InternalSampleType>* r2_samples;
-  const std::vector<InternalSampleType>* c_samples;
+  absl::Span<const InternalSampleType> l2_samples;
+  absl::Span<const InternalSampleType> r2_samples;
+  absl::Span<const InternalSampleType> c_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL2, label_to_samples, &l2_samples));
+      kL2, label_to_samples, l2_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR2, label_to_samples, &r2_samples));
+      kR2, label_to_samples, r2_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kCentre, label_to_samples, &c_samples));
+      kCentre, label_to_samples, c_samples));
 
   auto& l3_samples = label_to_samples[kDemixedL3];
   auto& r3_samples = label_to_samples[kDemixedR3];
 
-  const size_t num_ticks = c_samples->size();
+  const size_t num_ticks = c_samples.size();
   l3_samples.resize(num_ticks, 0.0);
   r3_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
-    l3_samples[i] = ((*l2_samples)[i] - 0.707 * (*c_samples)[i]);
-    r3_samples[i] = ((*r2_samples)[i] - 0.707 * (*c_samples)[i]);
+    l3_samples[i] = (l2_samples[i] - 0.707 * c_samples[i]);
+    r3_samples[i] = (r2_samples[i] - 0.707 * c_samples[i]);
   }
 
   return absl::OkStatus();
@@ -261,7 +259,7 @@ absl::Status S2ToS3Demixer(const DownMixingParams& /*down_mixing_params*/,
 
 absl::Status S2ToS1DownMixer(const DownMixingParams& /*down_mixing_params*/,
                              LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S2 to S1";
+  VLOG(1) << "S2 to S1";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kL2) == label_to_samples.end() ||
@@ -283,20 +281,20 @@ absl::Status S2ToS1DownMixer(const DownMixingParams& /*down_mixing_params*/,
 
 absl::Status S1ToS2Demixer(const DownMixingParams& /*down_mixing_params*/,
                            LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "S1 to S2";
+  VLOG(1) << "S1 to S2";
 
-  const std::vector<InternalSampleType>* l2_samples;
-  const std::vector<InternalSampleType>* mono_samples;
+  absl::Span<const InternalSampleType> l2_samples;
+  absl::Span<const InternalSampleType> mono_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL2, label_to_samples, &l2_samples));
+      kL2, label_to_samples, l2_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kMono, label_to_samples, &mono_samples));
+      kMono, label_to_samples, mono_samples));
 
   auto& r2_samples = label_to_samples[kDemixedR2];
-  const size_t num_ticks = mono_samples->size();
+  const size_t num_ticks = mono_samples.size();
   r2_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
-    r2_samples[i] = 2.0 * (*mono_samples)[i] - (*l2_samples)[i];
+    r2_samples[i] = 2.0 * mono_samples[i] - l2_samples[i];
   }
 
   return absl::OkStatus();
@@ -304,7 +302,7 @@ absl::Status S1ToS2Demixer(const DownMixingParams& /*down_mixing_params*/,
 
 absl::Status T4ToT2DownMixer(const DownMixingParams& down_mixing_params,
                              LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "T4 to T2";
+  VLOG(1) << "T4 to T2";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kLtf4) == label_to_samples.end() ||
@@ -335,31 +333,31 @@ absl::Status T4ToT2DownMixer(const DownMixingParams& down_mixing_params,
 
 absl::Status T2ToT4Demixer(const DownMixingParams& down_mixing_params,
                            LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "T2 to T4";
+  VLOG(1) << "T2 to T4";
 
-  const std::vector<InternalSampleType>* ltf2_samples;
-  const std::vector<InternalSampleType>* ltf4_samples;
-  const std::vector<InternalSampleType>* rtf2_samples;
-  const std::vector<InternalSampleType>* rtf4_samples;
+  absl::Span<const InternalSampleType> ltf2_samples;
+  absl::Span<const InternalSampleType> ltf4_samples;
+  absl::Span<const InternalSampleType> rtf2_samples;
+  absl::Span<const InternalSampleType> rtf4_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kLtf2, label_to_samples, &ltf2_samples));
+      kLtf2, label_to_samples, ltf2_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kLtf4, label_to_samples, &ltf4_samples));
+      kLtf4, label_to_samples, ltf4_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kRtf2, label_to_samples, &rtf2_samples));
+      kRtf2, label_to_samples, rtf2_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kRtf4, label_to_samples, &rtf4_samples));
+      kRtf4, label_to_samples, rtf4_samples));
 
   auto& ltb4_samples = label_to_samples[kDemixedLtb4];
   auto& rtb4_samples = label_to_samples[kDemixedRtb4];
-  const size_t num_ticks = ltf2_samples->size();
+  const size_t num_ticks = ltf2_samples.size();
   ltb4_samples.resize(num_ticks, 0.0);
   rtb4_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
     ltb4_samples[i] =
-        ((*ltf2_samples)[i] - (*ltf4_samples)[i]) / down_mixing_params.gamma;
+        (ltf2_samples[i] - ltf4_samples[i]) / down_mixing_params.gamma;
     rtb4_samples[i] =
-        ((*rtf2_samples)[i] - (*rtf4_samples)[i]) / down_mixing_params.gamma;
+        (rtf2_samples[i] - rtf4_samples[i]) / down_mixing_params.gamma;
   }
 
   return absl::OkStatus();
@@ -367,7 +365,7 @@ absl::Status T2ToT4Demixer(const DownMixingParams& down_mixing_params,
 
 absl::Status T2ToTf2DownMixer(const DownMixingParams& down_mixing_params,
                               LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "T2 to TF2";
+  VLOG(1) << "T2 to TF2";
 
   // Check input to perform this down-mixing exist.
   if (label_to_samples.find(kLtf2) == label_to_samples.end() ||
@@ -400,39 +398,37 @@ absl::Status T2ToTf2DownMixer(const DownMixingParams& down_mixing_params,
 
 absl::Status Tf2ToT2Demixer(const DownMixingParams& down_mixing_params,
                             LabelSamplesMap& label_to_samples) {
-  LOG_FIRST_N(INFO, 1) << "TF2 to T2";
+  VLOG(1) << "TF2 to T2";
 
-  const std::vector<InternalSampleType>* ltf3_samples;
-  const std::vector<InternalSampleType>* l3_samples;
-  const std::vector<InternalSampleType>* l5_samples;
-  const std::vector<InternalSampleType>* rtf3_samples;
-  const std::vector<InternalSampleType>* r3_samples;
-  const std::vector<InternalSampleType>* r5_samples;
+  absl::Span<const InternalSampleType> ltf3_samples;
+  absl::Span<const InternalSampleType> l3_samples;
+  absl::Span<const InternalSampleType> l5_samples;
+  absl::Span<const InternalSampleType> rtf3_samples;
+  absl::Span<const InternalSampleType> r3_samples;
+  absl::Span<const InternalSampleType> r5_samples;
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kLtf3, label_to_samples, &ltf3_samples));
+      kLtf3, label_to_samples, ltf3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL3, label_to_samples, &l3_samples));
+      kL3, label_to_samples, l3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kL5, label_to_samples, &l5_samples));
+      kL5, label_to_samples, l5_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kRtf3, label_to_samples, &rtf3_samples));
+      kRtf3, label_to_samples, rtf3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR3, label_to_samples, &r3_samples));
+      kR3, label_to_samples, r3_samples));
   RETURN_IF_NOT_OK(DemixingModule::FindSamplesOrDemixedSamples(
-      kR5, label_to_samples, &r5_samples));
+      kR5, label_to_samples, r5_samples));
 
   auto& ltf2_samples = label_to_samples[kDemixedLtf2];
   auto& rtf2_samples = label_to_samples[kDemixedRtf2];
-  const size_t num_ticks = ltf3_samples->size();
+  const size_t num_ticks = ltf3_samples.size();
   ltf2_samples.resize(num_ticks, 0.0);
   rtf2_samples.resize(num_ticks, 0.0);
   for (int i = 0; i < num_ticks; i++) {
-    ltf2_samples[i] =
-        (*ltf3_samples)[i] -
-        down_mixing_params.w * ((*l3_samples)[i] - (*l5_samples)[i]);
-    rtf2_samples[i] =
-        (*rtf3_samples)[i] -
-        down_mixing_params.w * ((*r3_samples)[i] - (*r5_samples)[i]);
+    ltf2_samples[i] = ltf3_samples[i] -
+                      down_mixing_params.w * (l3_samples[i] - l5_samples[i]);
+    rtf2_samples[i] = rtf3_samples[i] -
+                      down_mixing_params.w * (r3_samples[i] - r5_samples[i]);
   }
 
   return absl::OkStatus();
@@ -492,30 +488,30 @@ absl::Status FillRequiredDemixingMetadata(
       break;
     }
   }
-  LOG(INFO) << "Surround down-mixers from S" << input_surround_number << " to S"
-            << output_lowest_surround_number << " needed:";
+  VLOG(1) << "Surround down-mixers from S" << input_surround_number << " to S"
+          << output_lowest_surround_number << " needed:";
   for (int surround_number = input_surround_number;
        surround_number > output_lowest_surround_number; surround_number--) {
     if (surround_number == 7) {
       down_mixers.push_back(S7ToS5DownMixer);
-      LOG(INFO) << "  S7ToS5DownMixer added";
+      VLOG(1) << "  S7ToS5DownMixer added";
       demixers.push_front(S5ToS7Demixer);
-      LOG(INFO) << "  S5ToS7Demixer added";
+      VLOG(1) << "  S5ToS7Demixer added";
     } else if (surround_number == 5) {
       down_mixers.push_back(S5ToS3DownMixer);
-      LOG(INFO) << "  S5ToS3DownMixer added";
+      VLOG(1) << "  S5ToS3DownMixer added";
       demixers.push_front(S3ToS5Demixer);
-      LOG(INFO) << "  S3ToS5Demixer added";
+      VLOG(1) << "  S3ToS5Demixer added";
     } else if (surround_number == 3) {
       down_mixers.push_back(S3ToS2DownMixer);
-      LOG(INFO) << "  S3ToS2DownMixer added";
+      VLOG(1) << "  S3ToS2DownMixer added";
       demixers.push_front(S2ToS3Demixer);
-      LOG(INFO) << "  S2ToS3Demixer added";
+      VLOG(1) << "  S2ToS3Demixer added";
     } else if (surround_number == 2) {
       down_mixers.push_back(S2ToS1DownMixer);
-      LOG(INFO) << "  S2ToS1DownMixer added";
+      VLOG(1) << "  S2ToS1DownMixer added";
       demixers.push_front(S1ToS2Demixer);
-      LOG(INFO) << "  S1ToS2Demixer added";
+      VLOG(1) << "  S1ToS2Demixer added";
     }
   }
 
@@ -551,21 +547,21 @@ absl::Status FillRequiredDemixingMetadata(
   // Collect demixers in a separate list first and append the list to the
   // output later. Height demixers need to be in reverse order as height
   // down-mixers but should go after the surround demixers.
-  LOG(INFO) << "Height down-mixers from T" << input_height_number << " to "
-            << (output_lowest_height_number == 2 ? "T2" : "TF3") << " needed:";
+  VLOG(1) << "Height down-mixers from T" << input_height_number << " to "
+          << (output_lowest_height_number == 2 ? "T2" : "TF3") << " needed:";
   std::list<Demixer> height_demixers;
   for (int height_number = input_height_number;
        height_number > output_lowest_height_number; height_number--) {
     if (height_number == 4) {
       down_mixers.push_back(T4ToT2DownMixer);
-      LOG(INFO) << "  T4ToT2DownMixer added";
+      VLOG(1) << "  T4ToT2DownMixer added";
       height_demixers.push_front(T2ToT4Demixer);
-      LOG(INFO) << "  T2ToT4Demixer added";
+      VLOG(1) << "  T2ToT4Demixer added";
     } else if (height_number == 2) {
       down_mixers.push_back(T2ToTf2DownMixer);
-      LOG(INFO) << "  T2ToTf2DownMixer added";
+      VLOG(1) << "  T2ToTf2DownMixer added";
       height_demixers.push_front(Tf2ToT2Demixer);
-      LOG(INFO) << "  Tf2ToT2Demixer added";
+      VLOG(1) << "  Tf2ToT2Demixer added";
     }
   }
   demixers.splice(demixers.end(), height_demixers);
@@ -607,6 +603,7 @@ absl::Span<const std::vector<int32_t>> GetSamples(
   if (!audio_frame_with_data.pcm_samples.has_value()) {
     return {};
   }
+
   return absl::MakeConstSpan(audio_frame_with_data.pcm_samples.value());
 }
 
@@ -625,7 +622,7 @@ absl::Status PassThroughReconGainData(
     const DecodedAudioFrame& decoded_audio_frame,
     LabeledFrame& labeled_decoded_frame) {
   if (decoded_audio_frame.audio_element_with_data == nullptr) {
-    LOG(INFO)
+    LOG_FIRST_N(INFO, 1)
         << "No audio element with data found, thus layer info is inaccessible.";
     return absl::OkStatus();
   }
@@ -686,18 +683,22 @@ absl::Status StoreSamplesForAudioElementId(
         return absl::InvalidArgumentError(
             "Input samples are not available for down-mixing.");
       }
+      RETURN_IF_NOT_OK(ValidateEqual(
+          input_samples.size(), num_channels,
+          "Decoded number of channels vs. expected number of channels"));
       ConfigureLabeledFrame(audio_frame, labeled_frame);
 
       auto& samples = labeled_frame.label_to_samples[label];
-      const size_t num_ticks = input_samples.size();
+      const auto& input_samples_for_channel = input_samples[channel_index];
+      const size_t num_ticks = input_samples_for_channel.size();
+
       samples.resize(num_ticks);
       for (int t = 0; t < num_ticks; t++) {
-        const auto& input_tick = input_samples[t];
-        RETURN_IF_NOT_OK(ValidateEqual(
-            input_tick.size(), num_channels,
-            "Decoded number of channels vs. expected number of channels"));
+        // TODO(b/416166882): Convert to floating points directly from
+        // the decoder. Then we can simply copy the samples over or even do
+        // zero-copy referencing.
         samples[t] = Int32ToNormalizedFloatingPoint<InternalSampleType>(
-            input_tick[channel_index]);
+            input_samples_for_channel[t]);
       }
       channel_index++;
     }
@@ -771,8 +772,8 @@ void LogForAudioElementId(absl::string_view log_prefix,
   }
   for (const auto& [label, samples] :
        id_to_labeled_frame.at(audio_element_id).label_to_samples) {
-    LOG_FIRST_N(INFO, 1) << "  Channel " << label << ":\t" << log_prefix
-                         << " frame size= " << samples.size() << ".";
+    VLOG(1) << "  Channel " << label << ":\t" << log_prefix
+            << " frame size= " << samples.size() << ".";
   }
 }
 
@@ -780,9 +781,9 @@ void LogForAudioElementId(absl::string_view log_prefix,
 
 absl::Status DemixingModule::FindSamplesOrDemixedSamples(
     ChannelLabel::Label label, const LabelSamplesMap& label_to_samples,
-    const std::vector<InternalSampleType>** samples) {
+    absl::Span<const InternalSampleType>& samples) {
   if (label_to_samples.find(label) != label_to_samples.end()) {
-    *samples = &label_to_samples.at(label);
+    samples = absl::MakeConstSpan(label_to_samples.at(label));
     return absl::OkStatus();
   }
 
@@ -791,11 +792,10 @@ absl::Status DemixingModule::FindSamplesOrDemixedSamples(
     return demixed_label.status();
   }
   if (label_to_samples.find(*demixed_label) != label_to_samples.end()) {
-    *samples = &label_to_samples.at(*demixed_label);
+    samples = absl::MakeConstSpan(label_to_samples.at(*demixed_label));
     return absl::OkStatus();
   } else {
-    *samples = nullptr;
-    return absl::UnknownError(
+    return absl::InvalidArgumentError(
         absl::StrCat("Channel ", label, " or ", *demixed_label, " not found"));
   }
 }
