@@ -63,6 +63,32 @@ cc_library(
 )
 
 cc_test(
+    name = "audio_frame_decoder_benchmark",
+    srcs = ["audio_frame_decoder_benchmark.cc"],
+    deps = [
+        ":cli_test_utils",
+        "//iamf/cli:audio_element_with_data",
+        "//iamf/cli:audio_frame_decoder",
+        "//iamf/cli:audio_frame_with_data",
+        "//iamf/cli/codec:aac_encoder",
+        "//iamf/cli/codec:encoder_base",
+        "//iamf/cli/codec:flac_encoder",
+        "//iamf/cli/codec:lpcm_encoder",
+        "//iamf/cli/codec:opus_encoder",
+        "//iamf/cli/proto:codec_config_cc_proto",
+        "//iamf/obu:audio_frame",
+        "//iamf/obu:codec_config",
+        "//iamf/obu:parameter_data",
+        "//iamf/obu:types",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+cc_test(
     name = "audio_frame_decoder_test",
     srcs = ["audio_frame_decoder_test.cc"],
     deps = [
@@ -140,6 +166,32 @@ cc_test(
 )
 
 cc_test(
+    name = "demixing_module_benchmark",
+    srcs = ["demixing_module_benchmark.cc"],
+    deps = [
+        ":cli_test_utils",
+        "//iamf/cli:audio_element_with_data",
+        "//iamf/cli:audio_frame_decoder",
+        "//iamf/cli:audio_frame_with_data",
+        "//iamf/cli:channel_label",
+        "//iamf/cli:demixing_module",
+        "//iamf/cli/proto:user_metadata_cc_proto",
+        "//iamf/cli/proto_conversion:channel_label_utils",
+        "//iamf/cli/proto_conversion:downmixing_reconstruction_util",
+        "//iamf/obu:audio_element",
+        "//iamf/obu:audio_frame",
+        "//iamf/obu:obu_header",
+        "//iamf/obu:parameter_data",
+        "//iamf/obu:types",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
+    ],
+)
+
+cc_test(
     name = "demixing_module_test",
     srcs = ["demixing_module_test.cc"],
     deps = [
@@ -181,7 +233,9 @@ cc_test(
         ":cli_test_utils",
         "//iamf/cli:encoder_main_lib",
         "//iamf/cli/proto:codec_config_cc_proto",
+        "//iamf/cli/proto:encoder_control_metadata_cc_proto",
         "//iamf/cli/proto:ia_sequence_header_cc_proto",
+        "//iamf/cli/proto:output_audio_format_cc_proto",
         "//iamf/cli/proto:test_vector_metadata_cc_proto",
         "//iamf/cli/proto:user_metadata_cc_proto",
         "@com_google_absl//absl/log",

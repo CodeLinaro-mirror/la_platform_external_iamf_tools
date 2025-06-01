@@ -84,7 +84,8 @@ FLAC__StreamEncoderWriteStatus LibFlacWriteCallback(
   const unsigned int kLibFlacMetadataSentinel = 0;
   if (samples == kLibFlacMetadataSentinel) {
     // `libflac` uses a value of `0` to indicate this callback is for metadata.
-    LOG(INFO) << "`iamf_tools` currently ignores all additional FLAC metadata.";
+    LOG_FIRST_N(INFO, 1)
+        << "`iamf_tools` currently ignores all additional FLAC metadata.";
     return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
   }
 
@@ -126,7 +127,7 @@ void LibFlacMetadataCallback(const FLAC__StreamEncoder* /*encoder*/,
   LOG_FIRST_N(INFO, 1) << "Begin `LibFlacMetadataCallback`.";
 
   if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
-    LOG(INFO) << "Received `STREAMINFO` metadata.";
+    LOG_FIRST_N(INFO, 1) << "Received `STREAMINFO` metadata.";
     // Just validate we got the `STREAMINFO` metadata at some point. IAMF
     // requires some fields to be set constant and different from what will be
     // returned by `libflac`.
@@ -179,10 +180,16 @@ absl::Status FlacEncoder::EncodeAudioFrame(
             return absl::OkStatus();
           };
 
+  // TODO(b/382197581): Avoid re-allocations of `encoder_input_pcm` and
+  //                    `samples_spans`.
   // Convert input to the array that will be passed to `flac_encode`.
   std::vector<FLAC__int32> encoder_input_pcm;
-  RETURN_IF_NOT_OK(ConvertTimeChannelToInterleaved(
-      absl::MakeConstSpan(samples), kLeftJustifiedToRightJustified,
+  std::vector<absl::Span<const int32_t>> samples_spans(samples.size());
+  for (int c = 0; c < samples.size(); c++) {
+    samples_spans[c] = absl::MakeConstSpan(samples[c]);
+  }
+  RETURN_IF_NOT_OK(ConvertChannelTimeToInterleaved(
+      absl::MakeConstSpan(samples_spans), kLeftJustifiedToRightJustified,
       encoder_input_pcm));
 
   LOG_FIRST_N(INFO, 1) << "Encoding " << encoder_input_pcm.size() * 4
