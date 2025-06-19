@@ -114,4 +114,5 @@ cc_library_static {
     visibility: [
         "//frameworks/av/media/codec2:__subpackages__",
     ],
+    vendor_available: true,
 }
