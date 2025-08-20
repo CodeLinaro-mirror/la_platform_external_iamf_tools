@@ -19,6 +19,7 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
@@ -27,9 +28,6 @@ namespace iamf_tools {
 class DecoderBase {
  public:
   /*!\brief Constructor.
-   *
-   * After constructing `Initialize` MUST be called and return successfully
-   * before using most functionality of the decoder.
    *
    * \param num_channels Number of channels for this stream.
    * \param num_samples_per_channel Number of samples per channel.
@@ -50,13 +48,14 @@ class DecoderBase {
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   virtual absl::Status DecodeAudioFrame(
-      const std::vector<uint8_t>& encoded_frame) = 0;
+      absl::Span<const uint8_t> encoded_frame) = 0;
 
   /*!\brief Outputs valid decoded samples as a span.
    *
    * \return Span of valid decoded samples.
    */
-  absl::Span<const std::vector<int32_t>> ValidDecodedSamples() const {
+  absl::Span<const std::vector<InternalSampleType>> ValidDecodedSamples()
+      const {
     return absl::MakeConstSpan(decoded_samples_);
   }
 
@@ -69,7 +68,7 @@ class DecoderBase {
   // vector contains one inner vector for each channel. When the decoded
   // samples is shorter than a frame, the inner vectors will be resized to fit
   // the valid portion.
-  std::vector<std::vector<int32_t>> decoded_samples_;
+  std::vector<std::vector<InternalSampleType>> decoded_samples_;
 };
 
 }  // namespace iamf_tools

@@ -34,7 +34,6 @@
 #include "iamf/cli/renderer/audio_element_renderer_base.h"
 #include "iamf/cli/renderer_factory.h"
 #include "iamf/cli/sample_processor_base.h"
-#include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/param_definitions.h"
@@ -69,19 +68,6 @@ namespace iamf_tools {
  */
 class RenderingMixPresentationFinalizer {
  public:
-  // -- Rendering Metadata struct definitions --
-
-  // Common metadata for rendering an audio element and independent of
-  // each frame.
-  struct AudioElementRenderingMetadata {
-    std::unique_ptr<AudioElementRendererBase> renderer;
-
-    // Pointers to the audio element and the associated codec config. They
-    // contain useful information for rendering.
-    const AudioElementObu* audio_element;
-    const CodecConfigObu* codec_config;
-  };
-
   // Contains rendering metadata for all audio elements in a given layout.
   struct LayoutRenderingMetadata {
     bool can_render;
@@ -91,7 +77,10 @@ class RenderingMixPresentationFinalizer {
     // Controlled by the `LoudnessCalculatorFactory`; may be `nullptr` if the
     // user does not want loudness calculated for this layout.
     std::unique_ptr<LoudnessCalculatorBase> loudness_calculator;
-    std::vector<AudioElementRenderingMetadata> audio_element_rendering_metadata;
+
+    // Renderers for each audio element.
+    std::vector<std::unique_ptr<AudioElementRendererBase>> renderers;
+
     // The number of channels in this layout.
     int32_t num_channels;
     // The start time stamp of the current frames to be rendered within this
@@ -99,11 +88,11 @@ class RenderingMixPresentationFinalizer {
     InternalTimestamp start_timestamp;
 
     // Reusable buffer for storing rendered samples.
-    std::vector<std::vector<int32_t>> rendered_samples;
+    std::vector<std::vector<InternalSampleType>> rendered_samples;
 
     // Vector of views into the valid portions of the channels in
     // `rendered_samples`.
-    std::vector<absl::Span<const int32_t>> valid_rendered_samples;
+    std::vector<absl::Span<const InternalSampleType>> valid_rendered_samples;
   };
 
   // We need to store rendering metadata for each submix, layout, and audio
@@ -114,6 +103,8 @@ class RenderingMixPresentationFinalizer {
   struct SubmixRenderingMetadata {
     uint32_t common_sample_rate;
     std::vector<SubMixAudioElement> audio_elements_in_sub_mix;
+    std::vector<const CodecConfigObu*> codec_configs_in_sub_mix;
+
     // Mix gain applied to the entire submix.
     std::unique_ptr<MixGainParamDefinition> mix_gain;
     // This vector will contain one LayoutRenderingMetadata per layout in the
@@ -236,7 +227,7 @@ class RenderingMixPresentationFinalizer {
    * \param Post-processed samples, or rendered samples if no post-processor is
    *        available. A specific status on failure.
    */
-  absl::StatusOr<absl::Span<const absl::Span<const int32_t>>>
+  absl::StatusOr<absl::Span<const absl::Span<const InternalSampleType>>>
   GetPostProcessedSamplesAsSpan(DecodedUleb128 mix_presentation_id,
                                 size_t sub_mix_index,
                                 size_t layout_index) const;

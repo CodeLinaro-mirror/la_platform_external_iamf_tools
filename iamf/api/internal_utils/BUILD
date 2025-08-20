@@ -6,11 +6,13 @@ cc_library(
     name = "internal_utils",
     srcs = ["internal_utils.cc"],
     hdrs = ["internal_utils.h"],
-    visibility = ["//iamf/cli/internal/decoder:__pkg__"],
+    visibility = [
+        "//iamf/cli/internal/decoder:__pkg__",
+    ],
     deps = [
-        "//iamf/api:iamf_tools_api_types",
         "//iamf/api/decoder:iamf_decoder",
         "//iamf/cli:wav_writer",
+        "//iamf/include/iamf_tools:iamf_tools_api_types",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
@@ -22,11 +24,11 @@ cc_test(
     srcs = ["internal_utils_test.cc"],
     deps = [
         ":internal_utils",
-        "//iamf/api:iamf_tools_api_types",
         "//iamf/api/decoder:iamf_decoder",
         "//iamf/cli:audio_element_with_data",
         "//iamf/cli:wav_writer",
         "//iamf/cli/tests:cli_test_utils",
+        "//iamf/include/iamf_tools:iamf_tools_api_types",
         "//iamf/obu:audio_frame",
         "//iamf/obu:codec_config",
         "//iamf/obu:ia_sequence_header",

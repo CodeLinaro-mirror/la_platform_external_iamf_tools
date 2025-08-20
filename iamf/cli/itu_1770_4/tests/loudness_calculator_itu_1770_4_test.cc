@@ -22,6 +22,7 @@
 #include "gtest/gtest.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/obu/mix_presentation.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 namespace {
@@ -35,7 +36,6 @@ const uint32_t kNumSamplesPerFrame = 1024;
 // Changing this effectively changes the frequencies of the samples; loudness
 // is dependent on frequency.
 const uint32_t kSampleRate = 48000;
-const uint32_t kMaxBitDepthToMeasureLoudness = 32;
 
 const Layout kStereoLayout = {
     .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
@@ -57,10 +57,10 @@ const MixPresentationLayout kStereoLayoutWithMaxUserLoudness = {
     .loudness_layout = kStereoLayout, .loudness = kLoudnessInfoWithMaxLoudness};
 
 TEST(CreateForLayout, ReturnsNonNullForKnownLayouts) {
-  EXPECT_NE(LoudnessCalculatorItu1770_4::CreateForLayout(
-                kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame,
-                kSampleRate, kMaxBitDepthToMeasureLoudness),
-            nullptr);
+  EXPECT_NE(
+      LoudnessCalculatorItu1770_4::CreateForLayout(
+          kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate),
+      nullptr);
 }
 
 TEST(CreateForLayout, ReturnsNullForReservedLayouts) {
@@ -69,24 +69,13 @@ TEST(CreateForLayout, ReturnsNullForReservedLayouts) {
           .layout_type = Layout::kLayoutTypeReserved0,
           .specific_layout = LoudspeakersReservedOrBinauralLayout{}}};
   EXPECT_EQ(LoudnessCalculatorItu1770_4::CreateForLayout(
-                kReservedLayout, kNumSamplesPerFrame, kSampleRate,
-                kMaxBitDepthToMeasureLoudness),
+                kReservedLayout, kNumSamplesPerFrame, kSampleRate),
             nullptr);
-}
-
-TEST(LoudnessCalculatorItu1770_4, ReturnsNullptrForUnsupportedBitDepth) {
-  const auto kUnsupportedBitDepth = 12;
-  auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kUnsupportedBitDepth);
-
-  ASSERT_EQ(calculator, nullptr);
 }
 
 TEST(LoudnessCalculatorItu1770_4, ProvidesMinimumLoudnessForEmptySequence) {
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
 
   const auto& calculated_loudness = calculator->QueryLoudness();
@@ -99,15 +88,10 @@ TEST(LoudnessCalculatorItu1770_4, ProvidesMinimumLoudnessForEmptySequence) {
 
 TEST(LoudnessCalculatorItu1770_4, ProvidesMinimumLoudnessForShortSequences) {
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
-
-  const std::vector<std::vector<int32_t>> samples = {
-      {std::numeric_limits<int32_t>::min(),
-       std::numeric_limits<int32_t>::max()},
-      {std::numeric_limits<int32_t>::min(),
-       std::numeric_limits<int32_t>::max()}};
+  const std::vector<std::vector<InternalSampleType>> samples = {{-1.0, 1.0},
+                                                                {-1.0, 1.0}};
   EXPECT_THAT(
       calculator->AccumulateLoudnessForSamples(MakeSpanOfConstSpans(samples)),
       IsOk());
@@ -133,8 +117,7 @@ TEST(LoudnessCalculatorItu1770_4, AlwaysCopiesAnchoredLoudness) {
                             .anchored_loudness = kExpectedDialogueLoudness}}}}};
 
   const auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kLayoutWithAnchoredLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kLayoutWithAnchoredLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
   const auto& calculated_loudness = calculator->QueryLoudness();
   ASSERT_THAT(calculated_loudness, IsOk());
@@ -153,16 +136,15 @@ TEST(LoudnessCalculatorItu1770_4, AlwaysCopiesAnchoredLoudness) {
 TEST(LoudnessCalculatorItu1770_4, MeasuresLoudnessWithSharpPeak) {
   constexpr size_t kNumTicks = 10;
   constexpr size_t kNumChannels = 1;
-  const std::vector<std::vector<int32_t>> kQuietSignal(
-      kNumChannels, std::vector<int32_t>(kNumTicks, 0));
-  const std::vector<std::vector<int32_t>> kSignalWithHighTruePeak = {
-      {0, 0, 0, 0, std::numeric_limits<int32_t>::max(), 0, 0, 0, 0, 0}};
+  const std::vector<std::vector<InternalSampleType>> kQuietSignal(
+      kNumChannels, std::vector<InternalSampleType>(kNumTicks, 0.0));
+  const std::vector<std::vector<InternalSampleType>> kSignalWithHighTruePeak = {
+      {0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   const MixPresentationLayout kMonoLayoutWithMaxUserLoudness = {
       .loudness_layout = kMonoLayout, .loudness = kLoudnessInfoWithMaxLoudness};
 
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
 
   // Create a sequence that is generally quiet, but has a single sharp peak.
@@ -193,13 +175,12 @@ TEST(AccumulateLoudnessForSamples, SucceedsWithExactlyEnoughSamples) {
   const MixPresentationLayout kMonoLayoutWithMaxUserLoudness = {
       .loudness_layout = kMonoLayout, .loudness = kLoudnessInfoWithMaxLoudness};
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
 
   constexpr size_t kNumChannels = 1;
-  const std::vector<std::vector<int32_t>> kExactlyEnoughSamples(
-      kNumChannels, std::vector<int32_t>(kNumSamplesPerFrame, 0));
+  const std::vector<std::vector<InternalSampleType>> kExactlyEnoughSamples(
+      kNumChannels, std::vector<InternalSampleType>(kNumSamplesPerFrame, 0.0));
   EXPECT_THAT(calculator->AccumulateLoudnessForSamples(
                   MakeSpanOfConstSpans(kExactlyEnoughSamples)),
               IsOk());
@@ -211,15 +192,15 @@ TEST(AccumulateLoudnessForSamples,
       .loudness_layout = kStereoLayout,
       .loudness = kLoudnessInfoWithMaxLoudness};
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kStereoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
 
   // The calculator is configured for stereo, but there is only one channel.
   constexpr size_t kNumTicks = 10;
   constexpr size_t kTooFewChannels = 1;
-  const std::vector<std::vector<int32_t>> kSamplesWithMissingChannels(
-      kTooFewChannels, std::vector<int32_t>(kNumTicks, 0));
+  const std::vector<std::vector<InternalSampleType>>
+      kSamplesWithMissingChannels(
+          kTooFewChannels, std::vector<InternalSampleType>(kNumTicks, 0.0));
   EXPECT_FALSE(calculator
                    ->AccumulateLoudnessForSamples(
                        MakeSpanOfConstSpans(kSamplesWithMissingChannels))
@@ -230,16 +211,15 @@ TEST(AccumulateLoudnessForSamples, ReturnsErrorWhenThereAreTooManySamples) {
   const MixPresentationLayout kMonoLayoutWithMaxUserLoudness = {
       .loudness_layout = kMonoLayout, .loudness = kLoudnessInfoWithMaxLoudness};
   auto calculator = LoudnessCalculatorItu1770_4::CreateForLayout(
-      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate,
-      kMaxBitDepthToMeasureLoudness);
+      kMonoLayoutWithMaxUserLoudness, kNumSamplesPerFrame, kSampleRate);
   ASSERT_NE(calculator, nullptr);
 
   // The calculator is configured to accept only `kNumSamplesPerFrame` samples.
   // It is invalid to provide more samples per call.
   constexpr size_t kTooManySamples = kNumSamplesPerFrame + 1;
   constexpr size_t kNumChannels = 2;
-  const std::vector<std::vector<int32_t>> kSamplesWithTooManySamples(
-      kNumChannels, std::vector<int32_t>(kTooManySamples, 0));
+  const std::vector<std::vector<InternalSampleType>> kSamplesWithTooManySamples(
+      kNumChannels, std::vector<InternalSampleType>(kTooManySamples, 0.0));
   EXPECT_FALSE(calculator
                    ->AccumulateLoudnessForSamples(
                        MakeSpanOfConstSpans(kSamplesWithTooManySamples))

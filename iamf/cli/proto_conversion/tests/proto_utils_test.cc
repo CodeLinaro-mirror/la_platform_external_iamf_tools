@@ -23,6 +23,7 @@
 #include "iamf/common/leb_generator.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/obu_header.h"
+#include "iamf/obu/param_definitions.h"
 #include "src/google/protobuf/text_format.h"
 
 namespace iamf_tools {
@@ -78,7 +79,6 @@ TEST(GetHeaderFromMetadata, MostValuesModified) {
         obu_extension_flag: true
         num_samples_to_trim_at_end: 1
         num_samples_to_trim_at_start: 2
-        extension_header_size: 5
         extension_header_bytes: "extra"
       )pb",
       &obu_header_metadata));
@@ -92,6 +92,27 @@ TEST(GetHeaderFromMetadata, MostValuesModified) {
   EXPECT_EQ(header_.extension_header_size, 5);
   EXPECT_EQ(header_.extension_header_bytes,
             (std::vector<uint8_t>{'e', 'x', 't', 'r', 'a'}));
+}
+
+TEST(GetHeaderFromMetadata, IgnoresDeprecatedExtensionHeaderSize) {
+  iamf_tools_cli_proto::ObuHeaderMetadata obu_header_metadata;
+  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        obu_extension_flag: true extension_header_bytes: "extra"
+      )pb",
+      &obu_header_metadata));
+  constexpr auto kInconsistentExtensionHeaderSize = 100;
+  constexpr auto kExpectedExtensionHeaderSize = 5;
+  // Set the deprecated `extension_header_size` to an unexpected value.
+  obu_header_metadata.set_extension_header_size(
+      kInconsistentExtensionHeaderSize);
+  ObuHeader header_ = GetHeaderFromMetadata(obu_header_metadata);
+
+  // Regardless, the true size is inferred from the size of the
+  // `extension_header_bytes`.
+  EXPECT_EQ(header_.extension_header_size, kExpectedExtensionHeaderSize);
+  EXPECT_EQ(header_.extension_header_bytes.size(),
+            kExpectedExtensionHeaderSize);
 }
 
 TEST(CreateLebGenerator, EquivalentGenerateLebMinimumFactories) {
@@ -182,6 +203,31 @@ TEST(CreateLebGenerator, ValidatesUserMetadataWhenModeIsInvalid) {
                 &proto_user_config),
             true);
   EXPECT_EQ(CreateLebGenerator(proto_user_config), nullptr);
+}
+
+TEST(CopyParamDefinition, IgnoredDeprecatedNumSubblocks) {
+  iamf_tools_cli_proto::ParamDefinition param_definition_proto;
+  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        parameter_rate: 1
+        param_definition_mode: false
+        reserved: 0
+        duration: 1000
+        constant_subblock_duration: 0
+        subblock_durations: [ 700, 300 ]
+      )pb",
+      &param_definition_proto));
+  constexpr auto kInconsistentNumSubblocks = 10;
+  param_definition_proto.set_num_subblocks(kInconsistentNumSubblocks);
+
+  MixGainParamDefinition mix_gain_param_definition;
+  EXPECT_THAT(
+      CopyParamDefinition(param_definition_proto, mix_gain_param_definition),
+      IsOk());
+
+  // Despite signalling an inconsistent number of subblocks, the deprecated
+  // field is ignored.
+  EXPECT_EQ(mix_gain_param_definition.GetNumSubblocks(), 2);
 }
 
 }  // namespace

@@ -377,8 +377,8 @@ absl::Status AddSubstreamLabels(
 
     labels_for_substream_id.push_back(first_label);
     labels_for_substream_id.push_back(second_label);
-    LOG(INFO) << "  substream_id_to_labels[" << substream_id
-              << "]: " << first_label << "/" << second_label;
+    VLOG(1) << "  substream_id_to_labels[" << substream_id
+            << "]: " << first_label << "/" << second_label;
   }
 
   // Then add non-coupled substream labels.
@@ -386,8 +386,8 @@ absl::Status AddSubstreamLabels(
        iter != non_coupled_substream_labels.end();) {
     const auto substream_id = substream_ids[substream_index++];
     substream_id_to_labels[substream_id].push_back(*iter++);
-    LOG(INFO) << "  substream_id_to_labels[" << substream_id
-              << "]: " << substream_id_to_labels[substream_id].back();
+    VLOG(1) << "  substream_id_to_labels[" << substream_id
+            << "]: " << substream_id_to_labels[substream_id].back();
   }
   return absl::OkStatus();
 }
@@ -400,10 +400,10 @@ absl::Status ValidateSubstreamCounts(
       static_cast<uint32_t>(coupled_substream_labels.size()) / 2;
   const auto num_required_non_coupled_channels =
       static_cast<uint32_t>(non_coupled_substream_labels.size());
-  LOG(INFO) << "num_required_coupled_channels = "
-            << num_required_coupled_channels;
-  LOG(INFO) << "num_required_non_coupled_channels= "
-            << num_required_non_coupled_channels;
+  VLOG(1) << "num_required_coupled_channels = "
+          << num_required_coupled_channels;
+  VLOG(1) << "num_required_non_coupled_channels= "
+          << num_required_non_coupled_channels;
 
   const auto coupled_substream_count_in_obu =
       static_cast<uint32_t>(layer_config.coupled_substream_count);
@@ -489,17 +489,17 @@ absl::Status FinalizeAmbisonicsProjectionConfig(
     const AudioElementObu& audio_element_obu,
     const AmbisonicsProjectionConfig& projection_config,
     SubstreamIdLabelsMap& substream_id_to_labels) {
-  if (audio_element_obu.num_substreams_ !=
+  if (audio_element_obu.GetNumSubstreams() !=
       static_cast<uint32_t>(projection_config.substream_count)) {
     return InvalidArgumentError(
         StrCat("`num_substreams` different from `substream_count`: (",
-               audio_element_obu.num_substreams_, " vs ",
+               audio_element_obu.GetNumSubstreams(), " vs ",
                projection_config.substream_count, ")"));
   }
 
   // For projection mode, assume coupled substreams (using 2 channels) come
   // first and are followed by non-coupled substreams (using 1 channel each).
-  for (int i = 0; i < audio_element_obu.num_substreams_; ++i) {
+  for (int i = 0; i < audio_element_obu.GetNumSubstreams(); ++i) {
     const std::list<int> ambisonic_channel_numbers =
         i < projection_config.coupled_substream_count
             ? std::list<int>{2 * i, 2 * i + 1}
@@ -540,7 +540,7 @@ absl::Status CollectChannelLayersAndLabelsForLoudspeakerLayout(
                "accumulated_channels to layer_channels"));
   }
 
-  LOG(INFO) << "Layer[" << layer_index << "]:";
+  VLOG(1) << "Layer[" << layer_index << "]:";
   LogChannelNumbers("  layer_channels", layer_channels);
   LogChannelNumbers("  accumulated_channels", accumulated_channels);
 
@@ -646,8 +646,8 @@ ObuWithDataGenerator::GenerateAudioFrameWithData(
       .obu = std::move(audio_frame_obu),
       .start_timestamp = start_timestamp,
       .end_timestamp = end_timestamp,
-      .pcm_samples = std::nullopt,  // The PCM samples cannot be derived from
-                                    // the bitstream.
+      .encoded_samples = std::nullopt,  // The encoded samples cannot be
+                                        // derived from the bitstream.
       .down_mixing_params = down_mixing_params,
       .recon_gain_info_parameter_data = recon_gain_info_parameter_data,
       .audio_element_with_data = &audio_element_with_data};

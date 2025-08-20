@@ -74,12 +74,8 @@ class AudioElementObuTestBase : public ObuTestBase {
 
     DecodedUleb128 codec_config_id;
 
-    DecodedUleb128 num_substreams;
-
     // Length `num_substreams`.
     std::vector<DecodedUleb128> substream_ids;
-
-    DecodedUleb128 num_parameters;
 
     // Length `num_parameters`.
     std::vector<AudioElementParam> audio_element_params;
@@ -95,9 +91,7 @@ class AudioElementObuTestBase : public ObuTestBase {
             .audio_element_type = audio_element_type,
             .reserved = 0,
             .codec_config_id = 2,
-            .num_substreams = 1,
             .substream_ids = {3},
-            .num_parameters = 1,
             .audio_element_params = {},
         }) {
     required_args_.audio_element_params.emplace_back(
@@ -130,11 +124,11 @@ class AudioElementObuTestBase : public ObuTestBase {
         required_args_.codec_config_id);
 
     // Create the Audio Substream IDs array. Loop to populate it.
-    obu_->InitializeAudioSubstreams(required_args_.num_substreams);
+    obu_->InitializeAudioSubstreams(required_args_.substream_ids.size());
     obu_->audio_substream_ids_ = required_args_.substream_ids;
 
     // Create the Audio Parameters array. Loop to populate it.
-    obu_->InitializeParams(required_args_.num_parameters);
+    obu_->InitializeParams(required_args_.audio_element_params.size());
     for (auto& audio_element_param : required_args_.audio_element_params) {
       obu_->audio_element_params_.emplace_back(
           AudioElementParam{audio_element_param.param_definition});
@@ -202,15 +196,6 @@ class AudioElementScalableChannelTest : public AudioElementObuTestBase,
         std::vector<uint8_t>(num_layers, 0);
     scalable_channel_arguments_.output_gain =
         std::vector<int16_t>(num_layers, 1);
-  }
-
-  void InitSubstreamIds() {
-    // Overwrite the variable-sized `substream_ids` array with default data of a
-    // length implied by the default argument.
-    required_args_.substream_ids =
-        std::vector<DecodedUleb128>(required_args_.num_substreams);
-    std::iota(required_args_.substream_ids.begin(),
-              required_args_.substream_ids.end(), 1);
   }
 
   void InitAudioElementTypeSpecificFields() override {
@@ -331,7 +316,6 @@ TEST_F(AudioElementScalableChannelTest,
 
 TEST_F(AudioElementScalableChannelTest,
        ValidateAndWriteFailsWithInvalidNumSubstreams) {
-  required_args_.num_substreams = 0;
   required_args_.substream_ids = {};
 
   InitExpectOk();
@@ -998,9 +982,8 @@ TEST(ScalableChannelLayoutConfigValidate,
 }
 
 TEST_F(AudioElementScalableChannelTest, TwoSubstreams) {
-  required_args_.num_substreams = 2;
+  required_args_.substream_ids = {1, 2};
   scalable_channel_arguments_.substream_count = {2};
-  InitSubstreamIds();
 
   expected_header_ = {kObuIaAudioElement << 3, 22};
   expected_payload_ = {
@@ -1033,7 +1016,6 @@ TEST_F(AudioElementScalableChannelTest, TwoSubstreams) {
 
 TEST_F(AudioElementScalableChannelTest,
        ValidateAndWriteFailsWithInvalidDuplicateParamDefinitionTypesExtension) {
-  required_args_.num_parameters = 2;
   required_args_.audio_element_params.clear();
   const auto kDuplicateParameterDefinition =
       ParamDefinition::kParameterDefinitionReservedStart;
@@ -1050,7 +1032,6 @@ TEST_F(AudioElementScalableChannelTest,
 
 TEST_F(AudioElementScalableChannelTest,
        ValidateAndWriteFailsWithInvalidDuplicateParamDefinitionTypesDemixing) {
-  required_args_.num_parameters = 2;
   required_args_.audio_element_params.clear();
 
   const auto demixing_param_definition =
@@ -1084,8 +1065,6 @@ class AudioElementMonoAmbisonicsTest : public AudioElementObuTestBase,
 
  protected:
   void InitSubstreamsAndChannelMapping() {
-    required_args_.num_substreams =
-        ambisonics_mono_arguments_.config.substream_count;
     required_args_.substream_ids = std::vector<DecodedUleb128>(
         ambisonics_mono_arguments_.config.substream_count);
     std::iota(required_args_.substream_ids.begin(),
@@ -1254,8 +1233,6 @@ class AudioElementProjAmbisonicsTest : public AudioElementObuTestBase,
 
  protected:
   void InitSubstreamsAndDemixingMatrix() {
-    required_args_.num_substreams =
-        ambisonics_proj_arguments_.config.substream_count;
     required_args_.substream_ids = std::vector<DecodedUleb128>(
         ambisonics_proj_arguments_.config.substream_count);
     std::iota(required_args_.substream_ids.begin(),
@@ -1910,13 +1887,14 @@ TEST(CreateFromBuffer, ScalableChannelConfigMultipleChannelsNoParams) {
 
   // Validate
   EXPECT_THAT(obu, IsOk());
-  EXPECT_EQ(obu.value().GetAudioElementId(), 1);
-  EXPECT_EQ(obu.value().GetAudioElementType(),
+  EXPECT_EQ(obu->GetAudioElementId(), 1);
+  EXPECT_EQ(obu->GetAudioElementType(),
             AudioElementObu::kAudioElementChannelBased);
-  EXPECT_EQ(obu.value().num_substreams_, 2);
-  EXPECT_EQ(obu.value().audio_substream_ids_[0], 3);
-  EXPECT_EQ(obu.value().audio_substream_ids_[1], 4);
-  EXPECT_EQ(obu.value().num_parameters_, 0);
+  EXPECT_EQ(obu->GetNumSubstreams(), 2);
+  EXPECT_EQ(obu->audio_substream_ids_[0], 3);
+  EXPECT_EQ(obu->audio_substream_ids_[1], 4);
+  EXPECT_EQ(obu->GetNumParameters(), 0);
+  EXPECT_TRUE(obu->audio_element_params_.empty());
 
   ScalableChannelLayoutConfig expected_scalable_channel_layout_config = {
       .num_layers = 2,
@@ -2021,7 +1999,7 @@ TEST(CreateFromBuffer, ValidAmbisonicsMonoConfig) {
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu.value().GetAudioElementType(),
             AudioElementObu::kAudioElementSceneBased);
-  EXPECT_EQ(obu.value().num_substreams_, 4);
+  EXPECT_EQ(obu.value().GetNumSubstreams(), 4);
 
   AmbisonicsMonoConfig expected_ambisonics_mono_config = {
       .output_channel_count = 4,
@@ -2070,7 +2048,7 @@ TEST(CreateFromBuffer, ValidAmbisonicsProjectionConfig) {
   EXPECT_THAT(obu, IsOk());
   EXPECT_EQ(obu.value().GetAudioElementType(),
             AudioElementObu::kAudioElementSceneBased);
-  EXPECT_EQ(obu.value().num_substreams_, 4);
+  EXPECT_EQ(obu.value().GetNumSubstreams(), 4);
 
   AmbisonicsProjectionConfig expected_ambisonics_projection_config = {
       .output_channel_count = 4,
