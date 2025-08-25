@@ -1,5 +1,7 @@
 # Files to interface between IAMF Tools and codec libraries when encoding and decoding substreams.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = ["//iamf/cli:__subpackages__"])
 
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
@@ -12,8 +14,9 @@ cc_library(
         ":decoder_base",
         "//iamf/common:write_bit_buffer",
         "//iamf/common/utils:macros",
+        "//iamf/common/utils:numeric_utils",
         "//iamf/common/utils:sample_processing_utils",
-        "//iamf/obu:codec_config",
+        "//iamf/obu:types",
         "//iamf/obu/decoder_config:aac_decoder_config",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/functional:any_invocable",
@@ -65,6 +68,7 @@ cc_library(
     name = "decoder_base",
     hdrs = ["decoder_base.h"],
     deps = [
+        "//iamf/obu:types",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
@@ -99,7 +103,7 @@ cc_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@flac//:src",
     ],
 )
@@ -109,6 +113,8 @@ cc_library(
     srcs = ["flac_decoder_stream_callbacks.cc"],
     hdrs = ["flac_decoder_stream_callbacks.h"],
     deps = [
+        "//iamf/common/utils:numeric_utils",
+        "//iamf/obu:types",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/types:span",
         "@flac//:src",
@@ -147,7 +153,7 @@ cc_library(
         ":decoder_base",
         "//iamf/common/utils:macros",
         "//iamf/common/utils:numeric_utils",
-        "//iamf/obu:codec_config",
+        "//iamf/obu:types",
         "//iamf/obu/decoder_config:lpcm_decoder_config",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
@@ -183,9 +189,8 @@ cc_library(
         ":decoder_base",
         ":opus_utils",
         "//iamf/common/utils:macros",
-        "//iamf/common/utils:numeric_utils",
         "//iamf/common/utils:sample_processing_utils",
-        "//iamf/obu:codec_config",
+        "//iamf/obu:types",
         "//iamf/obu/decoder_config:opus_decoder_config",
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/functional:any_invocable",

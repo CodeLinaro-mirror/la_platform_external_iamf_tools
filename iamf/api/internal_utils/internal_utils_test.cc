@@ -22,10 +22,10 @@
 #include "absl/container/flat_hash_map.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "iamf/api/decoder/iamf_decoder.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/cli/wav_writer.h"
-#include "iamf/include/iamf_tools/iamf_decoder.h"
 #include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
@@ -77,12 +77,14 @@ TEST(SetUpAfterDescriptors, SetsWavWriterAndSampleBuffer) {
   auto bitstream = GenerateBasicDescriptorObus();
   std::unique_ptr<IamfDecoder> decoder;
   iamf_tools::api::IamfStatus status = IamfDecoder::CreateFromDescriptors(
-      IamfDecoder::Settings{.requested_layout =
-                                OutputLayout::kItu2051_SoundSystemA_0_2_0},
+      IamfDecoder::Settings{
+          .requested_mix = {.output_layout =
+                                OutputLayout::kItu2051_SoundSystemA_0_2_0}},
       bitstream.data(), bitstream.size(), decoder);
-  OutputLayout output_layout;
-  ASSERT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  ASSERT_THAT(output_layout, OutputLayout::kItu2051_SoundSystemA_0_2_0);
+  api::SelectedMix selected_mix;
+  ASSERT_TRUE(decoder->GetOutputMix(selected_mix).ok());
+  ASSERT_THAT(selected_mix.output_layout,
+              OutputLayout::kItu2051_SoundSystemA_0_2_0);
   decoder->ConfigureOutputSampleType(
       iamf_tools::api::OutputSampleType::kInt16LittleEndian);
 
@@ -104,8 +106,9 @@ TEST(SetUpAfterDescriptors, FailsWithInvalidWavWriter) {
   auto bitstream = GenerateBasicDescriptorObus();
   std::unique_ptr<IamfDecoder> decoder;
   iamf_tools::api::IamfStatus status = IamfDecoder::CreateFromDescriptors(
-      IamfDecoder::Settings{.requested_layout =
-                                OutputLayout::kItu2051_SoundSystemA_0_2_0},
+      IamfDecoder::Settings{
+          .requested_mix = {.output_layout =
+                                OutputLayout::kItu2051_SoundSystemA_0_2_0}},
       bitstream.data(), bitstream.size(), decoder);
   std::unique_ptr<WavWriter> wav_writer;
   std::vector<uint8_t> reusable_sample_buffer;
@@ -121,8 +124,9 @@ TEST(DumpPendingTemporalUnitsToWav, SucceedsWithNoTemporalUnits) {
   auto bitstream = GenerateBasicDescriptorObus();
   std::unique_ptr<IamfDecoder> decoder;
   iamf_tools::api::IamfStatus status = IamfDecoder::CreateFromDescriptors(
-      IamfDecoder::Settings{.requested_layout =
-                                OutputLayout::kItu2051_SoundSystemA_0_2_0},
+      IamfDecoder::Settings{
+          .requested_mix = {.output_layout =
+                                OutputLayout::kItu2051_SoundSystemA_0_2_0}},
       bitstream.data(), bitstream.size(), decoder);
   std::unique_ptr<WavWriter> wav_writer;
   std::vector<uint8_t> reusable_sample_buffer;
@@ -143,8 +147,9 @@ TEST(DumpPendingTemporalUnitsToWav,
   auto bitstream = GenerateBasicDescriptorObus();
   std::unique_ptr<IamfDecoder> decoder;
   iamf_tools::api::IamfStatus status = IamfDecoder::CreateFromDescriptors(
-      IamfDecoder::Settings{.requested_layout =
-                                OutputLayout::kItu2051_SoundSystemA_0_2_0},
+      IamfDecoder::Settings{
+          .requested_mix = {.output_layout =
+                                OutputLayout::kItu2051_SoundSystemA_0_2_0}},
       bitstream.data(), bitstream.size(), decoder);
   std::unique_ptr<WavWriter> wav_writer;
   std::vector<uint8_t> reusable_sample_buffer;
@@ -178,8 +183,9 @@ TEST(DumpPendingTemporalUnitsToWav, SucceedsWithVariousTemporalUnitsAtOnce) {
   auto bitstream = GenerateBasicDescriptorObus();
   std::unique_ptr<IamfDecoder> decoder;
   iamf_tools::api::IamfStatus status = IamfDecoder::CreateFromDescriptors(
-      IamfDecoder::Settings{.requested_layout =
-                                OutputLayout::kItu2051_SoundSystemA_0_2_0},
+      IamfDecoder::Settings{
+          .requested_mix = {.output_layout =
+                                OutputLayout::kItu2051_SoundSystemA_0_2_0}},
       bitstream.data(), bitstream.size(), decoder);
   std::unique_ptr<WavWriter> wav_writer;
   std::vector<uint8_t> reusable_sample_buffer;

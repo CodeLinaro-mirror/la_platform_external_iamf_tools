@@ -1,13 +1,14 @@
 # Protos for IAMF data.
 
+load("@com_google_protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
 load("@com_google_protobuf//bazel:py_proto_library.bzl", "py_proto_library")
-# [internal] load cc_proto_library.bzl
 
 package(default_visibility = [
     # TODO(b/400697000): Break up visibility for the api directory.
     "//iamf/api:__subpackages__",
     "//iamf/cli:__subpackages__",
+    "//iamf/include:__subpackages__",
 ])
 
 # keep-sorted start block=yes prefix_order=proto_library,cc_proto_library newline_separated=yes

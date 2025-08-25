@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
 # keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
 cc_test(
     name = "arbitrary_obu_generator_test",
@@ -21,6 +23,7 @@ cc_test(
         "//iamf/cli:audio_element_with_data",
         "//iamf/cli:channel_label",
         "//iamf/cli/proto:audio_element_cc_proto",
+        "//iamf/cli/proto:param_definitions_cc_proto",
         "//iamf/cli/proto_conversion/proto_to_obu:audio_element_generator",
         "//iamf/cli/tests:cli_test_utils",
         "//iamf/obu:audio_element",
@@ -29,9 +32,41 @@ cc_test(
         "//iamf/obu:parameter_data",
         "//iamf/obu:types",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "audio_frame_generator_benchmark",
+    srcs = ["audio_frame_generator_benchmark.cc"],
+    deps = [
+        "//iamf/cli:audio_element_with_data",
+        "//iamf/cli:channel_label",
+        "//iamf/cli:demixing_module",
+        "//iamf/cli:global_timing_module",
+        "//iamf/cli:parameters_manager",
+        "//iamf/cli/proto:audio_element_cc_proto",
+        "//iamf/cli/proto:audio_frame_cc_proto",
+        "//iamf/cli/proto:codec_config_cc_proto",
+        "//iamf/cli/proto:test_vector_metadata_cc_proto",
+        "//iamf/cli/proto:user_metadata_cc_proto",
+        "//iamf/cli/proto_conversion/proto_to_obu:audio_element_generator",
+        "//iamf/cli/proto_conversion/proto_to_obu:audio_frame_generator",
+        "//iamf/cli/proto_conversion/proto_to_obu:codec_config_generator",
+        "//iamf/cli/user_metadata_builder:audio_element_metadata_builder",
+        "//iamf/cli/user_metadata_builder:audio_frame_metadata_builder",
+        "//iamf/cli/user_metadata_builder:codec_config_obu_metadata_builder",
+        "//iamf/cli/user_metadata_builder:iamf_input_layout",
+        "//iamf/obu:codec_config",
+        "//iamf/obu:param_definitions",
+        "//iamf/obu:types",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/types:span",
+        "@com_google_benchmark//:benchmark_main",
     ],
 )
 
@@ -79,6 +114,7 @@ cc_test(
         "//iamf/cli/proto:obu_header_cc_proto",
         "//iamf/cli/proto:test_vector_metadata_cc_proto",
         "//iamf/cli/proto_conversion/proto_to_obu:codec_config_generator",
+        "//iamf/cli/tests:cli_test_utils",
         "//iamf/obu:codec_config",
         "//iamf/obu:obu_header",
         "//iamf/obu:types",

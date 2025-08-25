@@ -17,7 +17,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <list>
 #include <memory>
 #include <optional>
@@ -29,6 +28,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -49,6 +49,7 @@
 #include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/cli/proto/test_vector_metadata.pb.h"
 #include "iamf/cli/proto_conversion/channel_label_utils.h"
+#include "iamf/cli/substream_frames.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
@@ -173,34 +174,11 @@ absl::Status GetNumSamplesToPadAtEndAndValidate(
   return absl::OkStatus();
 }
 
-void PadSamples(const size_t num_samples_to_pad, const size_t num_channels,
-                std::deque<std::vector<int32_t>>& samples) {
-  samples.insert(samples.end(), num_samples_to_pad,
-                 std::vector<int32_t>(num_channels, 0));
-}
-
-void MoveSamples(const size_t num_samples,
-                 std::deque<std::vector<int32_t>>& source_samples,
-                 std::vector<std::vector<int32_t>>& destination_samples) {
-  CHECK_GE(source_samples.size(), num_samples);
-  const size_t num_channels = source_samples.front().size();
-  CHECK_EQ(destination_samples.size(), num_channels);
-
-  for (int c = 0; c < num_channels; c++) {
-    auto& destination_samples_for_channel = destination_samples[c];
-    destination_samples_for_channel.resize(num_samples);
-    for (int t = 0; t < num_samples; t++) {
-      destination_samples_for_channel[t] = source_samples[t][c];
-    }
-  }
-  source_samples.erase(source_samples.begin(),
-                       source_samples.begin() + num_samples);
-}
-
 absl::Status InitializeSubstreamData(
     const SubstreamIdLabelsMap& substream_id_to_labels,
     const absl::flat_hash_map<uint32_t, std::unique_ptr<EncoderBase>>&
         substream_id_to_encoder,
+    const size_t num_samples_per_frame,
     bool user_samples_to_trim_at_start_includes_codec_delay,
     const uint32_t user_samples_to_trim_at_start,
     absl::flat_hash_map<uint32_t, SubstreamData>&
@@ -226,17 +204,21 @@ absl::Status InitializeSubstreamData(
 
     // Initialize a `SubstreamData` with virtual samples for any delay
     // introduced by the encoder.
-    auto& substream_data_for_id = substream_id_to_substream_data[substream_id];
-    substream_data_for_id = {
-        substream_id,
-        /*samples_obu=*/{},
-        /*samples_encode=*/{},
-        /*output_gains_linear=*/{},
-        /*num_samples_to_trim_at_end=*/0,
-        /*num_samples_to_trim_at_start=*/encoder_required_samples_to_delay};
-
-    PadSamples(encoder_required_samples_to_delay, labels.size(),
-               substream_data_for_id.samples_obu);
+    const auto num_channels = labels.size();
+    const auto& [substream_data_iter, inserted] =
+        substream_id_to_substream_data.emplace(
+            substream_id,
+            SubstreamData{.substream_id = substream_id,
+                          .frames_in_obu = SubstreamFrames<InternalSampleType>(
+                              num_channels, num_samples_per_frame),
+                          .frames_to_encode = SubstreamFrames<int32_t>(
+                              num_channels, num_samples_per_frame),
+                          .output_gains_linear = {},
+                          .num_samples_to_trim_at_end = 0,
+                          .num_samples_to_trim_at_start =
+                              encoder_required_samples_to_delay});
+    substream_data_iter->second.frames_in_obu.PadZeros(
+        encoder_required_samples_to_delay);
   }
 
   return absl::OkStatus();
@@ -277,13 +259,15 @@ absl::Status DownMixSamples(const DecodedUleb128 audio_element_id,
                             DownMixingParams& down_mixing_params) {
   RETURN_IF_NOT_OK(parameters_manager.GetDownMixingParameters(
       audio_element_id, down_mixing_params));
-  LOG_FIRST_N(INFO, 10) << "Using alpha=" << down_mixing_params.alpha
-                        << " beta=" << down_mixing_params.beta
-                        << " gamma=" << down_mixing_params.gamma
-                        << " delta=" << down_mixing_params.delta
-                        << " w_idx_offset=" << down_mixing_params.w_idx_offset
-                        << " w_idx_used=" << down_mixing_params.w_idx_used
-                        << " w=" << down_mixing_params.w;
+  if (VLOG_IS_ON(1)) {
+    LOG_FIRST_N(INFO, 10) << "Using alpha=" << down_mixing_params.alpha
+                          << " beta=" << down_mixing_params.beta
+                          << " gamma=" << down_mixing_params.gamma
+                          << " delta=" << down_mixing_params.delta
+                          << " w_idx_offset=" << down_mixing_params.w_idx_offset
+                          << " w_idx_used=" << down_mixing_params.w_idx_used
+                          << " w=" << down_mixing_params.w;
+  }
 
   // Down-mix OBU-aligned samples from input channels to substreams. May
   // generate intermediate channels (e.g. L3 on the way of down-mixing L7 to L2)
@@ -315,7 +299,7 @@ absl::Status GetNextFrameSubstreamData(
       (substream_id_to_substream_data.empty() ||
        std::all_of(substream_id_to_substream_data.begin(),
                    substream_id_to_substream_data.end(), [](const auto& entry) {
-                     return entry.second.samples_obu.empty();
+                     return entry.second.frames_in_obu.Empty();
                    }))) {
     return absl::OkStatus();
   }
@@ -327,37 +311,36 @@ absl::Status GetNextFrameSubstreamData(
   // Padding.
   for (const auto& [substream_id, unused_labels] : substream_id_to_labels) {
     auto& substream_data = substream_id_to_substream_data.at(substream_id);
-    const int num_channels = substream_data.samples_obu.front().size();
-    if (substream_data.samples_obu.size() < num_samples_per_frame) {
+    const auto samples_obu_num_ticks =
+        substream_data.frames_in_obu.Front().front().size();
+    if (samples_obu_num_ticks < num_samples_per_frame) {
       uint32_t num_samples_to_pad_at_end;
       auto& trimming_state = substream_id_to_trimming_state.at(substream_id);
       RETURN_IF_NOT_OK(GetNumSamplesToPadAtEndAndValidate(
-          num_samples_per_frame - substream_data.samples_obu.size(),
+          num_samples_per_frame - samples_obu_num_ticks,
           trimming_state.increment_samples_to_trim_at_end_by_padding,
           trimming_state.user_samples_left_to_trim_at_end,
           num_samples_to_pad_at_end));
 
-      PadSamples(num_samples_to_pad_at_end, num_channels,
-                 substream_data.samples_obu);
-      PadSamples(num_samples_to_pad_at_end, num_channels,
-                 substream_data.samples_encode);
+      substream_data.frames_in_obu.PadZeros(num_samples_to_pad_at_end);
+      substream_data.frames_to_encode.PadZeros(num_samples_to_pad_at_end);
 
       // Record the number of padded samples to be trimmed later.
       substream_data.num_samples_to_trim_at_end = num_samples_to_pad_at_end;
     }
 
-    if (no_sample_added &&
-        substream_data.samples_encode.size() < num_samples_per_frame) {
+    const auto samples_encode_num_ticks =
+        substream_data.frames_to_encode.Front().front().size();
+    if (no_sample_added && samples_encode_num_ticks < num_samples_per_frame) {
       const uint32_t num_samples_to_pad =
-          num_samples_per_frame - substream_data.samples_encode.size();
+          num_samples_per_frame - samples_encode_num_ticks;
 
       // It's possible to be in this state for the final frame when there
       // are multiple padded frames at the start. Extra virtual samples
       // need to be added. These samples will be "left in" the decoder
       // after all OBUs are processed, but they should not count as being
       // trimmed.
-      PadSamples(num_samples_to_pad, num_channels,
-                 substream_data.samples_encode);
+      substream_data.frames_to_encode.PadZeros(num_samples_to_pad);
     }
   }
 
@@ -438,8 +421,6 @@ absl::Status MaybeEncodeFramesForAudioElement(
 
   std::optional<InternalTimestamp> encoded_timestamp;
   bool more_samples_to_encode = false;
-  std::vector<std::vector<int32_t>> samples_encode;
-  std::vector<std::vector<int32_t>> samples_obu;
   do {
     RETURN_IF_NOT_OK(GetNextFrameSubstreamData(
         audio_element_id, demixing_module, num_samples_per_frame,
@@ -462,45 +443,31 @@ absl::Status MaybeEncodeFramesForAudioElement(
         continue;
       }
       auto& substream_data = substream_data_iter->second;
-      if (substream_data.samples_obu.empty()) {
+      if (substream_data.frames_in_obu.Empty()) {
         // It's possible the user signalled to flush the stream, but it was
         // already aligned. OK, there is nothing else to do.
         continue;
       }
 
       more_samples_to_encode = true;
-      const auto num_channels = substream_data.samples_obu.front().size();
+      const auto& frame_to_encode = substream_data.frames_to_encode.Front();
+      const auto& frame_in_obu = substream_data.frames_in_obu.Front();
 
       // Encode.
-      if (substream_data.samples_encode.size() < num_samples_per_frame) {
+      if (frame_to_encode.front().size() < num_samples_per_frame) {
         // Wait until there is a whole frame of samples to encode.
-        LOG(INFO) << "Waiting for complete frame; samples_obu.size()="
-                  << substream_data.samples_obu.size()
-                  << " samples_encode.size()= "
-                  << substream_data.samples_encode.size();
+        LOG(INFO) << "Waiting for a complete frame;"
+                  << " current frame size= " << frame_to_encode.front().size();
 
         // All frames corresponding to the same Audio Element should be skipped.
         CHECK(!encoded_timestamp.has_value());
         continue;
       }
 
-      // Pop samples from the queues and arrange in (channel, time) axes.
-      const size_t num_samples_to_encode =
-          static_cast<size_t>(num_samples_per_frame);
-      // std::vector<std::vector<int32_t>>
-      // samples_encode(num_samples_to_encode);
-      // std::vector<std::vector<int32_t>> samples_obu(num_samples_to_encode);
-      samples_obu.resize(num_channels);
-      samples_encode.resize(num_channels);
-
-      MoveSamples(num_samples_to_encode, substream_data.samples_obu,
-                  samples_obu);
-      MoveSamples(num_samples_to_encode, substream_data.samples_encode,
-                  samples_encode);
       const auto [frame_samples_to_trim_at_start,
                   frame_samples_to_trim_at_end] =
           GetNumSamplesToTrimForFrame(
-              num_samples_to_encode,
+              num_samples_per_frame,
               substream_data.num_samples_to_trim_at_start,
               substream_data.num_samples_to_trim_at_end);
 
@@ -508,8 +475,7 @@ absl::Status MaybeEncodeFramesForAudioElement(
       InternalTimestamp start_timestamp;
       InternalTimestamp end_timestamp;
       RETURN_IF_NOT_OK(global_timing_module.GetNextAudioFrameTimestamps(
-          substream_id, samples_obu.front().size(), start_timestamp,
-          end_timestamp));
+          substream_id, num_samples_per_frame, start_timestamp, end_timestamp));
 
       if (encoded_timestamp.has_value()) {
         // All frames corresponding to the same Audio Element should have
@@ -532,15 +498,17 @@ absl::Status MaybeEncodeFramesForAudioElement(
                   substream_id, {}),
               .start_timestamp = start_timestamp,
               .end_timestamp = end_timestamp,
-              .pcm_samples = samples_obu,
+              .encoded_samples = frame_in_obu,
               .down_mixing_params = down_mixing_params,
               .recon_gain_info_parameter_data = ReconGainInfoParameterData(),
               .audio_element_with_data = &audio_element_with_data});
 
       RETURN_IF_NOT_OK(
           substream_id_to_encoder.at(substream_id)
-              ->EncodeAudioFrame(encoder_input_pcm_bit_depth, samples_encode,
+              ->EncodeAudioFrame(encoder_input_pcm_bit_depth, frame_to_encode,
                                  std::move(partial_audio_frame_with_data)));
+      substream_data.frames_in_obu.PopFront();
+      substream_data.frames_to_encode.PopFront();
       encoded_timestamp = start_timestamp;
     }
 
@@ -731,8 +699,9 @@ absl::Status AudioFrameGenerator::Initialize() {
     // Create an encoder for each substream.
     const AudioElementWithData& audio_element_with_data =
         audio_elements_iter->second;
-    if (audio_frame_metadata.samples_to_trim_at_end() >
-        audio_element_with_data.codec_config->GetNumSamplesPerFrame()) {
+    const auto num_samples_per_frame =
+        audio_element_with_data.codec_config->GetNumSamplesPerFrame();
+    if (audio_frame_metadata.samples_to_trim_at_end() > num_samples_per_frame) {
       return absl::InvalidArgumentError(
           "The spec disallows trimming multiple frames from the end.");
     }
@@ -743,7 +712,7 @@ absl::Status AudioFrameGenerator::Initialize() {
     // Intermediate data for all substreams belonging to an Audio Element.
     RETURN_IF_NOT_OK(InitializeSubstreamData(
         audio_element_with_data.substream_id_to_labels,
-        substream_id_to_encoder_,
+        substream_id_to_encoder_, num_samples_per_frame,
         audio_frame_metadata.samples_to_trim_at_start_includes_codec_delay(),
         audio_frame_metadata.samples_to_trim_at_start(),
         substream_id_to_substream_data_));
@@ -895,7 +864,7 @@ absl::Status AudioFrameGenerator::OutputFrames(
       auto substream_data_iter =
           substream_id_to_substream_data_.find(substream_id);
       if (substream_data_iter != substream_id_to_substream_data_.end() &&
-          substream_data_iter->second.samples_obu.empty()) {
+          substream_data_iter->second.frames_in_obu.Empty()) {
         RETURN_IF_NOT_OK(encoder->Finalize());
         substream_id_to_substream_data_.erase(substream_data_iter);
       }

@@ -19,7 +19,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/functional/any_invocable.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
@@ -29,7 +29,6 @@
 #include "iamf/cli/channel_label.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/map_utils.h"
-#include "iamf/common/utils/sample_processing_utils.h"
 #include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/mix_presentation.h"
@@ -178,18 +177,14 @@ AudioElementRendererPassThrough::CreateFromScalableChannelLayoutConfig(
 }
 
 absl::Status AudioElementRendererPassThrough::RenderSamples(
-    absl::Span<const absl::Span<const InternalSampleType>> samples_to_render,
-    std::vector<InternalSampleType>& rendered_samples) {
-  // Flatten the (channel, time) axes into interleaved samples.
-  const absl::AnyInvocable<absl::Status(InternalSampleType, InternalSampleType&)
-                               const>
-      kIdentityTransform =
-          [](InternalSampleType input, InternalSampleType& output) {
-            output = input;
-            return absl::OkStatus();
-          };
-  return ConvertChannelTimeToInterleaved(samples_to_render, kIdentityTransform,
-                                         rendered_samples);
+    absl::Span<const absl::Span<const InternalSampleType>> samples_to_render) {
+  rendered_samples_.resize(samples_to_render.size());
+  for (int c = 0; c < samples_to_render.size(); c++) {
+    rendered_samples_[c].insert(rendered_samples_[c].end(),
+                                samples_to_render[c].begin(),
+                                samples_to_render[c].end());
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace iamf_tools

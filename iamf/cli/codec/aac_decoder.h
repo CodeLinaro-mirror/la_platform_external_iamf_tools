@@ -14,10 +14,11 @@
 
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 #include "absl/base/nullability.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
+#include "iamf/obu/decoder_config/aac_decoder_config.h"
 
 // This symbol conflicts with a macro in fdk_aac.
 #ifdef IS_LITTLE_ENDIAN
@@ -26,33 +27,35 @@
 
 #include "absl/status/status.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/obu/codec_config.h"
 #include "libAACdec/include/aacdecoder_lib.h"
 
 namespace iamf_tools {
 
-// TODO(b/277731089): Test all of `aac_encoder_decoder.h`.
+// TODO(b/277731089): Test sample accuracy of `DecodeAudioFrame`.
 class AacDecoder : public DecoderBase {
  public:
   /*!brief Factory function.
    *
-   * \param codec_config_obu Codec config for this stream.
+   * \param decoder_config Decoder config for this stream.
    * \param num_channels Number of channels for this stream.
+   * \param num_samples_per_frame Number of samples per frame for this stream.
    * \return AAC decoder on success. A specific status on failure.
    */
   static absl::StatusOr<std::unique_ptr<DecoderBase>> Create(
-      const CodecConfigObu& codec_config_obu, int num_channels);
+      const AacDecoderConfig& decoder_config, int num_channels,
+      uint32_t num_samples_per_frame);
 
   /*!\brief Destructor.
    */
   ~AacDecoder() override;
+
   /*!\brief Decodes an AAC audio frame.
    *
    * \param encoded_frame Frame to decode.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   absl::Status DecodeAudioFrame(
-      const std::vector<uint8_t>& encoded_frame) override;
+      absl::Span<const uint8_t> encoded_frame) override;
 
  private:
   /* Private constructor.
@@ -65,8 +68,14 @@ class AacDecoder : public DecoderBase {
    */
   AacDecoder(int num_channels, uint32_t num_samples_per_frame,
              AAC_DECODER_INSTANCE* /* absl_nonnull */ decoder)
-      : DecoderBase(num_channels, num_samples_per_frame), decoder_(decoder) {}
+      : DecoderBase(num_channels, num_samples_per_frame),
+        interleaved_pcm_from_libfdk_aac_(num_samples_per_frame * num_channels),
+        decoder_(decoder) {}
 
+  // Resizes to the size of the largest input frame.
+  std::vector<UCHAR> raws_frame_to_libfdk_aac_;
+  // Size fixed at construction time.
+  std::vector<INT_PCM> interleaved_pcm_from_libfdk_aac_;
   AAC_DECODER_INSTANCE* const /* absl_nonnull */ /* absl_nonnull */ decoder_;
 };
 

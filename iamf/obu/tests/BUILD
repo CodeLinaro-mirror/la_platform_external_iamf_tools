@@ -1,6 +1,7 @@
 # Tests for the IAMF software.
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
 cc_library(
@@ -139,7 +140,6 @@ cc_test(
         "//iamf/common:leb_generator",
         "//iamf/common:read_bit_buffer",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/utils:bit_buffer_util",
         "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:mix_presentation",
         "//iamf/obu:obu_header",
