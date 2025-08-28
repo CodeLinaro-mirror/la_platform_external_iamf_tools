@@ -89,33 +89,6 @@ void FillReconGainAuxiliaryData(
 
 }  // namespace
 
-bool IsStereoLayout(const Layout& layout) {
-  const Layout kStereoLayout = {
-      .layout_type = Layout::kLayoutTypeLoudspeakersSsConvention,
-      .specific_layout = LoudspeakersSsConventionLayout{
-          .sound_system = LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0}};
-  return layout == kStereoLayout;
-}
-
-absl::Status GetIndicesForLayout(
-    const std::vector<MixPresentationSubMix>& mix_presentation_sub_mixes,
-    const Layout& layout, int& output_submix_index, int& output_layout_index) {
-  for (int s = 0; s < mix_presentation_sub_mixes.size(); s++) {
-    const auto& sub_mix = mix_presentation_sub_mixes[s];
-    for (int l = 0; l < sub_mix.layouts.size(); l++) {
-      const auto& mix_presentation_layout = sub_mix.layouts[l];
-      if (layout == mix_presentation_layout.loudness_layout) {
-        output_submix_index = s;
-        output_layout_index = l;
-        return absl::OkStatus();
-      }
-    }
-  }
-  return absl::InvalidArgumentError(
-      "No match found in the mix presentation submixes for the desired "
-      "layout.");
-}
-
 absl::Status CollectAndValidateParamDefinitions(
     const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
         audio_elements,
@@ -265,8 +238,8 @@ absl::Status GetCommonSamplesPerFrame(
 
 void LogChannelNumbers(const std::string& name,
                        const ChannelNumbers& channel_numbers) {
-  LOG(INFO) << name << ": [" << channel_numbers.surround << "."
-            << channel_numbers.lfe << "." << channel_numbers.height << "]";
+  VLOG(1) << name << ": [" << channel_numbers.surround << "."
+          << channel_numbers.lfe << "." << channel_numbers.height << "]";
 }
 
 }  // namespace iamf_tools

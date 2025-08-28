@@ -31,12 +31,12 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "iamf/cli/audio_element_with_data.h"
-#include "iamf/cli/audio_frame_decoder.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/channel_label.h"
 #include "iamf/cli/cli_util.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
@@ -47,7 +47,6 @@ namespace iamf_tools {
 namespace {
 
 using enum ChannelLabel::Label;
-
 using DemixingMetadataForAudioElementId =
     DemixingModule::DemixingMetadataForAudioElementId;
 
@@ -571,7 +570,6 @@ absl::Status FillRequiredDemixingMetadata(
 
 void ConfigureLabeledFrame(const AudioFrameWithData& audio_frame,
                            LabeledFrame& labeled_frame) {
-  labeled_frame.end_timestamp = audio_frame.end_timestamp;
   labeled_frame.samples_to_trim_at_end =
       audio_frame.obu.header_.num_samples_to_trim_at_end;
   labeled_frame.samples_to_trim_at_start =
@@ -579,47 +577,21 @@ void ConfigureLabeledFrame(const AudioFrameWithData& audio_frame,
   labeled_frame.demixing_params = audio_frame.down_mixing_params;
 }
 
-void ConfigureLabeledFrame(const DecodedAudioFrame& decoded_audio_frame,
-                           LabeledFrame& labeled_decoded_frame) {
-  labeled_decoded_frame.end_timestamp = decoded_audio_frame.end_timestamp;
-  labeled_decoded_frame.samples_to_trim_at_end =
-      decoded_audio_frame.samples_to_trim_at_end;
-  labeled_decoded_frame.samples_to_trim_at_start =
-      decoded_audio_frame.samples_to_trim_at_start;
-  labeled_decoded_frame.demixing_params =
-      decoded_audio_frame.down_mixing_params;
-}
-
-uint32_t GetSubstreamId(const AudioFrameWithData& audio_frame_with_data) {
-  return audio_frame_with_data.obu.GetSubstreamId();
-}
-
-uint32_t GetSubstreamId(const DecodedAudioFrame& audio_frame_with_data) {
-  return audio_frame_with_data.substream_id;
-}
-
-absl::Span<const std::vector<int32_t>> GetSamples(
+absl::Span<const std::vector<InternalSampleType>> GetEncodedSamples(
     const AudioFrameWithData& audio_frame_with_data) {
-  if (!audio_frame_with_data.pcm_samples.has_value()) {
+  if (!audio_frame_with_data.encoded_samples.has_value()) {
     return {};
   }
-
-  return absl::MakeConstSpan(audio_frame_with_data.pcm_samples.value());
+  return absl::MakeConstSpan(*audio_frame_with_data.encoded_samples);
 }
 
-absl::Span<const std::vector<int32_t>> GetSamples(
-    const DecodedAudioFrame& audio_frame_with_data) {
+absl::Span<const std::vector<InternalSampleType>> GetDecodedSamples(
+    const AudioFrameWithData& audio_frame_with_data) {
   return audio_frame_with_data.decoded_samples;
 }
 
-// NOOP function if the frame is not a DecodedAudioFrame.
-absl::Status PassThroughReconGainData(const AudioFrameWithData& /*audio_frame*/,
-                                      LabeledFrame& /*labeled_frame*/) {
-  return absl::OkStatus();
-}
-
-absl::Status PassThroughReconGainData(
-    const DecodedAudioFrame& decoded_audio_frame,
+absl::Status PassThroughReconGainDataForDecodedAudioFrame(
+    const AudioFrameWithData& decoded_audio_frame,
     LabeledFrame& labeled_decoded_frame) {
   if (decoded_audio_frame.audio_element_with_data == nullptr) {
     LOG_FIRST_N(INFO, 1)
@@ -649,10 +621,9 @@ absl::Status PassThroughReconGainData(
   return absl::OkStatus();
 }
 
-// TODO(b/377553811): Unify `AudioFrameWithData` and `DecodedAudioFrame`.
-template <typename T>
 absl::Status StoreSamplesForAudioElementId(
-    const std::list<T>& audio_frames_or_decoded_audio_frames,
+    bool use_decoded_samples,
+    const std::list<AudioFrameWithData>& audio_frames_or_decoded_audio_frames,
     const SubstreamIdLabelsMap& substream_id_to_labels,
     LabeledFrame& labeled_frame) {
   if (audio_frames_or_decoded_audio_frames.empty()) {
@@ -662,7 +633,7 @@ absl::Status StoreSamplesForAudioElementId(
       audio_frames_or_decoded_audio_frames.begin()->start_timestamp;
 
   for (auto& audio_frame : audio_frames_or_decoded_audio_frames) {
-    const auto substream_id = GetSubstreamId(audio_frame);
+    const auto substream_id = audio_frame.obu.GetSubstreamId();
     auto substream_id_labels_iter = substream_id_to_labels.find(substream_id);
     if (substream_id_labels_iter == substream_id_to_labels.end()) {
       // This audio frame might belong to a different audio element; skip it.
@@ -674,35 +645,30 @@ absl::Status StoreSamplesForAudioElementId(
                                        audio_frame.start_timestamp,
                                        "In StoreSamplesForAudioElementId(): "));
 
+    ConfigureLabeledFrame(audio_frame, labeled_frame);
     const auto& labels = substream_id_labels_iter->second;
-    int channel_index = 0;
+    const auto input_samples = use_decoded_samples
+                                   ? GetDecodedSamples(audio_frame)
+                                   : GetEncodedSamples(audio_frame);
+    if (input_samples.empty()) {
+      return absl::InvalidArgumentError(
+          "Input samples are not available for down-mixing.");
+    }
+
     const auto num_channels = labels.size();
+    RETURN_IF_NOT_OK(ValidateEqual(
+        input_samples.size(), num_channels,
+        "Decoded number of channels vs. expected number of channels"));
+
+    int channel_index = 0;
     for (const auto& label : labels) {
-      const auto input_samples = GetSamples(audio_frame);
-      if (input_samples.empty()) {
-        return absl::InvalidArgumentError(
-            "Input samples are not available for down-mixing.");
-      }
-      RETURN_IF_NOT_OK(ValidateEqual(
-          input_samples.size(), num_channels,
-          "Decoded number of channels vs. expected number of channels"));
-      ConfigureLabeledFrame(audio_frame, labeled_frame);
-
-      auto& samples = labeled_frame.label_to_samples[label];
-      const auto& input_samples_for_channel = input_samples[channel_index];
-      const size_t num_ticks = input_samples_for_channel.size();
-
-      samples.resize(num_ticks);
-      for (int t = 0; t < num_ticks; t++) {
-        // TODO(b/416166882): Convert to floating points directly from
-        // the decoder. Then we can simply copy the samples over or even do
-        // zero-copy referencing.
-        samples[t] = Int32ToNormalizedFloatingPoint<InternalSampleType>(
-            input_samples_for_channel[t]);
-      }
+      labeled_frame.label_to_samples[label] = input_samples[channel_index];
       channel_index++;
     }
-    RETURN_IF_NOT_OK(PassThroughReconGainData(audio_frame, labeled_frame));
+    if (use_decoded_samples) {
+      RETURN_IF_NOT_OK(PassThroughReconGainDataForDecodedAudioFrame(
+          audio_frame, labeled_frame));
+    }
   }
 
   return absl::OkStatus();
@@ -860,65 +826,47 @@ absl::Status DemixingModule::DownMixSamplesToSubstreams(
     RETURN_IF_NOT_OK(down_mixer(down_mixing_params, input_label_to_samples));
   }
 
-  const size_t num_time_ticks = input_label_to_samples.begin()->second.size();
-
   for (const auto& [substream_id, output_channel_labels] :
        demixing_metadata->substream_id_to_labels) {
-    std::vector<std::vector<int32_t>> substream_samples(
-        num_time_ticks,
-        // One or two channels.
-        std::vector<int32_t>(output_channel_labels.size(), 0));
-    // Output gains to be applied to the (one or two) channels.
-    std::vector<double> output_gains_linear(output_channel_labels.size());
-    int channel_index = 0;
-    for (const auto& output_channel_label : output_channel_labels) {
-      auto iter = input_label_to_samples.find(output_channel_label);
-      if (iter == input_label_to_samples.end()) {
-        return absl::UnknownError(absl::StrCat(
-            "Samples do not exist for channel: ", output_channel_label));
-      }
-      for (int t = 0; t < num_time_ticks; t++) {
-        RETURN_IF_NOT_OK(NormalizedFloatingPointToInt32(
-            iter->second[t], substream_samples[t][channel_index]));
-      }
-
-      // Compute and store the linear output gains.
-      auto gain_iter =
-          demixing_metadata->label_to_output_gain.find(output_channel_label);
-      output_gains_linear[channel_index] = 1.0;
-      if (gain_iter != demixing_metadata->label_to_output_gain.end()) {
-        output_gains_linear[channel_index] =
-            std::pow(10.0, gain_iter->second / 20.0);
-      }
-
-      channel_index++;
-    }
-
     // Find the `SubstreamData` with this `substream_id`.
     auto substream_data_iter =
         substream_id_to_substream_data.find(substream_id);
     if (substream_data_iter == substream_id_to_substream_data.end()) {
-      return absl::UnknownError(absl::StrCat(
+      return absl::InvalidArgumentError(absl::StrCat(
           "Failed to find substream data for substream ID= ", substream_id));
     }
     auto& substream_data = substream_data_iter->second;
 
-    // Add all down mixed samples to both queues.
-
-    for (const auto& channel_samples : substream_samples) {
-      substream_data.samples_obu.push_back(channel_samples);
-
-      // Apply output gains to the samples going to the encoder.
-      std::vector<int32_t> attenuated_channel_samples(channel_samples.size());
-      for (int i = 0; i < channel_samples.size(); ++i) {
-        // Intermediate computation is a `double`. But both `channel_samples`
-        // and `attenuated_channel_samples` are `int32_t`.
-        const double attenuated_sample =
-            static_cast<double>(channel_samples[i]) / output_gains_linear[i];
-        RETURN_IF_NOT_OK(ClipDoubleToInt32(attenuated_sample,
-                                           attenuated_channel_samples[i]));
+    int channel_index = 0;
+    for (const auto& output_channel_label : output_channel_labels) {
+      // Compute and store the linear output gains for this channel.
+      const auto gain_iter =
+          demixing_metadata->label_to_output_gain.find(output_channel_label);
+      const double output_gain_linear =
+          (gain_iter == demixing_metadata->label_to_output_gain.end())
+              ? 1.0
+              : std::pow(10.0, gain_iter->second / 20.0);
+      auto samples_iter = input_label_to_samples.find(output_channel_label);
+      if (samples_iter == input_label_to_samples.end()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Samples do not exist for channel: ", output_channel_label));
       }
-      substream_data.samples_encode.push_back(attenuated_channel_samples);
+      const auto& input_samples = samples_iter->second;
+
+      // Add all down mixed samples to both substream frames.
+      for (const auto input_sample : input_samples) {
+        substream_data.frames_in_obu.PushSample(channel_index, input_sample);
+
+        // Apply output gains to the samples going to the encoder and also
+        // convert the samples to 32-bit integers.
+        int32_t attenuated_sample_int32 = 0;
+        RETURN_IF_NOT_OK(NormalizedFloatingPointToInt32(
+            input_sample / output_gain_linear, attenuated_sample_int32));
+        substream_data.frames_to_encode.PushSample(channel_index,
+                                                   attenuated_sample_int32);
+      }
+
+      channel_index++;
     }
   }
 
@@ -939,7 +887,8 @@ absl::StatusOr<IdLabeledFrameMap> DemixingModule::DemixOriginalAudioSamples(
     // Process the original audio frames.
     LabeledFrame labeled_frame;
     RETURN_IF_NOT_OK(StoreSamplesForAudioElementId(
-        audio_frames, demixing_metadata.substream_id_to_labels, labeled_frame));
+        /*use_decoded_samples=*/false, audio_frames,
+        demixing_metadata.substream_id_to_labels, labeled_frame));
     if (!labeled_frame.label_to_samples.empty()) {
       RETURN_IF_NOT_OK(
           ApplyDemixers(demixing_metadata.demixers, labeled_frame));
@@ -953,15 +902,15 @@ absl::StatusOr<IdLabeledFrameMap> DemixingModule::DemixOriginalAudioSamples(
 }
 
 absl::StatusOr<IdLabeledFrameMap> DemixingModule::DemixDecodedAudioSamples(
-    const std::list<DecodedAudioFrame>& decoded_audio_frames) const {
+    const std::list<AudioFrameWithData>& decoded_audio_frames) const {
   IdLabeledFrameMap id_to_labeled_decoded_frame;
   for (const auto& [audio_element_id, demixing_metadata] :
        audio_element_id_to_demixing_metadata_) {
     // Process the decoded audio frames.
     LabeledFrame labeled_decoded_frame;
     RETURN_IF_NOT_OK(StoreSamplesForAudioElementId(
-        decoded_audio_frames, demixing_metadata.substream_id_to_labels,
-        labeled_decoded_frame));
+        /*use_decoded_samples=*/true, decoded_audio_frames,
+        demixing_metadata.substream_id_to_labels, labeled_decoded_frame));
     if (!labeled_decoded_frame.label_to_samples.empty()) {
       RETURN_IF_NOT_OK(
           ApplyDemixers(demixing_metadata.demixers, labeled_decoded_frame));

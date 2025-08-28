@@ -18,14 +18,12 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
-#include <limits>
 #include <list>
 #include <memory>
 #include <numbers>
 #include <numeric>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -34,7 +32,6 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
-#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
@@ -47,9 +44,11 @@
 #include "iamf/cli/obu_processor.h"
 #include "iamf/cli/obu_with_data_generator.h"
 #include "iamf/cli/parameter_block_with_data.h"
+#include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/cli/proto/mix_presentation.pb.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
 #include "iamf/cli/proto_conversion/proto_to_obu/audio_element_generator.h"
+#include "iamf/cli/proto_conversion/proto_to_obu/codec_config_generator.h"
 #include "iamf/cli/proto_conversion/proto_to_obu/mix_presentation_generator.h"
 #include "iamf/cli/renderer/audio_element_renderer_base.h"
 #include "iamf/cli/user_metadata_builder/audio_element_metadata_builder.h"
@@ -81,8 +80,6 @@ namespace iamf_tools {
 
 namespace {
 
-constexpr bool kOverrideAudioRollDistance = true;
-
 void SetParamDefinitionCommonFields(DecodedUleb128 parameter_id,
                                     DecodedUleb128 parameter_rate,
                                     DecodedUleb128 duration,
@@ -104,7 +101,6 @@ void AddParamDefinition(DecodedUleb128 parameter_id,
                                  param_definition);
 
   // Add to the Audio Element OBU.
-  audio_element_obu.InitializeParams(audio_element_obu.num_parameters_ + 1);
   audio_element_obu.audio_element_params_.emplace_back(
       AudioElementParam{param_definition});
 }
@@ -133,11 +129,13 @@ absl::Status CollectObusFromIaSequence(
     RETURN_IF_NOT_OK(obu_processor->ProcessTemporalUnit(
         /*eos_is_end_of_sequence=*/true, output_temporal_unit,
         continue_processing));
-    audio_frames.splice(audio_frames.end(),
-                        output_temporal_unit->output_audio_frames);
-    parameter_blocks.splice(parameter_blocks.end(),
-                            output_temporal_unit->output_parameter_blocks);
-    temporal_unit_count++;
+    if (output_temporal_unit.has_value()) {
+      audio_frames.splice(audio_frames.end(),
+                          output_temporal_unit->output_audio_frames);
+      parameter_blocks.splice(parameter_blocks.end(),
+                              output_temporal_unit->output_parameter_blocks);
+      temporal_unit_count++;
+    }
   }
   LOG(INFO) << "Processed " << temporal_unit_count << " Temporal Unit OBUs";
 
@@ -156,7 +154,7 @@ void AddLpcmCodecConfig(
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
 
-  CodecConfigObu obu(
+  auto obu = CodecConfigObu::Create(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdLpcm,
        .num_samples_per_frame = num_samples_per_frame,
@@ -164,8 +162,9 @@ void AddLpcmCodecConfig(
            .sample_format_flags_bitmask_ = LpcmDecoderConfig::kLpcmLittleEndian,
            .sample_size_ = sample_size,
            .sample_rate_ = sample_rate}});
-  EXPECT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  ASSERT_THAT(obu, IsOk());
+
+  codec_config_obus.emplace(codec_config_id, *std::move(obu));
 }
 
 void AddLpcmCodecConfigWithIdAndSampleRate(
@@ -186,15 +185,16 @@ void AddOpusCodecConfig(
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
 
-  CodecConfigObu obu(
+  auto obu = CodecConfigObu::Create(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdOpus,
        .num_samples_per_frame = num_samples_per_frame,
        .decoder_config = OpusDecoderConfig{.version_ = 1,
                                            .pre_skip_ = 312,
                                            .input_sample_rate_ = sample_rate}});
-  ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  ASSERT_THAT(obu, IsOk());
+
+  codec_config_obus.emplace(codec_config_id, *std::move(obu));
 }
 
 void AddOpusCodecConfigWithId(
@@ -214,7 +214,7 @@ void AddFlacCodecConfig(
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
 
-  CodecConfigObu obu(
+  auto obu = CodecConfigObu::Create(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdFlac,
        .num_samples_per_frame = num_samples_per_frame,
@@ -230,8 +230,9 @@ void AddFlacCodecConfig(
                   .sample_rate = sample_rate,
                   .bits_per_sample = static_cast<uint8_t>(sample_size - 1),
                   .total_samples_in_stream = 0}}}})});
-  ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  ASSERT_THAT(obu, IsOk());
+
+  codec_config_obus.emplace(codec_config_id, *std::move(obu));
 }
 
 void AddFlacCodecConfigWithId(
@@ -246,23 +247,33 @@ void AddFlacCodecConfigWithId(
 
 void AddAacCodecConfig(
     uint32_t codec_config_id, uint32_t num_samples_per_frame,
+    uint32_t sample_rate,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
 
-  CodecConfigObu obu(ObuHeader(), codec_config_id,
-                     {.codec_id = CodecConfig::kCodecIdAacLc,
-                      .num_samples_per_frame = num_samples_per_frame,
-                      .decoder_config = AacDecoderConfig{}});
-  ASSERT_THAT(obu.Initialize(kOverrideAudioRollDistance), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  auto obu = CodecConfigObu::Create(
+      ObuHeader(), codec_config_id,
+      {.codec_id = CodecConfig::kCodecIdAacLc,
+       .num_samples_per_frame = num_samples_per_frame,
+       .decoder_config = AacDecoderConfig{
+           .decoder_specific_info_ = {
+               .audio_specific_config = {
+                   .sample_frequency_index_ =
+                       AudioSpecificConfig::SampleFrequencyIndex::kEscapeValue,
+                   .sampling_frequency_ = sample_rate}}}});
+  ASSERT_THAT(obu, IsOk());
+
+  codec_config_obus.emplace(codec_config_id, *std::move(obu));
 }
 
 void AddAacCodecConfigWithId(
     uint32_t codec_config_id,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus) {
-  const uint32_t kNumSamplesPerFrame = 1024;
-  AddAacCodecConfig(codec_config_id, kNumSamplesPerFrame, codec_config_obus);
+  constexpr uint32_t kNumSamplesPerFrame = 1024;
+  constexpr uint32_t kSampleRate = 48000;
+  AddAacCodecConfig(codec_config_id, kNumSamplesPerFrame, kSampleRate,
+                    codec_config_obus);
 }
 
 void AddAmbisonicsMonoAudioElementWithSubstreamIds(
@@ -333,7 +344,8 @@ void AddScalableAudioElementWithSubstreamIds(
   // Check that this is a scalable Audio Element, and override the substream
   // IDs.
   ASSERT_TRUE(new_audio_element_metadata.has_scalable_channel_layout_config());
-  ASSERT_EQ(new_audio_element_metadata.num_substreams(), substream_ids.size());
+  ASSERT_EQ(new_audio_element_metadata.audio_substream_ids().size(),
+            substream_ids.size());
   for (int i = 0; i < substream_ids.size(); ++i) {
     new_audio_element_metadata.mutable_audio_substream_ids()->Set(
         i, substream_ids[i]);
@@ -451,14 +463,14 @@ WavReader CreateWavReaderExpectOk(const std::string& filename,
   return std::move(*wav_reader);
 }
 
-void RenderAndFlushExpectOk(const LabeledFrame& labeled_frame,
-                            AudioElementRendererBase* renderer,
-                            std::vector<InternalSampleType>& output_samples) {
+void RenderAndFlushExpectOk(
+    const LabeledFrame& labeled_frame, AudioElementRendererBase* renderer,
+    std::vector<std::vector<InternalSampleType>>& output_samples) {
   ASSERT_NE(renderer, nullptr);
   EXPECT_THAT(renderer->RenderLabeledFrame(labeled_frame), IsOk());
   EXPECT_THAT(renderer->Finalize(), IsOk());
   EXPECT_TRUE(renderer->IsFinalized());
-  EXPECT_THAT(renderer->Flush(output_samples), IsOk());
+  renderer->Flush(output_samples);
 }
 
 std::string GetAndCleanupOutputFileName(absl::string_view suffix) {
@@ -523,6 +535,31 @@ double GetLogSpectralDistance(
   return (10 * std::sqrt(log_spectral_distance / num_samples));
 }
 
+uint32_t GetSampleRateForCodecConfigMetadata(
+    const iamf_tools_cli_proto::UserMetadata& user_metadata,
+    DecodedUleb128 codec_config_id) {
+  auto codec_config_generator =
+      CodecConfigGenerator(user_metadata.codec_config_metadata());
+  absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
+  EXPECT_THAT(codec_config_generator.Generate(codec_config_obus), IsOk());
+  if (codec_config_obus.contains(codec_config_id)) {
+    return codec_config_obus.at(codec_config_id).GetOutputSampleRate();
+  }
+  return 0;
+}
+
+uint32_t GetSampleRateForAudioElementMetadata(
+    const iamf_tools_cli_proto::UserMetadata& user_metadata,
+    DecodedUleb128 audio_element_id) {
+  for (const auto& audio_element : user_metadata.audio_element_metadata()) {
+    if (audio_element.audio_element_id() == audio_element_id) {
+      return GetSampleRateForCodecConfigMetadata(
+          user_metadata, audio_element.codec_config_id());
+    }
+  }
+  return 0;
+}
+
 std::vector<DecodeSpecification> GetDecodeSpecifications(
     const iamf_tools_cli_proto::UserMetadata& user_metadata) {
   std::vector<DecodeSpecification> decode_specifications;
@@ -551,6 +588,9 @@ std::vector<DecodeSpecification> GetDecodeSpecifications(
             continue;
           }
         }
+        decode_specification.sample_rate = GetSampleRateForAudioElementMetadata(
+            user_metadata,
+            mix_presentation.sub_mixes(i).audio_elements(0).audio_element_id());
         decode_specification.layout_index = j;
         decode_specifications.push_back(decode_specification);
       }
@@ -564,6 +604,17 @@ std::vector<InternalSampleType> Int32ToInternalSampleType(
   std::vector<InternalSampleType> result(samples.size());
   Int32ToInternalSampleType(samples, absl::MakeSpan(result));
   return result;
+}
+
+std::vector<std::vector<InternalSampleType>> Int32ToInternalSampleType2D(
+    const std::vector<std::vector<int32_t>>& samples) {
+  const auto num_channels = samples.size();
+  std::vector<std::vector<InternalSampleType>> internal_samples(num_channels);
+  for (int c = 0; c < num_channels; c++) {
+    internal_samples[c] = Int32ToInternalSampleType(samples[c]);
+  }
+
+  return internal_samples;
 }
 
 std::vector<InternalSampleType> GenerateSineWav(uint64_t start_tick,
@@ -584,7 +635,7 @@ std::vector<InternalSampleType> GenerateSineWav(uint64_t start_tick,
 }
 
 void AccumulateZeroCrossings(
-    absl::Span<const absl::Span<const int32_t>> channel_time_samples,
+    absl::Span<const absl::Span<const InternalSampleType>> channel_time_samples,
     std::vector<ZeroCrossingState>& zero_crossing_states,
     std::vector<int>& zero_crossing_counts) {
   using enum ZeroCrossingState;
@@ -606,7 +657,7 @@ void AccumulateZeroCrossings(
   // skip encoding artifacts (e.g. a small ringing artifact < -40 dB after
   // the sine wave stopped.)  Note that -18 dB would correspond to dividing
   // by 8, while dividing by 100 is -40 dB.
-  constexpr int32_t kThreshold = std::numeric_limits<int32_t>::max() / 100;
+  constexpr InternalSampleType kThreshold = 0.01;
 
   for (int c = 0; c < num_channels; c++) {
     const auto& channel = channel_time_samples[c];
@@ -644,7 +695,8 @@ absl::Status ReadFileToBytes(const std::filesystem::path& file_path,
 }
 
 absl::Status EverySecondTickResampler::PushFrameDerived(
-    absl::Span<const absl::Span<const int32_t>> channel_time_samples) {
+    absl::Span<const absl::Span<const InternalSampleType>>
+        channel_time_samples) {
   for (int c = 0; c < num_channels_; c++) {
     // `SampleProcessorBase` should ensure this.
     EXPECT_TRUE(output_channel_time_samples_[c].empty());
@@ -667,7 +719,8 @@ absl::Status EverySecondTickResampler::FlushDerived() {
 }
 
 absl::Status OneFrameDelayer::PushFrameDerived(
-    absl::Span<const absl::Span<const int32_t>> channel_time_samples) {
+    absl::Span<const absl::Span<const InternalSampleType>>
+        channel_time_samples) {
   // Swap the delayed samples with the output samples from the base class.
   std::swap(delayed_samples_, output_channel_time_samples_);
 
@@ -690,7 +743,8 @@ absl::Status OneFrameDelayer::PushFrameDerived(
 
 absl::Status OneFrameDelayer::FlushDerived() {
   // Pushing in an empty frame will cause the delayed frame to be available.
-  auto empty_frame = std::vector<absl::Span<const int32_t>>(num_channels_);
+  auto empty_frame =
+      std::vector<absl::Span<const InternalSampleType>>(num_channels_);
   return PushFrameDerived(absl::MakeConstSpan(empty_frame));
 }
 

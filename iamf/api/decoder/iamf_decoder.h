@@ -16,55 +16,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
-#include "iamf_tools_api_types.h"
+#include "iamf/include/iamf_tools/iamf_decoder_interface.h"
+#include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 
 namespace iamf_tools {
 namespace api {
 
-/*!\brief The class and entrypoint for decoding IAMF bitstreams.
- * WARNING: API is currently in flux and will change.
+/*!\brief A wrapper for decoding IAMF.
  *
- * The functions below constitute our IAMF Iterative Decoder API. Below is a
- * sample usage of the API.
- *
- * Reconfigurable Standalone IAMF Usage
- *
- * IamfDecoderSettings settings = {
- *   .requested_layout = OutputLayout::kItu2051_SoundSystemA_0_2_0,
- * };
- * StatusOr<IamfDecoder> decoder = IamfDecoder::Create(settings);
- * for chunk of data in iamf stream:
- *    decoder.Decode()
- *    if (IsDescriptorProcessingComplete()) {
- *      decoder.ConfigureOutputSampleType(output_sample_type)
- *    }
- * for chunk of data in iamf stream:
- *    decoder.Decode(chunk)
- *    while (decoder.IsTemporalUnitAvailable()) {
- *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
- *      Playback(output_buffer)
- *    }
- * if (end_of_stream):
- *    decoder.SignalEndOfStream()
- *    // Get remaining audio
- *    while (decoder.IsTemporalUnitAvailable()) {
- *      decoder.GetOutputTemporalUnit(output_buffer, bytes_written)
- *      Playback(output_buffer)
- *    }
- * decoder.Close();
+ * !WARNING! Do not depend on this class directly.
+ * Use the IamfDecoderFactory to produce a pointer to an IamfDecoderInterface.
  */
-class IamfDecoder {
+class IamfDecoder : public api::IamfDecoderInterface {
  public:
   /*!\brief Settings for the `IamfDecoder`. */
   struct Settings {
-    // Specifies the desired output layout. This layout will be used so long as
-    // it is present in the Descriptor OBUs that are provided. If not, after
-    // `IsDescriptorProcessingComplete` returns true, a default layout will have
-    // been selected and retrievable via `GetOutputLayout`.
-    OutputLayout requested_layout = OutputLayout::kItu2051_SoundSystemA_0_2_0;
+    // Specifies the desired output Mix Presentation ID and/or layout.
+    //
+    // See MixRequest struct for details on how the contents are
+    // used and prioritized.
+    //
+    // The resulting Mix Presentation ID and layout will be retrievable after
+    // Descriptor OBUs have been processed.
+    RequestedMix requested_mix;
 
     // Specify a different ordering for the output samples.  Only specific
     // orderings are available, custom or granular control is not possible.
@@ -82,6 +60,10 @@ class IamfDecoder {
     std::unordered_set<ProfileVersion> requested_profile_versions = {
         ProfileVersion::kIamfSimpleProfile, ProfileVersion::kIamfBaseProfile,
         ProfileVersion::kIamfBaseEnhancedProfile};
+
+    // Specifies the desired bit depth for the output samples.
+    OutputSampleType requested_output_sample_type =
+        OutputSampleType::kInt32LittleEndian;
   };
 
   // Dtor cannot be inline (so it must be declared and defined in the source
@@ -143,7 +125,8 @@ class IamfDecoder {
    * \param input_buffer_size Size in bytes of the input buffer.
    * \return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus Decode(const uint8_t* input_buffer, size_t input_buffer_size);
+  IamfStatus Decode(const uint8_t* input_buffer,
+                    size_t input_buffer_size) override;
 
   /*!\brief Outputs the next temporal unit of decoded audio.
    *
@@ -166,7 +149,7 @@ class IamfDecoder {
    */
   IamfStatus GetOutputTemporalUnit(uint8_t* output_buffer,
                                    size_t output_buffer_size,
-                                   size_t& bytes_written);
+                                   size_t& bytes_written) override;
 
   /*!\brief Returns true iff a decoded temporal unit is available.
    *
@@ -175,7 +158,7 @@ class IamfDecoder {
    *
    * \return true iff a decoded temporal unit is available.
    */
-  bool IsTemporalUnitAvailable() const;
+  bool IsTemporalUnitAvailable() const override;
 
   /*!\brief Returns true iff the descriptor OBUs have been parsed.
    *
@@ -184,22 +167,22 @@ class IamfDecoder {
    *
    * \return true iff the Descriptor OBUs have been parsed.
    */
-  bool IsDescriptorProcessingComplete() const;
+  bool IsDescriptorProcessingComplete() const override;
 
   /*!\brief Gets the layout that will be used to render the audio.
    *
    * The actual Layout used for rendering may not the same as requested when
-   * creating the IamfDecoder, if the requested Layout could not be used.
-   * This function allows verifying the actual Layout used after Descriptor OBU
-   * parsing is complete.
+   * creating the IamfDecoder, if the requested ID was invalid or the Layout
+   * could not be used. This function allows verifying the actual Layout used
+   * after Descriptor OBU parsing is complete.
    *
-   * This function can only be used after all Descriptor OBUs have been parsed,
-   * i.e. IsDescriptorProcessingComplete() returns true.
+   * N.B.: This function can only be used after all Descriptor OBUs have been
+   * parsed, i.e. IsDescriptorProcessingComplete() returns true.
    *
-   * \param output_layout Output param for the layout upon success.
+   * \param output_selected_mix Output param for the mix upon success.
    * \return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus GetOutputLayout(OutputLayout& output_layout) const;
+  IamfStatus GetOutputMix(SelectedMix& output_selected_mix) const override;
 
   /*!\brief Gets the number of output channels.
    *
@@ -210,7 +193,7 @@ class IamfDecoder {
    * upon success.
    * \return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus GetNumberOfOutputChannels(int& output_num_channels) const;
+  IamfStatus GetNumberOfOutputChannels(int& output_num_channels) const override;
 
   /*!\brief Returns the current OutputSampleType.
    *
@@ -220,7 +203,7 @@ class IamfDecoder {
    * This function can only be used after all Descriptor OBUs have been parsed,
    * i.e. IsDescriptorProcessingComplete() returns true.
    */
-  OutputSampleType GetOutputSampleType() const;
+  OutputSampleType GetOutputSampleType() const override;
 
   /*!\brief Gets the sample rate.
    *
@@ -230,7 +213,7 @@ class IamfDecoder {
    * \param output_sample_rate Output param for the sample rate upon success.
    * \return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus GetSampleRate(uint32_t& output_sample_rate) const;
+  IamfStatus GetSampleRate(uint32_t& output_sample_rate) const override;
 
   /*!\brief Gets the number of samples per frame.
    *
@@ -244,30 +227,12 @@ class IamfDecoder {
    * \param output_frame_size Output param for the frame size upon success.
    * \return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus GetFrameSize(uint32_t& output_frame_size) const;
+  IamfStatus GetFrameSize(uint32_t& output_frame_size) const override;
 
   /*!\brief Resets the decoder to a clean state ready to decode new data.
    *
    * A clean state refers to a state in which descriptors OBUs have been parsed,
    * but no other data has been parsed.
-   *
-   * This function can only be used after all Descriptor OBUs have been parsed,
-   * i.e. IsDescriptorProcessingComplete() returns true.
-   *
-   * This function will result in all decoded temporal units that have not been
-   * retrieved by GetOutputTemporalUnit() to be lost. It will also result in any
-   * pending data in the internal buffer being lost.
-   *
-   * return Ok status upon success. Other specific statuses on failure.
-   */
-  IamfStatus Reset();
-
-  /*!\brief Resets the decoder with a new layout and a clean state.
-   *
-   * A clean state refers to a state in which descriptors OBUs have been parsed,
-   * but no other data has been parsed. If possible, the decoder will use the
-   * new layout for decoding. To confirm the actual layout that will be used,
-   * GetOutputLayout() should be called before continuing to decode.
    *
    * This function can only be used if the decoder was created with
    * CreateFromDescriptors().
@@ -278,14 +243,35 @@ class IamfDecoder {
    *
    * return Ok status upon success. Other specific statuses on failure.
    */
-  IamfStatus ResetWithNewLayout(OutputLayout output_layout);
+  IamfStatus Reset() override;
+
+  /*!\brief Resets the decoder with a new RequestedMix and a clean state.
+   *
+   * A clean state refers to a state in which descriptors OBUs have been parsed,
+   * but no other data has been parsed.
+   *
+   * Useful for dynamic playback layout changes or changing Mix Presentation ID.
+   *
+   * This function can only be used if the decoder was created with
+   * IamfDecoderFactory::CreateFromDescriptors().
+   *
+   * This function will result in all decoded temporal units that have not been
+   * retrieved by GetOutputTemporalUnit() to be lost. It will also result in any
+   * pending data in the internal buffer being lost.
+   *
+   * return Ok status upon success. Other specific statuses on failure.
+   */
+  virtual IamfStatus ResetWithNewMix(const RequestedMix& requested_mix,
+                                     SelectedMix& selected_mix) override;
 
   /*!\brief Signals to the decoder that no more data will be provided.
    *
    * Decode cannot be called after this method has been called, unless Reset()
    * is called first.
+   *
+   * \return Ok status upon success. Other specific statuses on failure.
    */
-  void SignalEndOfDecoding();
+  IamfStatus SignalEndOfDecoding() override;
 
   /*!\brief Closes the decoder.
    *

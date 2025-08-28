@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = [
     "//iamf/cli/adm_to_user_metadata:__subpackages__",
 ])
@@ -32,12 +34,13 @@ cc_library(
         "//iamf/cli/ambisonic_encoder",
         "//iamf/common/utils:macros",
         "//iamf/common/utils:numeric_utils",
-        "//iamf/common/utils:sample_processing_utils",
+        "//iamf/obu:types",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@com_google_audio_to_tactile//:dsp",
         "@eigen",
     ],

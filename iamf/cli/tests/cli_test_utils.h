@@ -86,6 +86,7 @@ struct DecodeSpecification {
   uint32_t sub_mix_index;
   LoudspeakersSsConventionLayout::SoundSystem sound_system;
   uint32_t layout_index;
+  uint32_t sample_rate;
 };
 
 /*!\brief Adds a configurable LPCM `CodecConfigObu` to the output argument.
@@ -158,10 +159,12 @@ void AddFlacCodecConfigWithId(
  *
  * \param codec_config_id `codec_config_id` of the OBU to create.
  * \param num_samples_per_frame Number of samples per frame.
+ * \param sample_rate `sample_rate` of the OBU to create.
  * \param codec_config_obus Map to add the OBU to keyed by `codec_config_id`.
  */
 void AddAacCodecConfig(
     uint32_t codec_config_id, uint32_t num_samples_per_frame,
+    uint32_t sample_rate,
     absl::flat_hash_map<uint32_t, CodecConfigObu>& codec_config_obus);
 
 /*!\brief Adds a configurable AAC `CodecConfigObu` to the output argument.
@@ -293,11 +296,12 @@ WavReader CreateWavReaderExpectOk(const std::string& filename,
  *
  * \param labeled_frame Labeled frame to render.
  * \param renderer Renderer to use.
- * \param output_samples Vector to flush to.
+ * \param output_samples Vector to flush samples to, arranged in (channel, time)
+ *        axes.
  */
-void RenderAndFlushExpectOk(const LabeledFrame& labeled_frame,
-                            AudioElementRendererBase* renderer,
-                            std::vector<InternalSampleType>& output_samples);
+void RenderAndFlushExpectOk(
+    const LabeledFrame& labeled_frame, AudioElementRendererBase* renderer,
+    std::vector<std::vector<InternalSampleType>>& output_samples);
 
 /*!\brief Gets and cleans up unique file name based on the specified suffix.
  *
@@ -377,7 +381,7 @@ constexpr void Int32ToInternalSampleType(
                  Int32ToNormalizedFloatingPoint<InternalSampleType>);
 }
 
-/*!\brief Converts a span of `int32_t` to a span of `InternalSampleType`.
+/*!\brief Converts a span of `int32_t` to a vector of `InternalSampleType`.
  *
  * Useful because some test data is more readable as `int32_t`s, than in the
  * canonical `InternalSampleType` format.
@@ -387,6 +391,17 @@ constexpr void Int32ToInternalSampleType(
  */
 std::vector<InternalSampleType> Int32ToInternalSampleType(
     absl::Span<const int32_t> samples);
+
+/*!\brief Converts 2D vector of `int32_t` to one of `InternalSampleType`.
+ *
+ * Useful because some test data is more readable as `int32_t`s, than in the
+ * canonical `InternalSampleType` format.
+ *
+ * \param samples Vector of vectors of `int32_t`s to convert.
+ * \return Output vector of vectors of `InternalSampleType`s.
+ */
+std::vector<std::vector<InternalSampleType>> Int32ToInternalSampleType2D(
+    const std::vector<std::vector<int32_t>>& samples);
 
 /*!\brief Returns samples representing a sine wave.
  *
@@ -443,7 +458,7 @@ inline absl::Span<const absl::Span<const ValueType>> MakeSpanOfConstSpans(
  */
 enum class ZeroCrossingState { kUnknown, kPositive, kNegative };
 void AccumulateZeroCrossings(
-    absl::Span<const absl::Span<const int32_t>> channel_time_samples,
+    absl::Span<const absl::Span<const InternalSampleType>> channel_time_samples,
     std::vector<ZeroCrossingState>& zero_crossing_states,
     std::vector<int>& zero_crossing_counts);
 
@@ -456,7 +471,7 @@ void AccumulateZeroCrossings(
 absl::Status ReadFileToBytes(const std::filesystem::path& file_path,
                              std::vector<uint8_t>& buffer);
 
-/*!\brief Matches an `InternalSampleType` to an `int32_t`..
+/*!\brief Matches an `InternalSampleType` to an `int32_t`.
  *
  * Used with a tuple of `InternalSampleType` and `int32_t`.
  *
@@ -473,6 +488,25 @@ MATCHER(InternalSampleMatchesIntegralSample, "") {
                                         equivalent_integral_sample)
              .ok() &&
          equivalent_integral_sample == testing::get<1>(arg);
+}
+
+/*!\brief Matches two 2D `InternalSampleType` arrays.
+ *
+ * Used with a tuple of `InternalSampleType` and `int32_t`.
+ *
+ * For example:
+ *    std::vector<std::vector<InternalSampleType>> samples;
+ *    std::vector<std::vector<InternalSampleType>> expected_samples;
+ *    EXPECT_THAT(samples, InternalSamples2DMatch(expected_samples));
+ */
+MATCHER_P(InternalSamples2DMatch, expected, "") {
+  testing::ExplainMatchResult(testing::Eq(expected.size()), arg.size(),
+                              result_listener);
+  for (int c = 0; c < arg.size(); c++) {
+    return testing::ExplainMatchResult(
+        testing::Pointwise(testing::DoubleEq(), expected[c]), arg[c],
+        result_listener);
+  }
 }
 
 /*!\brief Matches a tag that is the build information of the IAMF encoder.
@@ -504,10 +538,10 @@ class MockSampleProcessor : public SampleProcessorBase {
       : SampleProcessorBase(max_input_samples_per_frame, num_channels,
                             max_output_samples_per_frame) {}
 
-  MOCK_METHOD(
-      absl::Status, PushFrameDerived,
-      (absl::Span<const absl::Span<const int32_t>> channel_time_samples),
-      (override));
+  MOCK_METHOD(absl::Status, PushFrameDerived,
+              (absl::Span<const absl::Span<const InternalSampleType>>
+                   channel_time_samples),
+              (override));
 
   MOCK_METHOD(absl::Status, FlushDerived, (), (override));
 };
@@ -528,8 +562,9 @@ class EverySecondTickResampler : public SampleProcessorBase {
    * \param channel_time_samples Samples to push arranged in (channel, time).
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status PushFrameDerived(absl::Span<const absl::Span<const int32_t>>
-                                    channel_time_samples) override;
+  absl::Status PushFrameDerived(
+      absl::Span<const absl::Span<const InternalSampleType>>
+          channel_time_samples) override;
 
   /*!\brief Signals to close the resampler and flush any remaining samples.
    *
@@ -572,8 +607,9 @@ class OneFrameDelayer : public SampleProcessorBase {
    * \param channel_time_samples Samples to push arranged in (channel, time).
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status PushFrameDerived(absl::Span<const absl::Span<const int32_t>>
-                                    channel_time_samples) override;
+  absl::Status PushFrameDerived(
+      absl::Span<const absl::Span<const InternalSampleType>>
+          channel_time_samples) override;
 
   /*!\brief Signals to close the resampler and flush any remaining samples.
    *
@@ -582,7 +618,7 @@ class OneFrameDelayer : public SampleProcessorBase {
   absl::Status FlushDerived() override;
 
   // Buffer to track the delayed samples.
-  std::vector<std::vector<int32_t>> delayed_samples_;
+  std::vector<std::vector<InternalSampleType>> delayed_samples_;
   size_t num_delayed_ticks_ = 0;
 };
 
@@ -603,10 +639,10 @@ class MockLoudnessCalculator : public LoudnessCalculatorBase {
  public:
   MockLoudnessCalculator() : LoudnessCalculatorBase() {}
 
-  MOCK_METHOD(
-      absl::Status, AccumulateLoudnessForSamples,
-      (absl::Span<const absl::Span<const int32_t>> channel_time_samples),
-      (override));
+  MOCK_METHOD(absl::Status, AccumulateLoudnessForSamples,
+              (absl::Span<const absl::Span<const InternalSampleType>>
+                   channel_time_samples),
+              (override));
 
   MOCK_METHOD(absl::StatusOr<LoudnessInfo>, QueryLoudness, (),
               (const, override));

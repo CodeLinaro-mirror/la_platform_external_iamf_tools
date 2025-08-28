@@ -16,7 +16,9 @@ import "iamf/cli/proto/obu_header.proto";
 import "iamf/cli/proto/parameter_data.proto";
 
 message ParameterDataExtension {
-  uint32 parameter_data_size = 1;
+  // `parameter_data_size` is ignored. The value in the bitstream is inferred
+  // based on the size of `parameter_data_bytes`.
+  uint32 parameter_data_size = 1 [deprecated = true];
   bytes parameter_data_bytes = 2;
 }
 
@@ -34,7 +36,9 @@ message ParameterSubblock {
 message ParameterBlockObuMetadata {
   uint32 parameter_id = 1;
   uint32 duration = 2;
-  uint32 num_subblocks = 3;
+  // `num_subblocks` is ignored. The value in the bitstream is inferred based on
+  // the number of `subblocks`.
+  uint32 num_subblocks = 3 [deprecated = true];
   uint32 constant_subblock_duration = 4;
   repeated ParameterSubblock subblocks = 5;
   int64 start_timestamp = 6;

@@ -119,7 +119,7 @@ void AddOpusCodecConfigWithIdAndPreSkip(
   // Initialize the Codec Config OBU.
   ASSERT_EQ(codec_config_obus.find(codec_config_id), codec_config_obus.end());
 
-  CodecConfigObu obu(
+  auto codec_config = CodecConfigObu::Create(
       ObuHeader(), codec_config_id,
       {.codec_id = CodecConfig::kCodecIdOpus,
        .num_samples_per_frame = 960,
@@ -127,8 +127,9 @@ void AddOpusCodecConfigWithIdAndPreSkip(
        .decoder_config = OpusDecoderConfig{.version_ = 1,
                                            .pre_skip_ = pre_skip,
                                            .input_sample_rate_ = kSampleRate}});
-  ASSERT_THAT(obu.Initialize(), IsOk());
-  codec_config_obus.emplace(codec_config_id, std::move(obu));
+  ASSERT_THAT(codec_config, IsOk());
+
+  codec_config_obus.emplace(codec_config_id, *std::move(codec_config));
 }
 
 TEST(GetNumberOfSamplesToDelayAtStart,
@@ -386,7 +387,13 @@ void FlushAudioFrameGeneratorExpectOk(
     std::list<AudioFrameWithData>& output_audio_frames) {
   while (audio_frame_generator.GeneratingFrames()) {
     std::list<AudioFrameWithData> temp_audio_frames;
-    EXPECT_THAT(audio_frame_generator.OutputFrames(temp_audio_frames), IsOk());
+    auto status = audio_frame_generator.OutputFrames(temp_audio_frames);
+    EXPECT_THAT(status, IsOk());
+
+    // Avoid infinite loops when outputting frames failed.
+    if (!status.ok()) {
+      break;
+    }
     output_audio_frames.splice(output_audio_frames.end(), temp_audio_frames);
   }
 }
@@ -1174,9 +1181,7 @@ TEST(AudioFrameGenerator, ManyFramesThreaded) {
   // Vector backing the samples passed to `audio_frame_generator`.
   const int kFrameSize = 8;
   std::vector<std::vector<InternalSampleType>> all_samples(kNumFrames);
-  std::vector<std::vector<int32_t>> expected_samples(kNumFrames);
   for (int32_t i = 0; i < kNumFrames; ++i) {
-    expected_samples[i].resize(kFrameSize, i);
     all_samples[i].resize(
         kFrameSize, Int32ToNormalizedFloatingPoint<InternalSampleType>(i));
   }
@@ -1214,13 +1219,13 @@ TEST(AudioFrameGenerator, ManyFramesThreaded) {
     constexpr int kFirstSample = 0;
     constexpr int kLeftChannel = 0;
     constexpr int kRightChannel = 1;
-    const int32_t expected_sample = expected_samples[index][kFirstSample];
+    const auto expected_sample = all_samples[index][kFirstSample];
     // The timestamp should count up by the number of samples in each frame.
     EXPECT_EQ(audio_frame.start_timestamp, kFrameSize * index);
-    ASSERT_TRUE(audio_frame.pcm_samples.has_value());
-    EXPECT_EQ((*audio_frame.pcm_samples)[kFirstSample][kLeftChannel],
+    ASSERT_TRUE(audio_frame.encoded_samples.has_value());
+    EXPECT_EQ((*audio_frame.encoded_samples)[kFirstSample][kLeftChannel],
               expected_sample);
-    EXPECT_EQ((*audio_frame.pcm_samples)[kFirstSample][kRightChannel],
+    EXPECT_EQ((*audio_frame.encoded_samples)[kFirstSample][kRightChannel],
               expected_sample);
     index++;
   }
