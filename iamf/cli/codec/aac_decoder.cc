@@ -16,36 +16,37 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include <variant>
 #include <vector>
-
-#include "absl/functional/any_invocable.h"
-#include "absl/log/check.h"
-#include "absl/memory/memory.h"
-#include "absl/types/span.h"
-#include "iamf/common/utils/sample_processing_utils.h"
 
 // This symbol conflicts with `aacenc_lib.h` and `aacdecoder_lib.h`.
 #ifdef IS_LITTLE_ENDIAN
 #undef IS_LITTLE_ENDIAN
 #endif
 
+#include "absl/functional/any_invocable.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "iamf/cli/codec/aac_utils.h"
 #include "iamf/cli/codec/decoder_base.h"
 #include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/sample_processing_utils.h"
 #include "iamf/common/write_bit_buffer.h"
-#include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
+#include "iamf/obu/types.h"
 #include "libAACdec/include/aacdecoder_lib.h"
 #include "libSYS/include/machine_type.h"
 
 namespace iamf_tools {
 
 namespace {
+
+using ::absl::MakeConstSpan;
 
 // Converts an AAC_DECODER_ERROR to an absl::Status.
 absl::Status AacDecoderErrorToAbslStatus(AAC_DECODER_ERROR aac_error_code,
@@ -143,14 +144,8 @@ absl::Status ConfigureAacDecoder(const AacDecoderConfig& raw_aac_decoder_config,
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<DecoderBase>> AacDecoder::Create(
-    const CodecConfigObu& codec_config_obu, int num_channels) {
-  const AacDecoderConfig* decoder_config = std::get_if<AacDecoderConfig>(
-      &codec_config_obu.GetCodecConfig().decoder_config);
-  if (decoder_config == nullptr) {
-    return absl::InvalidArgumentError(
-        "CodecConfigObu does not contain an `AacDecoderConfig`.");
-  }
-
+    const AacDecoderConfig& decoder_config, int num_channels,
+    uint32_t num_samples_per_frame) {
   // Initialize the decoder.
   AAC_DECODER_INSTANCE* decoder =
       aacDecoder_Open(GetAacTransportationType(), /*nrOfLayers=*/1);
@@ -160,7 +155,7 @@ absl::StatusOr<std::unique_ptr<DecoderBase>> AacDecoder::Create(
   }
 
   const auto status =
-      ConfigureAacDecoder(*decoder_config, num_channels, decoder);
+      ConfigureAacDecoder(decoder_config, num_channels, decoder);
   if (!status.ok()) {
     aacDecoder_Close(decoder);
     return status;
@@ -170,8 +165,8 @@ absl::StatusOr<std::unique_ptr<DecoderBase>> AacDecoder::Create(
   LOG_FIRST_N(INFO, 1) << "Created an AAC decoder with "
                        << stream_info->numChannels << " channels.";
 
-  return absl::WrapUnique(new AacDecoder(
-      num_channels, codec_config_obu.GetNumSamplesPerFrame(), decoder));
+  return absl::WrapUnique(
+      new AacDecoder(num_channels, num_samples_per_frame, decoder));
 }
 
 AacDecoder::~AacDecoder() {
@@ -181,13 +176,14 @@ AacDecoder::~AacDecoder() {
 }
 
 absl::Status AacDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame) {
+    absl::Span<const uint8_t> encoded_frame) {
   // Transform the data and feed it to the decoder.
-  std::vector<UCHAR> input_data(encoded_frame.size());
-  std::transform(encoded_frame.begin(), encoded_frame.end(), input_data.begin(),
+  raws_frame_to_libfdk_aac_.resize(encoded_frame.size());
+  std::transform(encoded_frame.begin(), encoded_frame.end(),
+                 raws_frame_to_libfdk_aac_.begin(),
                  [](uint8_t c) { return static_cast<UCHAR>(c); });
 
-  UCHAR* in_buffer[] = {input_data.data()};
+  UCHAR* in_buffer[] = {raws_frame_to_libfdk_aac_.data()};
   const UINT buffer_size[] = {static_cast<UINT>(encoded_frame.size())};
   UINT bytes_valid = static_cast<UINT>(encoded_frame.size());
   RETURN_IF_NOT_OK(AacDecoderErrorToAbslStatus(
@@ -199,25 +195,27 @@ absl::Status AacDecoder::DecodeAudioFrame(
         "complete AAC frame.");
   }
 
-  // TODO(b/382197581): Avoid re-allocations of `output_pcm`.
   // Retrieve the decoded frame. `fdk_aac` decodes to INT_PCM (usually 16-bits)
   // samples with channels interlaced.
-  std::vector<INT_PCM> output_pcm(num_samples_per_channel_ * num_channels_);
   RETURN_IF_NOT_OK(AacDecoderErrorToAbslStatus(
-      aacDecoder_DecodeFrame(decoder_, output_pcm.data(), output_pcm.size(),
+      aacDecoder_DecodeFrame(decoder_, interleaved_pcm_from_libfdk_aac_.data(),
+                             interleaved_pcm_from_libfdk_aac_.size(),
                              /*flags=*/0),
       "Failed on `aacDecoder_DecodeFrame`: "));
 
   // Arrange the interleaved data in (channel, time) axes with samples stored in
   // the upper bytes of an `int32_t`.
-  const absl::AnyInvocable<absl::Status(INT_PCM, int32_t&) const>
-      kAacInternalTypeToInt32 = [](INT_PCM input, int32_t& output) {
-        output = static_cast<int32_t>(input) << (32 - GetFdkAacBitDepth());
-        return absl::OkStatus();
-      };
-  return ConvertInterleavedToChannelTime(absl::MakeConstSpan(output_pcm),
-                                         num_channels_, kAacInternalTypeToInt32,
-                                         decoded_samples_);
+  const auto fdk_aac_bit_depth = GetFdkAacBitDepth();
+  const absl::AnyInvocable<absl::Status(INT_PCM, InternalSampleType&) const>
+      kAacInternalTypeToSampleType =
+          [](INT_PCM input, InternalSampleType& output) {
+            output = Int32ToNormalizedFloatingPoint<InternalSampleType>(
+                static_cast<int32_t>(input) << (32 - fdk_aac_bit_depth));
+            return absl::OkStatus();
+          };
+  return ConvertInterleavedToChannelTime(
+      MakeConstSpan(interleaved_pcm_from_libfdk_aac_), num_channels_,
+      decoded_samples_, kAacInternalTypeToSampleType);
 }
 
 }  // namespace iamf_tools

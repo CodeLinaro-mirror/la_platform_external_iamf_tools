@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <variant>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -26,25 +25,21 @@
 #include "iamf/cli/codec/decoder_base.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/numeric_utils.h"
-#include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/lpcm_decoder_config.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
-absl::StatusOr<std::unique_ptr<DecoderBase>> LpcmDecoder::Create(
-    const CodecConfigObu& codec_config_obu, int num_channels) {
-  const LpcmDecoderConfig* decoder_config = std::get_if<LpcmDecoderConfig>(
-      &codec_config_obu.GetCodecConfig().decoder_config);
-  if (decoder_config == nullptr) {
-    return absl::InvalidArgumentError(
-        "CodecConfigObu does not contain an `LpcmDecoderConfig`.");
-  }
+// At this low-level, the roll distance is not important.
+constexpr int16_t kCorrectAudioRollDistance = 0;
 
-  RETURN_IF_NOT_OK(decoder_config->Validate(
-      codec_config_obu.GetCodecConfig().audio_roll_distance));
+absl::StatusOr<std::unique_ptr<DecoderBase>> LpcmDecoder::Create(
+    const LpcmDecoderConfig& decoder_config, int num_channels,
+    uint32_t num_samples_per_frame) {
+  RETURN_IF_NOT_OK(decoder_config.Validate(kCorrectAudioRollDistance));
 
   uint8_t bit_depth;
-  auto status = decoder_config->GetBitDepthToMeasureLoudness(bit_depth);
+  auto status = decoder_config.GetBitDepthToMeasureLoudness(bit_depth);
   if (!status.ok()) {
     return status;
   }
@@ -52,18 +47,18 @@ absl::StatusOr<std::unique_ptr<DecoderBase>> LpcmDecoder::Create(
   // the bit depth, but we defensively check that it's a multiple of 8 here.
   if (bit_depth % 8 != 0) {
     return absl::InvalidArgumentError(
-        absl::StrCat("LpcmDecoder::DecodeAudioFrame() failed: bit_depth (",
-                     bit_depth, ") is not a multiple of 8."));
+        absl::StrCat("LpcmDecoder::Create() failed: bit_depth (", bit_depth,
+                     ") is not a multiple of 8."));
   }
   const size_t bytes_per_sample = bit_depth / 8;
 
-  return absl::WrapUnique(
-      new LpcmDecoder(num_channels, codec_config_obu.GetNumSamplesPerFrame(),
-                      decoder_config->IsLittleEndian(), bytes_per_sample));
+  return absl::WrapUnique(new LpcmDecoder(num_channels, num_samples_per_frame,
+                                          decoder_config.IsLittleEndian(),
+                                          bytes_per_sample));
 }
 
 absl::Status LpcmDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame) {
+    absl::Span<const uint8_t> encoded_frame) {
   // Make sure we have a valid number of bytes.  There needs to be an equal
   // number of samples for each channel.
   if (encoded_frame.size() % bytes_per_sample_ != 0 ||
@@ -99,7 +94,8 @@ absl::Status LpcmDecoder::DecodeAudioFrame(
       } else {
         RETURN_IF_NOT_OK(BigEndianBytesToInt32(input_bytes, sample_result));
       }
-      decoded_samples_for_channel[t] = sample_result;
+      decoded_samples_for_channel[t] =
+          Int32ToNormalizedFloatingPoint<InternalSampleType>(sample_result);
     }
   }
   return absl::OkStatus();

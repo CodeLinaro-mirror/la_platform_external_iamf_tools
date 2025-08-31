@@ -36,6 +36,7 @@
 #include "iamf/cli/cli_util.h"
 #include "iamf/cli/demixing_module.h"
 #include "iamf/cli/global_timing_module.h"
+#include "iamf/cli/obu_processor_utils.h"
 #include "iamf/cli/obu_with_data_generator.h"
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/parameters_manager.h"
@@ -68,6 +69,7 @@ constexpr size_t kSmallestAcceptedCodecConfigSize = 8;
 
 // Gets a CodecConfigObu from `read_bit_buffer` and stores it into
 // `codec_config_obu_map`, using the `codec_config_id` as the unique key.
+[[deprecated("Remove when class starts using DescriptorObuParser")]]
 absl::Status GetAndStoreCodecConfigObu(
     const ObuHeader& header, int64_t payload_size,
     absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obu_map,
@@ -94,6 +96,7 @@ absl::Status GetAndStoreCodecConfigObu(
   return absl::OkStatus();
 }
 
+[[deprecated("Remove when class starts using DescriptorObuParser")]]
 absl::Status GetAndStoreAudioElementObu(
     const ObuHeader& header, int64_t payload_size,
     absl::flat_hash_map<DecodedUleb128, AudioElementObu>& audio_element_obu_map,
@@ -109,6 +112,7 @@ absl::Status GetAndStoreAudioElementObu(
   return absl::OkStatus();
 }
 
+[[deprecated("Remove when class starts using DescriptorObuParser")]]
 absl::Status GetAndStoreMixPresentationObu(
     const ObuHeader& header, int64_t payload_size,
     std::list<MixPresentationObu>& mix_presentation_obus,
@@ -242,44 +246,6 @@ std::list<MixPresentationObu*> GetSupportedMixPresentations(
   }
   LOG(INFO) << "Filtered mix presentations: " << cumulative_error_message;
   return supported_mix_presentations;
-}
-
-// Searches for the desired layout in the supported mix presentations. If found,
-// the output_playback_layout is the same as the desired_layout. Otherwise, we
-// default to the first layout in the first unsupported mix presentation.
-absl::StatusOr<MixPresentationObu*> GetPlaybackLayoutAndMixPresentation(
-    const std::list<MixPresentationObu*>& supported_mix_presentations,
-    const Layout& desired_layout, Layout& output_playback_layout) {
-  for (const auto& mix_presentation : supported_mix_presentations) {
-    for (const auto& sub_mix : mix_presentation->sub_mixes_) {
-      for (const auto& layout : sub_mix.layouts) {
-        if (layout.loudness_layout == desired_layout) {
-          output_playback_layout = layout.loudness_layout;
-          return mix_presentation;
-        }
-      }
-    }
-  }
-  // If we get here, we didn't find the desired layout in any of the supported
-  // mix presentations. We default to the first layout in the first mix
-  // presentation.
-  MixPresentationObu* output_mix_presentation =
-      supported_mix_presentations.front();
-  if (output_mix_presentation->sub_mixes_.empty()) {
-    return absl::InvalidArgumentError(
-        "No submixes found in the first mix presentation.");
-  }
-  if (output_mix_presentation->sub_mixes_.front().layouts.empty()) {
-    return absl::InvalidArgumentError(
-        "No layouts found in the first submix of the first mix presentation.");
-  }
-  // We add a "virtual" layout here that matches the desired layout if it wasn't
-  // found. This allows us to decode to the user-requested layout even if it
-  // wasn't present in the mix presentation.
-  output_mix_presentation->sub_mixes_.front().layouts.front().loudness_layout =
-      desired_layout;
-  output_playback_layout = desired_layout;
-  return output_mix_presentation;
 }
 
 // Resets the buffer to `start_position` and sets the `insufficient_data`
@@ -676,11 +642,12 @@ std::unique_ptr<ObuProcessor> ObuProcessor::Create(
 
 std::unique_ptr<ObuProcessor> ObuProcessor::CreateForRendering(
     const absl::flat_hash_set<ProfileVersion>& desired_profile_versions,
-    const Layout& desired_layout,
+    const std::optional<uint32_t>& desired_mix_presentation_id,
+    const std::optional<Layout>& desired_layout,
     const RenderingMixPresentationFinalizer::SampleProcessorFactory&
         sample_processor_factory,
     bool is_exhaustive_and_exact, ReadBitBuffer* read_bit_buffer,
-    Layout& output_layout, bool& output_insufficient_data) {
+    bool& output_insufficient_data) {
   // `output_insufficient_data` indicates a specific error condition and so is
   // true iff we've received valid data but need more of it.
   output_insufficient_data = false;
@@ -697,8 +664,8 @@ std::unique_ptr<ObuProcessor> ObuProcessor::CreateForRendering(
   }
 
   if (const auto status = obu_processor->InitializeForRendering(
-          desired_profile_versions, desired_layout, sample_processor_factory,
-          output_layout);
+          desired_profile_versions, desired_mix_presentation_id, desired_layout,
+          sample_processor_factory);
       !status.ok()) {
     LOG(ERROR) << status;
     return nullptr;
@@ -720,12 +687,27 @@ absl::StatusOr<uint32_t> ObuProcessor::GetOutputFrameSize() const {
   return *output_frame_size_;
 }
 
+absl::StatusOr<DecodedUleb128> ObuProcessor::GetOutputMixPresentationId()
+    const {
+  if (rendering_) {
+    return decoding_layout_info_.mix_presentation_id;
+  }
+  return absl::FailedPreconditionError("Not initialized for rendering.");
+}
+
+absl::StatusOr<Layout> ObuProcessor::GetOutputLayout() const {
+  if (rendering_) {
+    return decoding_layout_info_.layout;
+  }
+  return absl::FailedPreconditionError("Not initialized for rendering.");
+}
+
 absl::Status ObuProcessor::InitializeForRendering(
     const absl::flat_hash_set<ProfileVersion>& desired_profile_versions,
-    const Layout& desired_layout,
+    const std::optional<uint32_t>& desired_mix_presentation_id,
+    const std::optional<Layout>& desired_layout,
     const RenderingMixPresentationFinalizer::SampleProcessorFactory&
-        sample_processor_factory,
-    Layout& output_layout) {
+        sample_processor_factory) {
   if (mix_presentations_.empty()) {
     return absl::InvalidArgumentError("No mix presentation OBUs found.");
   }
@@ -750,42 +732,33 @@ absl::Status ObuProcessor::InitializeForRendering(
     demixing_module_.emplace(*std::move(temp_demixing_module));
   }
 
-  // TODO(b/340289717): Add a way to select the mix presentation if multiple
-  //                    are supported.
   const std::list<MixPresentationObu*> supported_mix_presentations =
       GetSupportedMixPresentations(desired_profile_versions, audio_elements_,
                                    mix_presentations_);
   if (supported_mix_presentations.empty()) {
     return absl::NotFoundError("No supported mix presentation OBUs found.");
   }
-  Layout playback_layout;
-  auto mix_presentation_to_render = GetPlaybackLayoutAndMixPresentation(
-      supported_mix_presentations, desired_layout, output_layout);
-  if (!mix_presentation_to_render.ok()) {
-    return mix_presentation_to_render.status();
+  absl::StatusOr<SelectedMixPresentation> selected_mix_presentation =
+      FindMixPresentationAndLayout(supported_mix_presentations, desired_layout,
+                                   desired_mix_presentation_id);
+  if (!selected_mix_presentation.ok()) {
+    return selected_mix_presentation.status();
   }
-  int playback_sub_mix_index;
-  int playback_layout_index;
-  RETURN_IF_NOT_OK(GetIndicesForLayout(
-      (*mix_presentation_to_render)->sub_mixes_, output_layout,
-      playback_sub_mix_index, playback_layout_index));
   decoding_layout_info_ = {
-      .mix_presentation_id =
-          (*mix_presentation_to_render)->GetMixPresentationId(),
-      .sub_mix_index = playback_sub_mix_index,
-      .layout_index = playback_layout_index,
+      .mix_presentation_id = selected_mix_presentation->mix_presentation_id,
+      .layout = selected_mix_presentation->output_layout,
+      .sub_mix_index = selected_mix_presentation->sub_mix_index,
+      .layout_index = selected_mix_presentation->layout_index,
   };
-  auto forward_on_desired_layout =
-      [&sample_processor_factory, mix_presentation_to_render,
-       playback_sub_mix_index, playback_layout_index](
+  auto builds_processor_only_for_selected_mix =
+      [&sample_processor_factory, &selected_mix_presentation](
           DecodedUleb128 mix_presentation_id, int sub_mix_index,
           int layout_index, const Layout& layout, int num_channels,
           int sample_rate, int bit_depth, size_t max_input_samples_per_frame)
       -> std::unique_ptr<SampleProcessorBase> {
-    if (mix_presentation_id ==
-            (*mix_presentation_to_render)->GetMixPresentationId() &&
-        playback_sub_mix_index == sub_mix_index &&
-        playback_layout_index == layout_index) {
+    if (mix_presentation_id == selected_mix_presentation->mix_presentation_id &&
+        sub_mix_index == selected_mix_presentation->sub_mix_index &&
+        layout_index == selected_mix_presentation->layout_index) {
       return sample_processor_factory(
           mix_presentation_id, sub_mix_index, layout_index, layout,
           num_channels, sample_rate, bit_depth, max_input_samples_per_frame);
@@ -801,58 +774,38 @@ absl::Status ObuProcessor::InitializeForRendering(
       RenderingMixPresentationFinalizer::Create(
           /*renderer_factory=*/&renderer_factory,
           /*loudness_calculator_factory=*/nullptr, audio_elements_,
-          forward_on_desired_layout, mix_presentations_);
+          builds_processor_only_for_selected_mix, mix_presentations_);
   if (!mix_presentation_finalizer.ok()) {
     return mix_presentation_finalizer.status();
   }
   mix_presentation_finalizer_.emplace(*std::move(mix_presentation_finalizer));
 
+  rendering_ = true;
   return absl::OkStatus();
-}
-
-absl::Status ObuProcessor::ProcessTemporalUnitObu(
-    std::optional<AudioFrameWithData>& output_audio_frame_with_data,
-    std::optional<ParameterBlockWithData>& output_parameter_block_with_data,
-    std::optional<TemporalDelimiterObu>& output_temporal_delimiter,
-    bool& continue_processing) {
-  if (!parameters_manager_.has_value()) {
-    return absl::InvalidArgumentError(
-        "Parameters manager is not constructed; "
-        "remember to call `Initialize()` first.");
-  }
-  if (global_timing_module_ == nullptr) {
-    return absl::InvalidArgumentError(
-        "Global timing module is not constructed; "
-        "remember to call `Initialize()` first.");
-  }
-  if (read_bit_buffer_ == nullptr) {
-    return absl::InvalidArgumentError(
-        "Read bit buffer is not constructed; "
-        "remember to call `Initialize()` first.");
-  }
-
-  return ObuProcessor::ProcessTemporalUnitObu(
-      audio_elements_, codec_config_obus_, substream_id_to_audio_element_,
-      param_definition_variants_, *parameters_manager_, *read_bit_buffer_,
-      *global_timing_module_, output_audio_frame_with_data,
-      output_parameter_block_with_data, output_temporal_delimiter,
-      continue_processing);
 }
 
 absl::Status ObuProcessor::ProcessTemporalUnit(
     bool eos_is_end_of_sequence,
     std::optional<OutputTemporalUnit>& output_temporal_unit,
     bool& continue_processing) {
+  // Various checks that should have been handled by the factory functions.
+  CHECK(parameters_manager_.has_value());
+  CHECK(global_timing_module_ != nullptr);
+  CHECK(read_bit_buffer_ != nullptr);
+
   continue_processing = true;
   while (continue_processing) {
     std::optional<AudioFrameWithData> audio_frame_with_data;
     std::optional<ParameterBlockWithData> parameter_block_with_data;
     std::optional<TemporalDelimiterObu> temporal_delimiter;
-    RETURN_IF_NOT_OK(
-        ProcessTemporalUnitObu(audio_frame_with_data, parameter_block_with_data,
-                               temporal_delimiter, continue_processing));
+    RETURN_IF_NOT_OK(ProcessTemporalUnitObu(
+        audio_elements_, codec_config_obus_, substream_id_to_audio_element_,
+        param_definition_variants_, *parameters_manager_, *read_bit_buffer_,
+        *global_timing_module_, audio_frame_with_data,
+        parameter_block_with_data, temporal_delimiter, continue_processing));
 
     // Collect OBUs into a temporal unit.
+    bool delimiter_end_condition = false;
     if (audio_frame_with_data.has_value()) {
       TemporalUnitData::AddDataToCorrectTemporalUnit(
           current_temporal_unit_, next_temporal_unit_,
@@ -862,6 +815,9 @@ absl::Status ObuProcessor::ProcessTemporalUnit(
           current_temporal_unit_, next_temporal_unit_,
           *std::move(parameter_block_with_data));
     } else if (temporal_delimiter.has_value()) {
+      if (current_temporal_unit_.temporal_delimiter.has_value()) {
+        delimiter_end_condition = true;
+      }
       current_temporal_unit_.temporal_delimiter = *temporal_delimiter;
     }
 
@@ -870,12 +826,13 @@ absl::Status ObuProcessor::ProcessTemporalUnit(
     // - The end of sequence is reached.
     // - The timestamp has advanced (i.e. when the next temporal unit gets its
     //   timestamp).
-    // - A temporal delimiter is encountered.
-    // TODO(b/405943120): Stop creating buggy first "empty" temporal units when
-    //                    temporal delimiters are encountered.
+    // - A second temporal delimiter is encountered.
     if ((!continue_processing && eos_is_end_of_sequence) ||
-        next_temporal_unit_.timestamp.has_value() ||
-        current_temporal_unit_.temporal_delimiter.has_value()) {
+        next_temporal_unit_.timestamp.has_value() || delimiter_end_condition) {
+      if (current_temporal_unit_.audio_frames.empty() &&
+          current_temporal_unit_.parameter_blocks.empty()) {
+        break;
+      }
       output_temporal_unit = OutputTemporalUnit();
       output_temporal_unit->output_audio_frames =
           std::move(current_temporal_unit_.audio_frames);
@@ -896,9 +853,10 @@ absl::Status ObuProcessor::ProcessTemporalUnit(
 
 absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
     InternalTimestamp start_timestamp,
-    const std::list<AudioFrameWithData>& audio_frames,
     const std::list<ParameterBlockWithData>& parameter_blocks,
-    absl::Span<const absl::Span<const int32_t>>& output_rendered_pcm_samples) {
+    std::list<AudioFrameWithData>& audio_frames,
+    absl::Span<const absl::Span<const InternalSampleType>>&
+        output_rendered_samples) {
   if (audio_frames.empty()) {
     // Nothing to decode, render, or measure loudness of.
     return absl::OkStatus();
@@ -922,12 +880,7 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
 
   // Decode the temporal unit.
   std::optional<InternalTimestamp> end_timestamp;
-
-  // This resizing should happen only once per IA sequence, since all the
-  // temporal units should contain the same number of audio frames.
-  decoded_frames_for_temporal_unit_.resize(audio_frames.size());
-  auto decoded_frames_iter = decoded_frames_for_temporal_unit_.begin();
-  for (const auto& audio_frame : audio_frames) {
+  for (auto& audio_frame : audio_frames) {
     if (!end_timestamp.has_value()) {
       end_timestamp = audio_frame.end_timestamp;
     }
@@ -939,18 +892,12 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
                                        audio_frame.end_timestamp,
                                        "Audio frame has a different end "
                                        "timestamp than the temporal unit: "));
-    const auto& decoded_frame = audio_frame_decoder_->Decode(audio_frame);
-    if (!decoded_frame.ok()) {
-      return decoded_frame.status();
-    }
-    *decoded_frames_iter = std::move(*decoded_frame);
-    decoded_frames_iter++;
+    RETURN_IF_NOT_OK(audio_frame_decoder_->Decode(audio_frame));
   }
 
   // Reconstruct the temporal unit and store the result in the output map.
   const auto& decoded_labeled_frames_for_temporal_unit =
-      demixing_module_->DemixDecodedAudioSamples(
-          decoded_frames_for_temporal_unit_);
+      demixing_module_->DemixDecodedAudioSamples(audio_frames);
   if (!decoded_labeled_frames_for_temporal_unit.ok()) {
     return decoded_labeled_frames_for_temporal_unit.status();
   }
@@ -967,7 +914,7 @@ absl::Status ObuProcessor::RenderTemporalUnitAndMeasureLoudness(
   if (!rendered_samples.ok()) {
     return rendered_samples.status();
   }
-  output_rendered_pcm_samples = *rendered_samples;
+  output_rendered_samples = *rendered_samples;
 
   // TODO(b/379122580): Add a call to `FinalizePushingTemporalUnits`, then a
   //                    final call to `GetPostProcessedSamplesAsSpan` when there

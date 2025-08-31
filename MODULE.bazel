@@ -10,38 +10,38 @@ module(
 )
 
 # Bazel central registry dependencies.
-bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "rules_cc", version = "0.1.2")
 bazel_dep(name = "rules_license", version = "1.0.0")
 bazel_dep(
     name = "abseil-cpp",
-    version = "20240722.0.bcr.2",
+    version = "20240722.1",
     repo_name = "com_google_absl",
 )
 bazel_dep(
     name = "googletest",
-    version = "1.15.2",
+    version = "1.17.0",
     repo_name = "com_google_googletest",
 )
 bazel_dep(
     name = "protobuf",
-    version = "28.3",
+    version = "29.5",
     repo_name = "com_google_protobuf",
 )
 bazel_dep(
     name = "fuzztest",
-    version = "20241028.0",
+    version = "20250214.0",
     repo_name = "com_google_fuzztest",
 )
 bazel_dep(
     name = "google_benchmark",
-    version = "1.8.5",
+    version = "1.9.4",
     repo_name = "com_google_benchmark",
 )
 bazel_dep(
     name = "eigen",
     version = "3.4.0.bcr.3",
 )
-bazel_dep(name = "platforms", version = "0.0.11")
+bazel_dep(name = "platforms", version = "1.0.0")
 
 # Some modules are not yet available in the bazel central registry. We use git_repository for all of
 # them, and provide custom BUILD files for projects that are not bazel-native.
@@ -87,6 +87,6 @@ git_repository(
 git_repository(
     name = "libopus",
     build_file = "@//external:libopus.BUILD",
-    commit = "82ac57d9f1aaf575800cf17373348e45b7ce6c0d",
+    commit = "ddbe48383984d56acd9e1ab6a090c54ca6b735a6",
     remote = "https://gitlab.xiph.org/xiph/opus.git",
 )

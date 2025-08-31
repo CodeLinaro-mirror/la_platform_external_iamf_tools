@@ -13,18 +13,23 @@
 
 #include <memory>
 #include <utility>
+#include <variant>
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/codec/decoder_base.h"
 #include "iamf/cli/codec/lpcm_decoder.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/obu/codec_config.h"
+#include "iamf/obu/decoder_config/aac_decoder_config.h"
+#include "iamf/obu/decoder_config/lpcm_decoder_config.h"
+#include "iamf/obu/decoder_config/opus_decoder_config.h"
 
 // These defines are not part of an official API and are likely to change or be
 // removed.  Please do not depend on them.
@@ -47,17 +52,41 @@ namespace {
 
 absl::StatusOr<std::unique_ptr<DecoderBase>> CreateDecoder(
     const CodecConfigObu& codec_config, int num_channels) {
+  const auto* decoder_config = &codec_config.GetCodecConfig().decoder_config;
   switch (codec_config.GetCodecConfig().codec_id) {
     using enum CodecConfig::CodecId;
-    case kCodecIdLpcm:
-      return LpcmDecoder::Create(codec_config, num_channels);
+    case kCodecIdLpcm: {
+      auto* lpcm_decoder_config =
+          std::get_if<LpcmDecoderConfig>(decoder_config);
+      if (lpcm_decoder_config == nullptr) {
+        return absl::InvalidArgumentError(
+            "CodecConfigObu does not contain an `LpcmDecoderConfig`.");
+      }
+      return LpcmDecoder::Create(*lpcm_decoder_config, num_channels,
+                                 codec_config.GetNumSamplesPerFrame());
+    }
 #ifndef IAMF_TOOLS_DISABLE_OPUS_DECODER
-    case kCodecIdOpus:
-      return OpusDecoder::Create(codec_config, num_channels);
+    case kCodecIdOpus: {
+      auto* opus_decoder_config =
+          std::get_if<OpusDecoderConfig>(decoder_config);
+      if (opus_decoder_config == nullptr) {
+        return absl::InvalidArgumentError(
+            "CodecConfigObu does not contain an `OpusDecoderConfig`.");
+      }
+      return OpusDecoder::Create(*opus_decoder_config, num_channels,
+                                 codec_config.GetNumSamplesPerFrame());
+    }
 #endif
 #ifndef IAMF_TOOLS_DISABLE_AAC_DECODER
-    case kCodecIdAacLc:
-      return AacDecoder::Create(codec_config, num_channels);
+    case kCodecIdAacLc: {
+      auto* aac_decoder_config = std::get_if<AacDecoderConfig>(decoder_config);
+      if (aac_decoder_config == nullptr) {
+        return absl::InvalidArgumentError(
+            "CodecConfigObu does not contain an `AacDecoderConfig`.");
+      }
+      return AacDecoder::Create(*aac_decoder_config, num_channels,
+                                codec_config.GetNumSamplesPerFrame());
+    }
 #endif
 #ifndef IAMF_TOOLS_DISABLE_FLAC_DECODER
     case kCodecIdFlac:
@@ -103,8 +132,7 @@ absl::Status AudioFrameDecoder::InitDecodersForSubstreams(
   return absl::OkStatus();
 }
 
-absl::StatusOr<DecodedAudioFrame> AudioFrameDecoder::Decode(
-    const AudioFrameWithData& audio_frame) {
+absl::Status AudioFrameDecoder::Decode(AudioFrameWithData& audio_frame) {
   auto decoder_iter =
       substream_id_to_decoder_.find(audio_frame.obu.GetSubstreamId());
   if (decoder_iter == substream_id_to_decoder_.end() ||
@@ -116,23 +144,12 @@ absl::StatusOr<DecodedAudioFrame> AudioFrameDecoder::Decode(
   // Decode the samples with the specific decoder associated with this
   // substream.
   auto& decoder = *decoder_iter->second;
-  RETURN_IF_NOT_OK(decoder.DecodeAudioFrame(audio_frame.obu.audio_frame_));
+  RETURN_IF_NOT_OK(decoder.DecodeAudioFrame(
+      absl::MakeConstSpan(audio_frame.obu.audio_frame_)));
 
-  // Return a frame. Most fields are copied from the encoded frame.
-  return DecodedAudioFrame{
-      .substream_id = audio_frame.obu.GetSubstreamId(),
-      .start_timestamp = audio_frame.start_timestamp,
-      .end_timestamp = audio_frame.end_timestamp,
-      .samples_to_trim_at_end =
-          audio_frame.obu.header_.num_samples_to_trim_at_end,
-      .samples_to_trim_at_start =
-          audio_frame.obu.header_.num_samples_to_trim_at_start,
-      .decoded_samples = decoder.ValidDecodedSamples(),
-      .down_mixing_params = audio_frame.down_mixing_params,
-      .recon_gain_info_parameter_data =
-          audio_frame.recon_gain_info_parameter_data,
-      .audio_element_with_data = audio_frame.audio_element_with_data,
-  };
+  // Fill in the decoded samples.
+  audio_frame.decoded_samples = decoder.ValidDecodedSamples();
+  return absl::OkStatus();
 }
 
 }  // namespace iamf_tools

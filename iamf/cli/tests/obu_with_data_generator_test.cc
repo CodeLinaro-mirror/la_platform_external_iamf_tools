@@ -94,9 +94,7 @@ TEST(GenerateAudioElementWithData, ValidAudioElementWithCodecConfig) {
           AudioElementObu::AudioElementType::kAudioElementChannelBased,
           /*reserved=*/0, kFirstCodecConfigId));
   absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
-  codec_config_obus.emplace(
-      kFirstCodecConfigId,
-      CodecConfigObu(ObuHeader(), kFirstCodecConfigId, CodecConfig()));
+  AddOpusCodecConfigWithId(kFirstCodecConfigId, codec_config_obus);
   absl::StatusOr<absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>
       audio_element_with_data_map =
           ObuWithDataGenerator::GenerateAudioElementsWithData(
@@ -138,9 +136,7 @@ TEST(GenerateAudioElementWithData, MultipleAudioElementsWithOneCodecConfig) {
           AudioElementObu::AudioElementType::kAudioElementChannelBased,
           /*reserved=*/0, kFirstCodecConfigId));
   absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
-  codec_config_obus.emplace(
-      kFirstCodecConfigId,
-      CodecConfigObu(ObuHeader(), kFirstCodecConfigId, CodecConfig()));
+  AddOpusCodecConfigWithId(kFirstCodecConfigId, codec_config_obus);
   absl::StatusOr<absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>
       audio_element_with_data_map =
           ObuWithDataGenerator::GenerateAudioElementsWithData(
@@ -187,9 +183,7 @@ TEST(GenerateAudioElementWithData, InvalidCodecConfigId) {
           AudioElementObu::AudioElementType::kAudioElementChannelBased,
           /*reserved=*/0, kSecondCodecConfigId));
   absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
-  codec_config_obus.emplace(
-      kFirstCodecConfigId,
-      CodecConfigObu(ObuHeader(), kFirstCodecConfigId, CodecConfig()));
+  AddOpusCodecConfigWithId(kFirstCodecConfigId, codec_config_obus);
   absl::StatusOr<absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>
       audio_element_with_data_map =
           ObuWithDataGenerator::GenerateAudioElementsWithData(
@@ -410,7 +404,7 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
     EXPECT_EQ(audio_frame_with_data.obu, expected_audio_frame_obu);
     EXPECT_EQ(audio_frame_with_data.start_timestamp, expected_start_timestamp);
     EXPECT_EQ(audio_frame_with_data.end_timestamp, expected_end_timestamp);
-    EXPECT_FALSE(audio_frame_with_data.pcm_samples.has_value());
+    EXPECT_FALSE(audio_frame_with_data.encoded_samples.has_value());
     EXPECT_EQ(audio_frame_with_data.audio_element_with_data,
               &audio_elements_with_data_.at(audio_element_id));
   }
@@ -466,7 +460,6 @@ class GenerateAudioFrameWithDataTest : public testing::Test {
                      AudioElementParam&& param) {
     auto& audio_element_obu =
         audio_elements_with_data_.at(kFirstAudioElementId).obu;
-    audio_element_obu.num_parameters_++;
     audio_element_obu.audio_element_params_.push_back(std::move(param));
     param_definition_variants_.emplace(parameter_id, param_definition_variant);
   }

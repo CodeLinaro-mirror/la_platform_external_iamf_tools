@@ -17,12 +17,14 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/channel_label.h"
 #include "iamf/cli/proto/audio_element.pb.h"
+#include "iamf/cli/proto/param_definitions.pb.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
@@ -48,6 +50,9 @@ constexpr DecodedUleb128 kCodecConfigId = 200;
 constexpr DecodedUleb128 kAudioElementId = 300;
 constexpr uint32_t kSampleRate = 48000;
 
+constexpr DecodedUleb128 kMonoSubstreamId = 99;
+constexpr DecodedUleb128 kL2SubstreamId = 100;
+
 const ScalableChannelLayoutConfig kOneLayerStereoConfig{
     .num_layers = 1,
     .channel_audio_layer_configs = {
@@ -69,6 +74,68 @@ const ScalableChannelLayoutConfig& GetScalableLayoutForAudioElementIdExpectOk(
       output_scalable_channel_layout_config);
 }
 
+void AddFirstOrderAmbisonicsMetadata(
+    AudioElementObuMetadatas& audio_element_metadatas) {
+  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        audio_element_id: 300
+        audio_element_type: AUDIO_ELEMENT_SCENE_BASED
+        reserved: 0
+        codec_config_id: 200
+        audio_substream_ids: [ 0, 1, 2, 3 ]
+        num_parameters: 0
+        ambisonics_config {
+          ambisonics_mode: AMBISONICS_MODE_MONO
+          ambisonics_mono_config {
+            output_channel_count: 4
+            substream_count: 4
+            channel_mapping: [ 0, 1, 2, 3 ]
+          }
+        }
+      )pb",
+      audio_element_metadatas.Add()));
+}
+
+void AddTwoLayerStereoMetadata(
+    AudioElementObuMetadatas& audio_element_metadatas) {
+  auto* new_audio_element_metadata = audio_element_metadatas.Add();
+  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
+      R"pb(
+        audio_element_id: 300
+        audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
+        reserved: 0
+        codec_config_id: 200
+        num_parameters: 0
+        scalable_channel_layout_config {
+          num_layers: 2
+          reserved: 0
+          channel_audio_layer_configs {
+            loudspeaker_layout: LOUDSPEAKER_LAYOUT_MONO
+            output_gain_is_present_flag: 0
+            recon_gain_is_present_flag: 0
+            reserved_a: 0
+            substream_count: 1
+            coupled_substream_count: 0
+          }
+          channel_audio_layer_configs {
+            loudspeaker_layout: LOUDSPEAKER_LAYOUT_STEREO
+            output_gain_is_present_flag: 1
+            recon_gain_is_present_flag: 0
+            reserved_a: 0
+            substream_count: 1
+            coupled_substream_count: 0
+            output_gain_flag: 32
+            output_gain: 32767
+          }
+        }
+      )pb",
+      new_audio_element_metadata));
+  new_audio_element_metadata->mutable_audio_substream_ids()->Add(
+      kMonoSubstreamId);
+  new_audio_element_metadata->mutable_audio_substream_ids()->Add(
+      kL2SubstreamId);
+}
+
 TEST(Generate, PopulatesExpandedLoudspeakerLayout) {
   AudioElementObuMetadatas audio_element_metadatas;
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
@@ -76,7 +143,6 @@ TEST(Generate, PopulatesExpandedLoudspeakerLayout) {
         audio_element_id: 300
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         scalable_channel_layout_config {
           num_layers: 1
@@ -114,7 +180,6 @@ TEST(Generate, InvalidWhenExpandedLoudspeakerLayoutIsSignalledButNotPresent) {
         audio_element_id: 300
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         scalable_channel_layout_config {
           num_layers: 1
@@ -143,7 +208,6 @@ TEST(Generate, IgnoresExpandedLayoutWhenNotSignalled) {
         audio_element_id: 300
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         scalable_channel_layout_config {
           num_layers: 1
@@ -177,7 +241,6 @@ TEST(Generate, LeavesExpandedLayoutEmptyWhenNotSignalled) {
         audio_element_id: 300
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         scalable_channel_layout_config {
           num_layers: 1
@@ -230,26 +293,7 @@ class AudioElementGeneratorTest : public ::testing::Test {
 TEST_F(AudioElementGeneratorTest, NoAudioElementObus) { InitAndTestGenerate(); }
 
 TEST_F(AudioElementGeneratorTest, FirstOrderMonoAmbisonicsNumericalOrder) {
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        audio_element_id: 300
-        audio_element_type: AUDIO_ELEMENT_SCENE_BASED
-        reserved: 0
-        codec_config_id: 200
-        num_substreams: 4
-        audio_substream_ids: [ 0, 1, 2, 3 ]
-        num_parameters: 0
-        ambisonics_config {
-          ambisonics_mode: AMBISONICS_MODE_MONO
-          ambisonics_mono_config {
-            output_channel_count: 4
-            substream_count: 4
-            channel_mapping: [ 0, 1, 2, 3 ]
-          }
-        }
-      )pb",
-      audio_element_metadata_.Add()));
-
+  AddFirstOrderAmbisonicsMetadata(audio_element_metadata_);
   AddAmbisonicsMonoAudioElementWithSubstreamIds(
       kAudioElementId, kCodecConfigId, {0, 1, 2, 3}, codec_config_obus_,
       expected_obus_);
@@ -264,7 +308,6 @@ TEST_F(AudioElementGeneratorTest, FirstOrderMonoAmbisonicsLargeSubstreamIds) {
         audio_element_type: AUDIO_ELEMENT_SCENE_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 4
         audio_substream_ids: [ 1000, 2000, 3000, 4000 ]
         num_parameters: 0
         ambisonics_config {
@@ -298,7 +341,6 @@ TEST_F(AudioElementGeneratorTest, FirstOrderMonoAmbisonicsArbitraryOrder) {
         audio_element_type: AUDIO_ELEMENT_SCENE_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 4
         audio_substream_ids: [ 100, 101, 102, 103 ]
         num_parameters: 0
         ambisonics_config {
@@ -341,7 +383,6 @@ TEST_F(AudioElementGeneratorTest,
         audio_element_type: AUDIO_ELEMENT_SCENE_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 3
         audio_substream_ids: [ 100, 101, 102 ]
         num_parameters: 0
         ambisonics_config {
@@ -376,7 +417,6 @@ TEST_F(AudioElementGeneratorTest, MixedFirstOrderMonoAmbisonics) {
         audio_element_type: AUDIO_ELEMENT_SCENE_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 3
         audio_substream_ids: [ 1000, 2000, 3000 ]
         num_parameters: 0
         ambisonics_config {
@@ -404,7 +444,6 @@ TEST_F(AudioElementGeneratorTest, ThirdOrderMonoAmbisonics) {
         audio_element_type: AUDIO_ELEMENT_SCENE_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 16
         audio_substream_ids: [
           0,
           1,
@@ -461,44 +500,12 @@ TEST_F(AudioElementGeneratorTest, ThirdOrderMonoAmbisonics) {
 }
 
 TEST_F(AudioElementGeneratorTest, FillsAudioElementWithDataFields) {
-  const SubstreamIdLabelsMap kExpectedSubstreamIdToLabels = {{99, {kMono}},
-                                                             {100, {kL2}}};
+  const SubstreamIdLabelsMap kExpectedSubstreamIdToLabels = {
+      {kMonoSubstreamId, {kMono}}, {kL2SubstreamId, {kL2}}};
   const std::vector<ChannelNumbers> kExpectedChannelNumbersForLayer = {
       {.surround = 1, .lfe = 0, .height = 0},
       {.surround = 2, .lfe = 0, .height = 0}};
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        audio_element_id: 300
-        audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
-        reserved: 0
-        codec_config_id: 200
-        num_substreams: 2
-        audio_substream_ids: [ 99, 100 ]
-        num_parameters: 0
-        scalable_channel_layout_config {
-          num_layers: 2
-          reserved: 0
-          channel_audio_layer_configs {
-            loudspeaker_layout: LOUDSPEAKER_LAYOUT_MONO
-            output_gain_is_present_flag: 0
-            recon_gain_is_present_flag: 0
-            reserved_a: 0
-            substream_count: 1
-            coupled_substream_count: 0
-          }
-          channel_audio_layer_configs {
-            loudspeaker_layout: LOUDSPEAKER_LAYOUT_STEREO
-            output_gain_is_present_flag: 1
-            recon_gain_is_present_flag: 0
-            reserved_a: 0
-            substream_count: 1
-            coupled_substream_count: 0
-            output_gain_flag: 32
-            output_gain: 32767
-          }
-        }
-      )pb",
-      audio_element_metadata_.Add()));
+  AddTwoLayerStereoMetadata(audio_element_metadata_);
   AudioElementGenerator generator(audio_element_metadata_);
 
   EXPECT_THAT(generator.Generate(codec_config_obus_, output_obus_), IsOk());
@@ -520,7 +527,6 @@ TEST_F(AudioElementGeneratorTest, DeprecatedLoudspeakerLayoutIsNotSupported) {
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         num_parameters: 0
         scalable_channel_layout_config {
@@ -550,7 +556,6 @@ TEST_F(AudioElementGeneratorTest, DefaultLoudspeakerLayoutIsNotSupported) {
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 1
         audio_substream_ids: [ 99 ]
         num_parameters: 0
         scalable_channel_layout_config {
@@ -582,7 +587,6 @@ void AddTwoLayer7_1_0_And7_1_4(::google::protobuf::RepeatedPtrField<
         audio_element_type: AUDIO_ELEMENT_CHANNEL_BASED
         reserved: 0
         codec_config_id: 200
-        num_substreams: 7
         audio_substream_ids: [ 700, 701, 702, 703, 704, 740, 741 ]
         num_parameters: 0
         scalable_channel_layout_config {
@@ -611,7 +615,6 @@ void AddTwoLayer7_1_0_And7_1_4(::google::protobuf::RepeatedPtrField<
 
 TEST_F(AudioElementGeneratorTest, GeneratesDemixingParameterDefinition) {
   AddTwoLayer7_1_0_And7_1_4(audio_element_metadata_);
-  audio_element_metadata_.at(0).set_num_parameters(1);
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         param_definition_type: PARAM_DEFINITION_TYPE_DEMIXING
@@ -622,7 +625,6 @@ TEST_F(AudioElementGeneratorTest, GeneratesDemixingParameterDefinition) {
             param_definition_mode: 0
             reserved: 10
             duration: 8
-            num_subblocks: 1
             constant_subblock_duration: 8
           }
           default_demixing_info_parameter_data: {
@@ -671,7 +673,6 @@ TEST_F(AudioElementGeneratorTest, GeneratesDemixingParameterDefinition) {
 
 TEST_F(AudioElementGeneratorTest, MissingParamDefinitionTypeIsNotSupported) {
   AddTwoLayer7_1_0_And7_1_4(audio_element_metadata_);
-  audio_element_metadata_.at(0).set_num_parameters(1);
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         # `param_definition_type` is omitted.
@@ -685,7 +686,6 @@ TEST_F(AudioElementGeneratorTest, MissingParamDefinitionTypeIsNotSupported) {
 
 TEST_F(AudioElementGeneratorTest, DeprecatedParamDefinitionTypeIsNotSupported) {
   AddTwoLayer7_1_0_And7_1_4(audio_element_metadata_);
-  audio_element_metadata_.at(0).set_num_parameters(1);
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         deprecated_param_definition_type: 1  # PARAMETER_DEFINITION_DEMIXING
@@ -705,7 +705,6 @@ TEST_F(AudioElementGeneratorTest, GeneratesReconGainParameterDefinition) {
 
   // Reconfigure the audio element to add a recon gain parameter.
   auto& audio_element_metadata = audio_element_metadata_.at(0);
-  audio_element_metadata.set_num_parameters(1);
   audio_element_metadata.mutable_scalable_channel_layout_config()
       ->mutable_channel_audio_layer_configs(1)
       ->set_recon_gain_is_present_flag(true);
@@ -719,7 +718,6 @@ TEST_F(AudioElementGeneratorTest, GeneratesReconGainParameterDefinition) {
             param_definition_mode: 0
             reserved: 10
             duration: 8
-            num_subblocks: 1
             constant_subblock_duration: 8
           }
         }
@@ -748,6 +746,108 @@ TEST_F(AudioElementGeneratorTest, GeneratesReconGainParameterDefinition) {
   ASSERT_FALSE(obu.audio_element_params_.empty());
   EXPECT_EQ(output_obus_.at(kAudioElementId).obu.audio_element_params_.front(),
             kExpectedAudioElementParam);
+}
+
+TEST_F(AudioElementGeneratorTest, IgnoresDeprecatedNumSubstreamsField) {
+  AddFirstOrderAmbisonicsMetadata(audio_element_metadata_);
+  auto& first_order_ambisonics_metadata = audio_element_metadata_.at(0);
+  // Normally first-order ambisonics has four substreams.
+  constexpr DecodedUleb128 kExpectedNumSubstreams = 4;
+  // Corrupt the `num_substreams` field.
+  const auto kIgnoredNumSubstreams = 9999;
+  first_order_ambisonics_metadata.set_num_substreams(kIgnoredNumSubstreams);
+  AudioElementGenerator generator(audio_element_metadata_);
+
+  EXPECT_THAT(generator.Generate(codec_config_obus_, output_obus_), IsOk());
+
+  // The field is deprecated and ignored, the actual number of substreams are
+  // set based on the `audio_substream_ids` field.
+  ASSERT_TRUE(output_obus_.contains(kAudioElementId));
+  EXPECT_EQ(output_obus_.at(kAudioElementId).obu.audio_substream_ids_.size(),
+            kExpectedNumSubstreams);
+  EXPECT_EQ(output_obus_.at(kAudioElementId).obu.GetNumSubstreams(),
+            kExpectedNumSubstreams);
+}
+
+TEST_F(AudioElementGeneratorTest, IgnoresDeprecatedNumParametersField) {
+  AddFirstOrderAmbisonicsMetadata(audio_element_metadata_);
+  auto& first_order_ambisonics_metadata = audio_element_metadata_.at(0);
+  constexpr DecodedUleb128 kExpectedNumParameters = 0;
+  // Corrupt the `num_parameters` field.
+  const auto kIgnoredNumParameters = 9999;
+  first_order_ambisonics_metadata.set_num_parameters(kIgnoredNumParameters);
+  AudioElementGenerator generator(audio_element_metadata_);
+
+  EXPECT_THAT(generator.Generate(codec_config_obus_, output_obus_), IsOk());
+
+  // The field is deprecated and ignored, the actual number of parameters are
+  // set based on the `audio_element_params` field.
+  ASSERT_TRUE(output_obus_.contains(kAudioElementId));
+  EXPECT_EQ(output_obus_.at(kAudioElementId).obu.GetNumParameters(),
+            kExpectedNumParameters);
+  EXPECT_EQ(output_obus_.at(kAudioElementId).obu.audio_element_params_.size(),
+            kExpectedNumParameters);
+}
+
+TEST_F(AudioElementGeneratorTest, IgnoresDeprecatedParamDefinitionSizeField) {
+  AddFirstOrderAmbisonicsMetadata(audio_element_metadata_);
+  auto& first_order_ambisonics_metadata = audio_element_metadata_.at(0);
+  auto* audio_element_param =
+      first_order_ambisonics_metadata.mutable_audio_element_params()->Add();
+  audio_element_param->set_param_definition_type(
+      iamf_tools_cli_proto::PARAM_DEFINITION_TYPE_RESERVED_3);
+  // Corrupt the `num_parameters` field.
+  constexpr absl::string_view kParamDefinitionBytes = "abc";
+  constexpr DecodedUleb128 kExpectedParamDefinitionSize =
+      kParamDefinitionBytes.size();
+  const auto kInconsistentParamDefinitionSize = 9999;
+  audio_element_param->mutable_param_definition_extension()
+      ->set_param_definition_size(kInconsistentParamDefinitionSize);
+  audio_element_param->mutable_param_definition_extension()
+      ->set_param_definition_bytes(kParamDefinitionBytes);
+  AudioElementGenerator generator(audio_element_metadata_);
+
+  EXPECT_THAT(generator.Generate(codec_config_obus_, output_obus_), IsOk());
+
+  // The field is deprecatred and ignored, the actual number of parameters are
+  // set based on the `param_definition_bytes` field.
+  ASSERT_TRUE(output_obus_.contains(kAudioElementId));
+  ASSERT_FALSE(
+      output_obus_.at(kAudioElementId).obu.audio_element_params_.empty());
+  const auto* extended_param_definition = std::get_if<ExtendedParamDefinition>(
+      &output_obus_.at(kAudioElementId)
+           .obu.audio_element_params_.front()
+           .param_definition);
+  ASSERT_NE(extended_param_definition, nullptr);
+  EXPECT_EQ(extended_param_definition->param_definition_size_,
+            kExpectedParamDefinitionSize);
+  EXPECT_EQ(extended_param_definition->param_definition_bytes_.size(),
+            kExpectedParamDefinitionSize);
+}
+
+TEST_F(AudioElementGeneratorTest, IgnoresDeprecatedNumLayers) {
+  AddTwoLayerStereoMetadata(audio_element_metadata_);
+  auto& first_order_ambisonics_metadata = audio_element_metadata_.at(0);
+  // Two layers are set in the metadata.
+  constexpr uint8_t kExpectedNumLayers = 2;
+  // Corrupt the `num_layers` field.
+  const auto kIgnoredNumLayers = 7;
+  first_order_ambisonics_metadata.mutable_scalable_channel_layout_config()
+      ->set_num_layers(kIgnoredNumLayers);
+  AudioElementGenerator generator(audio_element_metadata_);
+
+  EXPECT_THAT(generator.Generate(codec_config_obus_, output_obus_), IsOk());
+
+  // The corrupted value is ignored, and the actual number of parameters are set
+  // correctly.
+  ASSERT_TRUE(output_obus_.contains(kAudioElementId));
+  const auto* scalable_channel_layout_config =
+      std::get_if<ScalableChannelLayoutConfig>(
+          &output_obus_.at(kAudioElementId).obu.config_);
+  ASSERT_NE(scalable_channel_layout_config, nullptr);
+  EXPECT_EQ(scalable_channel_layout_config->num_layers, kExpectedNumLayers);
+  EXPECT_EQ(scalable_channel_layout_config->channel_audio_layer_configs.size(),
+            kExpectedNumLayers);
 }
 
 }  // namespace
