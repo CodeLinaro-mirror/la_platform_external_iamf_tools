@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
@@ -63,7 +64,7 @@ using ::testing::_;
 using ::testing::Eq;
 using ::testing::IsEmpty;
 using ::testing::Not;
-using testing::Return;
+using ::testing::Return;
 using enum ChannelLabel::Label;
 
 using absl::StatusCode::kFailedPrecondition;
@@ -76,9 +77,9 @@ const std::optional<uint8_t> kNoOverrideBitDepth = std::nullopt;
 constexpr absl::string_view kSuffixAfterMixPresentationId =
     "_first_submix_first_layout.wav";
 
-constexpr uint32_t kMixPresentationId = 42;
+constexpr uint32_t kMixPresentationId = 13;
 constexpr uint32_t kCodecConfigId = 42;
-constexpr uint32_t kAudioElementId = 42;
+constexpr uint32_t kAudioElementId = 67;
 constexpr int kNumchannelsForMono = 1;
 constexpr uint32_t kBitDepth = 16;
 constexpr uint32_t kSampleRate = 48000;
@@ -104,14 +105,30 @@ class MockRenderer : public AudioElementRendererBase {
                size_t num_output_channels)
       : AudioElementRendererBase(ordered_labels,
                                  static_cast<size_t>(kNumSamplesPerFrame),
-                                 num_output_channels) {}
+                                 num_output_channels),
+        kAllZeroRenderedSamples(
+            num_output_channels,
+            std::vector<InternalSampleType>(kNumSamplesPerFrame)) {
+    // Reset the `rendered_samples_` so that subsequent `Flush()` can output
+    // non-empty results.
+    ON_CALL(*this, RenderSamples(_))
+        .WillByDefault(testing::InvokeWithoutArgs(
+            this, &MockRenderer::ResetRenderedSamples));
+  }
   MockRenderer() : MockRenderer({}, 0) {}
 
-  MOCK_METHOD(
-      absl::Status, RenderSamples,
-      (absl::Span<const absl::Span<const InternalSampleType>> samples_to_render,
-       std::vector<InternalSampleType>& rendered_samples),
-      (override));
+  MOCK_METHOD(absl::Status, RenderSamples,
+              (absl::Span<const absl::Span<const InternalSampleType>>
+                   samples_to_render),
+              (override));
+
+ private:
+  absl::Status ResetRenderedSamples() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_) {
+    rendered_samples_ = kAllZeroRenderedSamples;
+    return absl::OkStatus();
+  }
+
+  const std::vector<std::vector<InternalSampleType>> kAllZeroRenderedSamples;
 };
 
 class MockRendererFactory : public RendererFactoryBase {
@@ -205,12 +222,10 @@ class FinalizerTest : public ::testing::Test {
 
   void AddLabeledFrame(DecodedUleb128 audio_element_id,
                        const LabelSamplesMap& label_to_samples,
-                       InternalTimestamp end_timestamp,
                        uint32_t samples_to_trim_at_end = 0,
                        uint32_t samples_to_trim_at_start = 0) {
     IdLabeledFrameMap id_to_labeled_frame;
     id_to_labeled_frame[audio_element_id] = {
-        .end_timestamp = end_timestamp,
         .samples_to_trim_at_end = samples_to_trim_at_end,
         .samples_to_trim_at_start = samples_to_trim_at_start,
         .label_to_samples = label_to_samples};
@@ -221,7 +236,7 @@ class FinalizerTest : public ::testing::Test {
     InitPrerequisiteObusForMonoInput(kAudioElementId);
     AddMixPresentationObuForMonoOutput(kMixPresentationId);
     const LabelSamplesMap kLabelToSamples = {{kMono, {0, 1}}};
-    AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+    AddLabeledFrame(kAudioElementId, kLabelToSamples);
   }
 
   RenderingMixPresentationFinalizer CreateFinalizerExpectOk() {
@@ -259,13 +274,10 @@ class FinalizerTest : public ::testing::Test {
   void IterativeRenderingExpectOk(
       RenderingMixPresentationFinalizer& finalizer,
       const std::list<ParameterBlockWithData>& parameter_blocks) {
-    InternalTimestamp start_timestamp = 0;
     for (const auto& id_to_labeled_frame : ordered_labeled_frames_) {
       ASSERT_TRUE(id_to_labeled_frame.contains(kAudioElementId));
-      EXPECT_THAT(finalizer.PushTemporalUnit(
-                      id_to_labeled_frame, start_timestamp,
-                      id_to_labeled_frame.at(kAudioElementId).end_timestamp,
-                      parameter_blocks),
+      EXPECT_THAT(finalizer.PushTemporalUnit(id_to_labeled_frame, kStartTime,
+                                             kEndTime, parameter_blocks),
                   IsOk());
     }
 
@@ -364,7 +376,7 @@ TEST_F(FinalizerTest, ForwardsAudioElementToRenderer) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   // We expect audio-element related arguments to be forwarded from the OBUs to
   // the renderer factory.
@@ -387,7 +399,7 @@ TEST_F(FinalizerTest, ForwardsRenderingConfigToRenderer) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   // We expect arguments to be forwarded from the OBUs to the renderer factory.
   auto mock_renderer_factory = std::make_unique<MockRendererFactory>();
@@ -406,7 +418,7 @@ TEST_F(FinalizerTest, ForwardsLayoutToRenderer) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   // We expect arguments to be forwarded from the OBUs to the renderer factory.
   auto mock_renderer_factory = std::make_unique<MockRendererFactory>();
@@ -423,16 +435,15 @@ TEST_F(FinalizerTest, ForwardsOrderedSamplesToRenderer) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0, 1}}, {kR2, {2, 3}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   // We expect arguments to be forwarded from the OBUs to the renderer.
   auto mock_renderer = std::make_unique<MockRenderer>(kStereoLabels, 2);
-  std::vector<InternalSampleType> rendered_samples;
   const std::vector<std::vector<InternalSampleType>>
       kExpectedChannelTimeOrderedSamples = {{0, 1}, {2, 3}};
-  EXPECT_CALL(*mock_renderer,
-              RenderSamples(
-                  MakeSpanOfConstSpans(kExpectedChannelTimeOrderedSamples), _));
+  EXPECT_CALL(
+      *mock_renderer,
+      RenderSamples(MakeSpanOfConstSpans(kExpectedChannelTimeOrderedSamples)));
   auto mock_renderer_factory = std::make_unique<MockRendererFactory>();
   ASSERT_NE(mock_renderer_factory, nullptr);
   EXPECT_CALL(*mock_renderer_factory,
@@ -449,10 +460,10 @@ TEST_F(FinalizerTest, CreatesWavFileWhenRenderingIsSupported) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
-  auto mock_renderer = std::make_unique<MockRenderer>();
-  EXPECT_CALL(*mock_renderer, RenderSamples(_, _));
+  auto mock_renderer = std::make_unique<MockRenderer>(kStereoLabels, 2);
+  EXPECT_CALL(*mock_renderer, RenderSamples(_));
   auto mock_renderer_factory = std::make_unique<MockRendererFactory>();
   EXPECT_CALL(*mock_renderer_factory,
               CreateRendererForLayout(_, _, _, _, _, _, _))
@@ -470,7 +481,7 @@ TEST_F(FinalizerTest, DoesNotCreateFilesWhenRenderingFactoryIsNullptr) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   const std::filesystem::path output_directory =
       GetAndCreateOutputDirectory("");
   renderer_factory_ = nullptr;
@@ -486,7 +497,7 @@ TEST_F(FinalizerTest, DoesNotCreateFilesWhenRenderingFactoryReturnsNullptr) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   const std::filesystem::path output_directory =
       GetAndCreateOutputDirectory("");
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
@@ -505,7 +516,7 @@ TEST_F(FinalizerTest, UsesCodecConfigBitDepthWhenOverrideIsNotSet) {
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, {0, 1}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   std::list<ParameterBlockWithData> parameter_blocks;
@@ -522,7 +533,7 @@ TEST_F(FinalizerTest, OverridesBitDepthWhenRequested) {
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, {0, 1}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
   output_wav_file_bit_depth_override_ = 32;
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
@@ -542,19 +553,15 @@ TEST_F(FinalizerTest, InvalidWhenFrameIsLargerThanNumSamplesPerFrame) {
       {kMono, std::vector<InternalSampleType>(kNumSamplesPerFrame + 1, 0)}};
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
-  AddLabeledFrame(kAudioElementId, kInvalidLabelToSamplesWithTooManySamples,
-                  kEndTime);
+  AddLabeledFrame(kAudioElementId, kInvalidLabelToSamplesWithTooManySamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
   std::list<ParameterBlockWithData> parameter_blocks;
   auto finalizer = CreateFinalizerExpectOk();
 
-  EXPECT_FALSE(
-      finalizer
-          .PushTemporalUnit(
-              ordered_labeled_frames_[0], kStartTime,
-              ordered_labeled_frames_[0].at(kAudioElementId).end_timestamp,
-              parameter_blocks)
-          .ok());
+  EXPECT_FALSE(finalizer
+                   .PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                     kEndTime, parameter_blocks)
+                   .ok());
 }
 
 TEST_F(FinalizerTest, WavFileHasExpectedProperties) {
@@ -562,7 +569,7 @@ TEST_F(FinalizerTest, WavFileHasExpectedProperties) {
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, kFourSamples}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   std::list<ParameterBlockWithData> parameter_blocks;
@@ -586,8 +593,8 @@ TEST_F(FinalizerTest, SamplesAreTrimmedFromWavFile) {
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, kFourSamples}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime,
-                  kNumSamplesToTrimFromStart, kNumSamplesToTrimFromEnd);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples, kNumSamplesToTrimFromStart,
+                  kNumSamplesToTrimFromEnd);
   renderer_factory_ = std::make_unique<RendererFactory>();
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   std::list<ParameterBlockWithData> parameter_blocks;
@@ -609,8 +616,8 @@ TEST_F(FinalizerTest, SupportsFullyTrimmedFrames) {
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, kFourSamples}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime,
-                  kNumSamplesToTrimFromStart, kNoTrimFromEnd);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples, kNumSamplesToTrimFromStart,
+                  kNoTrimFromEnd);
   renderer_factory_ = std::make_unique<RendererFactory>();
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   std::list<ParameterBlockWithData> parameter_blocks;
@@ -690,13 +697,13 @@ TEST_F(FinalizerTest, ForwardsArgumentsToSampleProcessorFactory) {
 TEST_F(FinalizerTest, PushTemporalUnitDelegatesToSampleProcessor) {
   // Post-processing is only possible if rendering is enabled.
   renderer_factory_ = std::make_unique<RendererFactory>();
-  const std::vector<std::vector<int32_t>> kExpectedPassthroughSamples = {
-      {0, std::numeric_limits<int32_t>::max()}};
+  const std::vector<std::vector<InternalSampleType>>
+      kExpectedPassthroughSamples = {{0.0, 1.0}};
   const std::vector<InternalSampleType> kInputSamples = {0, 1.0};
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, {0, 1}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   constexpr auto kNoOutputSamples = 0;
   auto mock_sample_processor = std::make_unique<MockSampleProcessor>(
       codec_configs_.at(kCodecConfigId).GetNumSamplesPerFrame(),
@@ -712,11 +719,9 @@ TEST_F(FinalizerTest, PushTemporalUnitDelegatesToSampleProcessor) {
 
   auto finalizer = CreateFinalizerExpectOk();
 
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks_),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              IsOk());
 }
 
 TEST_F(FinalizerTest,
@@ -770,18 +775,20 @@ TEST_F(FinalizerTest, ForwardsArgumentsToLoudnessCalculatorFactory) {
 TEST_F(FinalizerTest, DelegatestoLoudnessCalculator) {
   const LoudnessInfo kMockCalculatedLoudness = kArbitraryLoudnessInfo;
   const LoudnessInfo kMismatchingUserLoudness = kExpectedMinimumLoudnessInfo;
-  const std::vector<std::vector<int32_t>> kExpectedPassthroughSamples = {
-      {0, std::numeric_limits<int32_t>::max()}};
+  const std::vector<std::vector<InternalSampleType>>
+      kExpectedPassthroughSamples = {{0.0, 1.0}};
   const std::vector<InternalSampleType> kInputSamples = {0, 1.0};
   InitPrerequisiteObusForMonoInput(kAudioElementId);
   AddMixPresentationObuForMonoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kMono, {0, 1}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
+
   // We expect arguments to be forwarded from the OBUs to the loudness
   // calculator factory.
   auto mock_loudness_calculator_factory =
       std::make_unique<MockLoudnessCalculatorFactory>();
   auto mock_loudness_calculator = std::make_unique<MockLoudnessCalculator>();
+
   // We expect the loudness calculator to be called with the rendered samples.
   EXPECT_CALL(*mock_loudness_calculator,
               AccumulateLoudnessForSamples(
@@ -830,11 +837,9 @@ TEST_F(FinalizerTest, ValidatesUserLoudnessWhenRequested) {
   std::list<ParameterBlockWithData> parameter_blocks;
   auto finalizer = CreateFinalizerExpectOk();
 
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks),
+              IsOk());
 
   EXPECT_THAT(finalizer.FinalizePushingTemporalUnits(), IsOk());
   EXPECT_FALSE(
@@ -848,13 +853,10 @@ void FinalizeOneFrameAndExpectUserLoudnessIsPreserved(
     const LoudnessInfo& kExpectedLoudness,
     RenderingMixPresentationFinalizer& finalizer) {
   std::list<ParameterBlockWithData> parameter_blocks;
-  InternalTimestamp start_timestamp = 0;
   for (const auto& id_to_labeled_frame : ordered_labeled_frames_) {
     ASSERT_TRUE(id_to_labeled_frame.contains(kAudioElementId));
-    EXPECT_THAT(finalizer.PushTemporalUnit(
-                    id_to_labeled_frame, start_timestamp,
-                    id_to_labeled_frame.at(kAudioElementId).end_timestamp,
-                    parameter_blocks),
+    EXPECT_THAT(finalizer.PushTemporalUnit(id_to_labeled_frame, kStartTime,
+                                           kEndTime, parameter_blocks),
                 IsOk());
   }
   EXPECT_THAT(finalizer.FinalizePushingTemporalUnits(), IsOk());
@@ -949,30 +951,24 @@ TEST_F(FinalizerTest,
   const LabelSamplesMap kLabelToSamples = {
       {kMono, Int32ToInternalSampleType({100, 900})}};
   const std::vector<std::vector<int32_t>> kExpectedSamples = {{100}, {900}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   auto finalizer = CreateFinalizerExpectOk();
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks_),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              IsOk());
   EXPECT_THAT(finalizer.FinalizePushingTemporalUnits(), IsOk());
 
   // Any time after `FinalizePushingTemporalUnits()` has been called pushing is
   // not allowed. Even if later functions such as
   // `GetFinalizedMixPresentationObus` are called.
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/10,
-                                 /*end_timestamp=*/20, parameter_blocks_),
-      Not(IsOk()));
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              Not(IsOk()));
   EXPECT_THAT(finalizer.GetFinalizedMixPresentationObus(kDontValidateLoudness),
               IsOk());
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/10,
-                                 /*end_timestamp=*/20, parameter_blocks_),
-      Not(IsOk()));
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              Not(IsOk()));
 }
 
 TEST_F(
@@ -1036,15 +1032,14 @@ TEST_F(FinalizerTest, PushTemporalUnitSucceedsWithValidInput) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, /*end_timestamp=*/10);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   ASSERT_EQ(ordered_labeled_frames_.size(), 1);
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   renderer_factory_ = std::make_unique<RendererFactory>();
   auto finalizer = CreateFinalizerExpectOk();
-  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                         /*start_timestamp=*/0,
-                                         /*end_timestamp=*/10,
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime,
                                          /*parameter_blocks=*/{}),
               IsOk());
 }
@@ -1053,7 +1048,7 @@ TEST_F(FinalizerTest, FullIterativeRenderingSucceedsWithValidInput) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, /*end_timestamp=*/10);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   renderer_factory_ = std::make_unique<RendererFactory>();
@@ -1083,7 +1078,7 @@ TEST_F(FinalizerTest, InvalidComputedLoudnessFails) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
   const LabelSamplesMap kLabelToSamples = {{kL2, {0}}, {kR2, {2}}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, /*end_timestamp=*/10);
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
 
   ConfigureWavWriterFactoryToProduceFirstSubMixFirstLayout();
   renderer_factory_ = std::make_unique<RendererFactory>();
@@ -1101,9 +1096,8 @@ TEST_F(FinalizerTest, InvalidComputedLoudnessFails) {
   loudness_calculator_factory_ = std::move(mock_loudness_calculator_factory);
 
   auto finalizer = CreateFinalizerExpectOk();
-  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                         /*start_timestamp=*/0,
-                                         /*end_timestamp=*/10,
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime,
                                          /*parameter_blocks=*/{}),
               IsOk());
   EXPECT_THAT(finalizer.FinalizePushingTemporalUnits(), IsOk());
@@ -1208,12 +1202,13 @@ TEST_F(FinalizerTest,
        GetPostProcessedSamplesAsSpanPrioritizesPostProcessedSamples) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
-  const LabelSamplesMap kLabelToSamples = {
-      {kL2, Int32ToInternalSampleType({0, 1})},
-      {kR2, Int32ToInternalSampleType({2, 3})}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  const LabelSamplesMap kLabelToSamples = {{kL2, {0.0, 0.1}},
+                                           {kR2, {0.2, 0.3}}};
+
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
-  const std::vector<std::vector<int32_t>> kExpectedSamples = {{1}, {3}};
+  const std::vector<std::vector<InternalSampleType>> kExpectedSamples = {{0.1},
+                                                                         {0.3}};
   // We expect the post-processor to be called with the rendered samples.
   sample_processor_factory_ =
       [](DecodedUleb128 /*mix_presentation_id*/, int /*sub_mix_index*/,
@@ -1225,11 +1220,9 @@ TEST_F(FinalizerTest,
   auto finalizer = CreateFinalizerExpectOk();
 
   // Push a temporal unit.
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks_),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              IsOk());
 
   // We expect the post-processed samples, i.e. every other tick.
   EXPECT_THAT(finalizer.GetPostProcessedSamplesAsSpan(
@@ -1241,22 +1234,20 @@ TEST_F(FinalizerTest,
        GetPostProcessedSamplesAsSpanReturnsFallsBackToRenderedSamples) {
   InitPrerequisiteObusForStereoInput(kAudioElementId);
   AddMixPresentationObuForStereoOutput(kMixPresentationId);
-  const LabelSamplesMap kLabelToSamples = {
-      {kL2, Int32ToInternalSampleType({0, 1})},
-      {kR2, Int32ToInternalSampleType({2, 3})}};
-  const std::vector<std::vector<int32_t>> kExpectedSamples = {{0, 1}, {2, 3}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  const LabelSamplesMap kLabelToSamples = {{kL2, {0.0, 0.1}},
+                                           {kR2, {0.2, 0.3}}};
+  const std::vector<std::vector<InternalSampleType>> kExpectedSamples = {
+      {0.0, 0.1}, {0.2, 0.3}};
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   renderer_factory_ = std::make_unique<RendererFactory>();
   sample_processor_factory_ =
       RenderingMixPresentationFinalizer::ProduceNoSampleProcessors;
   auto finalizer = CreateFinalizerExpectOk();
 
   // Push a temporal unit.
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks_),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              IsOk());
 
   // There is no post-processor, but it safely falls back to the pass-through
   // rendered samples.
@@ -1277,19 +1268,17 @@ TEST_F(FinalizerTest,
         return std::make_unique<OneFrameDelayer>(num_samples_per_frame,
                                                  num_channels);
       };
-  const LabelSamplesMap kLabelToSamples = {
-      {kMono, Int32ToInternalSampleType({100, 900})}};
-  const std::vector<std::vector<int32_t>> kExpectedSamples = {{100, 900}};
-  const std::vector<std::vector<int32_t>> kEmptySamples = {{}};
-  AddLabeledFrame(kAudioElementId, kLabelToSamples, kEndTime);
+  const LabelSamplesMap kLabelToSamples = {{kMono, {0.1, 0.9}}};
+  const std::vector<std::vector<InternalSampleType>> kExpectedSamples = {
+      {0.1, 0.9}};
+  const std::vector<std::vector<InternalSampleType>> kEmptySamples = {{}};
+  AddLabeledFrame(kAudioElementId, kLabelToSamples);
   auto finalizer = CreateFinalizerExpectOk();
 
   // The post-processor has delay. So samples are not available immediately.
-  EXPECT_THAT(
-      finalizer.PushTemporalUnit(ordered_labeled_frames_[0],
-                                 /*start_timestamp=*/0,
-                                 /*end_timestamp=*/10, parameter_blocks_),
-      IsOk());
+  EXPECT_THAT(finalizer.PushTemporalUnit(ordered_labeled_frames_[0], kStartTime,
+                                         kEndTime, parameter_blocks_),
+              IsOk());
   EXPECT_THAT(finalizer.GetPostProcessedSamplesAsSpan(
                   kMixPresentationId, kFirstSubmixIndex, kFirstLayoutIndex),
               IsOkAndHolds(MakeSpanOfConstSpans(kEmptySamples)));

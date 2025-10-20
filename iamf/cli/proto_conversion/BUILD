@@ -104,6 +104,7 @@ cc_library(
     visibility = [
         # TODO(b/400697000): Break up visibility for the api directory.
         "//iamf/api:__subpackages__",
+        "//iamf/include/iamf_tools:__subpackages__",
         "//iamf/cli:__pkg__",
         "//iamf/cli/proto_conversion:__subpackages__",
     ],
@@ -123,7 +124,6 @@ cc_library(
         "//iamf/obu:types",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
-        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
     ],
 )

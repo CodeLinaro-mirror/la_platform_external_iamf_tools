@@ -1,5 +1,7 @@
 # Tests for the IAMF software.
 
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
 # keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
 cc_test(
     name = "leb_generator_test",
@@ -36,7 +38,6 @@ cc_test(
     deps = [
         "//iamf/cli/tests:cli_test_utils",
         "//iamf/common:read_bit_buffer",
-        "//iamf/common/utils:bit_buffer_util",
         "//iamf/obu:types",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
@@ -68,7 +69,6 @@ cc_test(
         "//iamf/cli/tests:cli_test_utils",
         "//iamf/common:leb_generator",
         "//iamf/common:write_bit_buffer",
-        "//iamf/common/utils:bit_buffer_util",
         "//iamf/common/utils/tests:test_utils",
         "//iamf/obu:types",
         "@com_google_absl//absl/status",

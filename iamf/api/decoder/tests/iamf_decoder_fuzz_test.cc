@@ -17,7 +17,7 @@
 #include "fuzztest/fuzztest.h"
 #include "gtest/gtest.h"
 // [internal] Placeholder for FLAC fuzzing include.
-#include "iamf/include/iamf_tools/iamf_decoder.h"
+#include "iamf/api/decoder/iamf_decoder.h"
 #include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 
 namespace iamf_tools {
@@ -32,8 +32,8 @@ constexpr OutputLayout kStereoLayout =
 
 void DoesNotDieWithBasicDecode(const std::string& data) {
   std::unique_ptr<api::IamfDecoder> iamf_decoder;
-  const api::IamfDecoder::Settings kStereoLayoutSettings = {.requested_layout =
-                                                                kStereoLayout};
+  const api::IamfDecoder::Settings kStereoLayoutSettings = {
+      .requested_mix = {.output_layout = kStereoLayout}};
   ASSERT_TRUE(
       api::IamfDecoder::Create(kStereoLayoutSettings, iamf_decoder).ok());
 
@@ -70,8 +70,8 @@ void DoesNotDieAllParams(api::OutputLayout output_layout,
                          uint32_t mix_presentation_id, std::string data) {
   std::vector<uint8_t> bitstream(data.begin(), data.end());
   std::unique_ptr<api::IamfDecoder> iamf_decoder;
-  const api::IamfDecoder::Settings kSettings = {.requested_layout =
-                                                    output_layout};
+  const api::IamfDecoder::Settings kSettings = {
+      .requested_mix = {.output_layout = output_layout}};
   ASSERT_TRUE(api::IamfDecoder::Create(kSettings, iamf_decoder).ok());
 
   auto unused_decode_status =
@@ -79,7 +79,6 @@ void DoesNotDieAllParams(api::OutputLayout output_layout,
   iamf_decoder->ConfigureOutputSampleType(output_sample_type);
 }
 
-// // TODO(b/378912426): Update this to support all output layouts.
 auto AnyOutputLayout() {
   return ElementOf<api::OutputLayout>({
       api::OutputLayout::kItu2051_SoundSystemA_0_2_0,

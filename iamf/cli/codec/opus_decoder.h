@@ -19,8 +19,9 @@
 #include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "iamf/cli/codec/decoder_base.h"
-#include "iamf/obu/codec_config.h"
+#include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "include/opus.h"
 
 namespace iamf_tools {
@@ -29,12 +30,14 @@ class OpusDecoder : public DecoderBase {
  public:
   /*!brief Factory function.
    *
-   * \param codec_config_obu Codec config for this stream.
+   * \param decoder_config Decoder config for this stream.
    * \param num_channels Number of channels for this stream.
+   * \param num_samples_per_frame Number of samples per frame for this stream.
    * \return Opus decoder on success. A specific status on failure.
    */
   static absl::StatusOr<std::unique_ptr<DecoderBase>> Create(
-      const CodecConfigObu& codec_config_obu, int num_channels);
+      const OpusDecoderConfig& decoder_config, int num_channels,
+      uint32_t num_samples_per_frame);
 
   /*!\brief Destructor
    */
@@ -46,7 +49,7 @@ class OpusDecoder : public DecoderBase {
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   absl::Status DecodeAudioFrame(
-      const std::vector<uint8_t>& encoded_frame) override;
+      absl::Span<const uint8_t> encoded_frame) override;
 
  private:
   // The decoder from `libopus` is in the global namespace.
@@ -62,8 +65,12 @@ class OpusDecoder : public DecoderBase {
    */
   OpusDecoder(int num_channels, uint32_t num_samples_per_frame,
               LibOpusDecoder* /* absl_nonnull */ decoder)
-      : DecoderBase(num_channels, num_samples_per_frame), decoder_(decoder) {}
+      : DecoderBase(num_channels, num_samples_per_frame),
+        interleaved_float_from_libopus_(num_samples_per_frame * num_channels),
+        decoder_(decoder) {}
 
+  // Size fixed at construction time.
+  std::vector<float> interleaved_float_from_libopus_;
   LibOpusDecoder* const /* absl_nonnull */ decoder_;
 };
 

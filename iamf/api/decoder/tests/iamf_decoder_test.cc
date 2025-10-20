@@ -10,7 +10,7 @@
  * www.aomedia.org/license/patent.
  */
 
-#include "iamf/include/iamf_tools/iamf_decoder.h"
+#include "iamf/api/decoder/iamf_decoder.h"
 
 #include <array>
 #include <cstddef>
@@ -21,11 +21,13 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/types/span.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/parameter_block_with_data.h"
 #include "iamf/cli/tests/cli_test_utils.h"
+#include "iamf/cli/user_metadata_builder/iamf_input_layout.h"
 #include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 #include "iamf/obu/audio_frame.h"
 #include "iamf/obu/codec_config.h"
@@ -46,10 +48,13 @@ constexpr DecodedUleb128 kSampleRate = 48000;
 constexpr DecodedUleb128 kFirstAudioElementId = 2;
 constexpr DecodedUleb128 kFirstSubstreamId = 18;
 constexpr DecodedUleb128 kFirstMixPresentationId = 3;
+constexpr DecodedUleb128 kSecondMixPresentationId = 4;
 constexpr DecodedUleb128 kCommonMixGainParameterId = 999;
 constexpr DecodedUleb128 kCommonParameterRate = kSampleRate;
 constexpr std::array<uint8_t, 16> kEightSampleAudioFrame = {
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+constexpr std::array<uint8_t, 16> kEightSampleAudioFrame2 = {
+    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
 
 std::vector<uint8_t> GenerateBasicDescriptorObus() {
   const IASequenceHeaderObu ia_sequence_header(
@@ -100,14 +105,14 @@ std::vector<uint8_t> GenerateBaseEnhancedDescriptorObus() {
 }
 
 api::IamfDecoder::Settings GetStereoDecoderSettings() {
-  return {
-      .requested_layout = api::OutputLayout::kItu2051_SoundSystemA_0_2_0,
-  };
+  return {.requested_mix = {
+              .output_layout = api::OutputLayout::kItu2051_SoundSystemA_0_2_0}};
 }
 
 api::IamfDecoder::Settings Get5_1DecoderSettings() {
   return {
-      .requested_layout = api::OutputLayout::kItu2051_SoundSystemB_0_5_0,
+      .requested_mix = {.output_layout =
+                            api::OutputLayout::kItu2051_SoundSystemB_0_5_0},
   };
 }
 
@@ -125,8 +130,8 @@ TEST(IamfDecoder,
   std::unique_ptr<api::IamfDecoder> decoder;
   ASSERT_TRUE(
       api::IamfDecoder::Create(GetStereoDecoderSettings(), decoder).ok());
-  api::OutputLayout output_layout;
-  EXPECT_FALSE(decoder->GetOutputLayout(output_layout).ok());
+  api::SelectedMix selected_mix;
+  EXPECT_FALSE(decoder->GetOutputMix(selected_mix).ok());
   int num_channels;
   EXPECT_FALSE(decoder->GetNumberOfOutputChannels(num_channels).ok());
   uint32_t sample_rate;
@@ -135,50 +140,33 @@ TEST(IamfDecoder,
   EXPECT_FALSE(decoder->GetFrameSize(frame_size).ok());
 }
 
-TEST(GetOutputLayout, ReturnsOutputLayoutAfterDescriptorObusAreProcessed) {
-  std::unique_ptr<api::IamfDecoder> decoder;
-  auto descriptors = GenerateBasicDescriptorObus();
-  ASSERT_TRUE(api::IamfDecoder::CreateFromDescriptors(
-                  GetStereoDecoderSettings(), descriptors.data(),
-                  descriptors.size(), decoder)
-                  .ok());
-
-  EXPECT_TRUE(decoder->IsDescriptorProcessingComplete());
-  api::OutputLayout output_layout;
-  EXPECT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  EXPECT_EQ(output_layout, api::OutputLayout::kItu2051_SoundSystemA_0_2_0);
-  int num_output_channels;
-  EXPECT_TRUE(decoder->GetNumberOfOutputChannels(num_output_channels).ok());
-  EXPECT_EQ(num_output_channels, 2);
-}
-
-TEST(GetOutputLayout, ReturnVirtualDesiredLayoutIfNoMatchingLayoutExists) {
+TEST(GetOutputMix, ReturnVirtualDesiredLayoutIfNoMatchingLayoutExists) {
   std::unique_ptr<api::IamfDecoder> decoder;
   auto descriptors = GenerateBasicDescriptorObus();
   constexpr api::OutputLayout kDesiredLayout =
       api::OutputLayout::kItu2051_SoundSystemE_4_5_1;
-  const api::IamfDecoder::Settings kSettings = {.requested_layout =
-                                                    kDesiredLayout};
+  const api::IamfDecoder::Settings kSettings = {
+      .requested_mix = {.output_layout = kDesiredLayout}};
   ASSERT_TRUE(api::IamfDecoder::CreateFromDescriptors(
                   kSettings, descriptors.data(), descriptors.size(), decoder)
                   .ok());
 
   EXPECT_TRUE(decoder->IsDescriptorProcessingComplete());
-  api::OutputLayout output_layout;
-  EXPECT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  EXPECT_EQ(output_layout, kDesiredLayout);
+  api::SelectedMix selected_mix;
+  EXPECT_TRUE(decoder->GetOutputMix(selected_mix).ok());
+  EXPECT_EQ(selected_mix.output_layout, kDesiredLayout);
   int num_output_channels;
   EXPECT_TRUE(decoder->GetNumberOfOutputChannels(num_output_channels).ok());
   EXPECT_EQ(num_output_channels, 11);
 }
 
-TEST(GetOutputLayout,
+TEST(GetOutputMix,
      ReturnsVirtualDesiredLayoutIfNoMatchingLayoutExistsUsingDecode) {
   std::unique_ptr<api::IamfDecoder> decoder;
   constexpr api::OutputLayout kDesiredLayout =
       api::OutputLayout::kItu2051_SoundSystemE_4_5_1;
-  const api::IamfDecoder::Settings kSettings = {.requested_layout =
-                                                    kDesiredLayout};
+  const api::IamfDecoder::Settings kSettings = {
+      .requested_mix = {.output_layout = kDesiredLayout}};
   ASSERT_TRUE(api::IamfDecoder::Create(kSettings, decoder).ok());
   std::vector<uint8_t> source_data = GenerateBasicDescriptorObus();
   TemporalDelimiterObu temporal_delimiter_obu =
@@ -191,15 +179,16 @@ TEST(GetOutputLayout,
   EXPECT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
 
   EXPECT_TRUE(decoder->IsDescriptorProcessingComplete());
-  api::OutputLayout output_layout;
-  EXPECT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  EXPECT_EQ(output_layout, api::OutputLayout::kItu2051_SoundSystemE_4_5_1);
+  api::SelectedMix selected_mix;
+  EXPECT_TRUE(decoder->GetOutputMix(selected_mix).ok());
+  EXPECT_EQ(selected_mix.output_layout,
+            api::OutputLayout::kItu2051_SoundSystemE_4_5_1);
   int num_output_channels;
   EXPECT_TRUE(decoder->GetNumberOfOutputChannels(num_output_channels).ok());
   EXPECT_EQ(num_output_channels, 11);
 }
 
-TEST(GetOutputLayout, ReturnsNonStereoLayoutWhenPresentInDescriptorObus) {
+TEST(GetOutputMix, CanAcceptMixPresentationIdToSpecifyMix) {
   // Add a mix presentation with a non-stereo layout.
   const IASequenceHeaderObu ia_sequence_header(
       ObuHeader(), IASequenceHeaderObu::kIaCode,
@@ -220,21 +209,36 @@ TEST(GetOutputLayout, ReturnsNonStereoLayoutWhenPresentInDescriptorObus) {
       kFirstMixPresentationId, {kFirstAudioElementId},
       kCommonMixGainParameterId, kCommonParameterRate, mix_presentation_layouts,
       mix_presentation_obus);
+
+  std::vector<LoudspeakersSsConventionLayout::SoundSystem>
+      mix_2_sound_system_layouts = {
+          LoudspeakersSsConventionLayout::kSoundSystemB_0_5_0,
+          LoudspeakersSsConventionLayout::kSoundSystemA_0_2_0,
+          LoudspeakersSsConventionLayout::kSoundSystemC_2_5_0};
+  AddMixPresentationObuWithConfigurableLayouts(
+      kSecondMixPresentationId, {kFirstAudioElementId},
+      kCommonMixGainParameterId, kCommonParameterRate,
+      mix_2_sound_system_layouts, mix_presentation_obus);
+
   std::vector<uint8_t> descriptor_obus = SerializeObusExpectOk(
       {&ia_sequence_header, &codec_configs.at(kFirstCodecConfigId),
        &audio_elements.at(kFirstAudioElementId).obu,
-       &mix_presentation_obus.front()});
+       &mix_presentation_obus.front(), &mix_presentation_obus.back()});
 
   std::unique_ptr<api::IamfDecoder> decoder;
-  ASSERT_TRUE(api::IamfDecoder::CreateFromDescriptors(
-                  Get5_1DecoderSettings(), descriptor_obus.data(),
-                  descriptor_obus.size(), decoder)
-                  .ok());
+  const api::IamfDecoder::Settings kSettings = {
+      .requested_mix = {.mix_presentation_id = kSecondMixPresentationId}};
+  ASSERT_TRUE(
+      api::IamfDecoder::CreateFromDescriptors(kSettings, descriptor_obus.data(),
+                                              descriptor_obus.size(), decoder)
+          .ok());
 
   EXPECT_TRUE(decoder->IsDescriptorProcessingComplete());
-  api::OutputLayout output_layout;
-  EXPECT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  EXPECT_EQ(output_layout, api::OutputLayout::kItu2051_SoundSystemB_0_5_0);
+  api::SelectedMix selected_mix;
+  EXPECT_TRUE(decoder->GetOutputMix(selected_mix).ok());
+  EXPECT_EQ(selected_mix.mix_presentation_id, kSecondMixPresentationId);
+  EXPECT_EQ(selected_mix.output_layout,
+            api::OutputLayout::kItu2051_SoundSystemB_0_5_0);
   int num_output_channels;
   EXPECT_TRUE(decoder->GetNumberOfOutputChannels(num_output_channels).ok());
   EXPECT_EQ(num_output_channels, 6);
@@ -453,11 +457,24 @@ TEST(Decode, SucceedsWithOneTemporalUnit) {
                      temporal_unit.end());
 
   EXPECT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+  const size_t expected_output_size =
+      8 * 4 * 2;  // 8 samples, 32-bit ints, stereo.
+  std::vector<uint8_t> output_data(expected_output_size);
+  size_t bytes_written;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_output_size);
+  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
 }
 
 TEST(Decode, ReordersSamplesIfRequested) {
   api::IamfDecoder::Settings settings = {
-      .requested_layout = api::OutputLayout::kItu2051_SoundSystemI_0_7_0,
+      .requested_mix = {.output_layout =
+                            api::OutputLayout::kItu2051_SoundSystemI_0_7_0},
       .channel_ordering = api::ChannelOrdering::kIamfOrdering,
   };
   auto descriptors = GenerateBasicDescriptorObus();
@@ -518,12 +535,39 @@ TEST(Decode, SucceedsWithMultipleTemporalUnits) {
                      temporal_units.end());
 
   EXPECT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
+
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+  const size_t expected_output_size =
+      8 * 4 * 2;  // 8 samples, 32-bit ints, stereo.
+  std::vector<uint8_t> output_data(expected_output_size);
+  size_t bytes_written;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_output_size);
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+  output_data.clear();
+  output_data.resize(expected_output_size);
+  bytes_written = 0;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_output_size);
+  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
 }
 
 TEST(Decode, SucceedsWithMultipleTemporalUnitsForNonStereoLayout) {
   std::unique_ptr<api::IamfDecoder> decoder;
   const api::IamfDecoder::Settings kMonoSettings = {
-      .requested_layout = api::OutputLayout::kIAMF_SoundSystemExtension_0_1_0};
+      .requested_mix = {
+          .output_layout =
+              api::OutputLayout::kIAMF_SoundSystemExtension_0_1_0}};
   ASSERT_TRUE(api::IamfDecoder::Create(kMonoSettings, decoder).ok());
 
   absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
@@ -568,9 +612,21 @@ TEST(Decode, SucceedsWithMultipleTemporalUnitsForNonStereoLayout) {
   // we can get the output temporal unit.
   EXPECT_TRUE(decoder->Decode(source_data.data(), 0).ok());
 
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+
   const size_t expected_output_size = 8 * 4;  // 8 samples, 32-bit ints, mono.
   std::vector<uint8_t> output_data(expected_output_size);
   size_t bytes_written;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_output_size);
+
+  // Should be able to get the second temporal unit as well.
+  bytes_written = 0;
+  output_data.clear();
+  output_data.resize(expected_output_size);
   EXPECT_TRUE(decoder
                   ->GetOutputTemporalUnit(output_data.data(),
                                           output_data.size(), bytes_written)
@@ -664,9 +720,9 @@ TEST(
                                         codec_config_obus);
   absl::flat_hash_map<DecodedUleb128, AudioElementWithData>
       audio_elements_with_data;
-  AddAmbisonicsMonoAudioElementWithSubstreamIds(
-      kFirstAudioElementId, kFirstCodecConfigId, {kFirstSubstreamId},
-      codec_config_obus, audio_elements_with_data);
+  AddScalableAudioElementWithSubstreamIds(
+      IamfInputLayout::kMono, kFirstAudioElementId, kFirstCodecConfigId,
+      {kFirstSubstreamId}, codec_config_obus, audio_elements_with_data);
   std::list<MixPresentationObu> mix_presentation_obus;
   std::vector<LoudspeakersSsConventionLayout::SoundSystem>
       sound_system_layouts = {
@@ -689,18 +745,23 @@ TEST(
 
   std::unique_ptr<api::IamfDecoder> decoder;
   const api::IamfDecoder::Settings kMonoSettings = {
-      .requested_layout = api::OutputLayout::kIAMF_SoundSystemExtension_0_1_0};
+      .requested_mix = {
+          .output_layout =
+              api::OutputLayout::kIAMF_SoundSystemExtension_0_1_0}};
   ASSERT_TRUE(
       api::IamfDecoder::CreateFromDescriptors(kMonoSettings, descriptors.data(),
                                               descriptors.size(), decoder)
           .ok());
+  decoder->ConfigureOutputSampleType(api::OutputSampleType::kInt16LittleEndian);
 
   const std::list<AudioFrameWithData> empty_audio_frames_with_data = {};
   const std::list<ParameterBlockWithData> empty_parameter_blocks_with_data = {};
 
   AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
                             kEightSampleAudioFrame);
-  auto temporal_units = SerializeObusExpectOk({&audio_frame, &audio_frame});
+  AudioFrameObu audio_frame2(ObuHeader(), kFirstSubstreamId,
+                             kEightSampleAudioFrame2);
+  auto temporal_units = SerializeObusExpectOk({&audio_frame, &audio_frame2});
 
   // Call decode with both temporal units.
   EXPECT_TRUE(
@@ -708,7 +769,7 @@ TEST(
 
   // We expect to get the first temporal unit with the correct number of
   // samples.
-  const size_t expected_output_size = 8 * 4;  // 8 samples, 32-bit ints, mono.
+  const size_t expected_output_size = 8 * 2;  // 8 samples, 16-bit ints, mono.
   std::vector<uint8_t> output_data(expected_output_size);
   size_t bytes_written;
   EXPECT_TRUE(decoder
@@ -717,17 +778,31 @@ TEST(
                   .ok());
   EXPECT_EQ(bytes_written, expected_output_size);
 
-  output_data.clear();
-  output_data.resize(expected_output_size);
+  std::vector<uint8_t> output_data2(expected_output_size);
   bytes_written = 0;
 
   // We expect to get the second temporal unit with the correct number of
   // samples.
   EXPECT_TRUE(decoder
-                  ->GetOutputTemporalUnit(output_data.data(),
-                                          output_data.size(), bytes_written)
+                  ->GetOutputTemporalUnit(output_data2.data(),
+                                          output_data2.size(), bytes_written)
                   .ok());
   EXPECT_EQ(bytes_written, expected_output_size);
+  // Test case is intentionally transparent, using mono with 16 bits. So the
+  // output should be the same as the input.
+  EXPECT_THAT(output_data, testing::ElementsAreArray(kEightSampleAudioFrame));
+  EXPECT_THAT(output_data2, testing::ElementsAreArray(kEightSampleAudioFrame2));
+
+  std::vector<uint8_t> output_data3(expected_output_size);
+  bytes_written = 0;
+
+  // If we call GetOutputTemporalUnit again, we not have anything left to
+  // output.
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data3.data(),
+                                          output_data3.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, 0);
 }
 
 TEST(Decode, FailsWhenCalledAfterSignalEndOfDecoding) {
@@ -741,7 +816,7 @@ TEST(Decode, FailsWhenCalledAfterSignalEndOfDecoding) {
   source_data.insert(source_data.end(), temporal_units.begin(),
                      temporal_units.end());
   ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
   EXPECT_FALSE(decoder->Decode(source_data.data(), source_data.size()).ok());
 }
 
@@ -769,35 +844,6 @@ TEST(IsTemporalUnitAvailable,
 
   ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
   EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
-}
-
-TEST(IsTemporalUnitAvailable,
-     ReturnsTrueAfterDecodingOneTemporalUnitWithTemporalDelimiterAtEnd) {
-  std::unique_ptr<api::IamfDecoder> decoder;
-  ASSERT_TRUE(
-      api::IamfDecoder::Create(GetStereoDecoderSettings(), decoder).ok());
-  std::vector<uint8_t> source_data = GenerateBasicDescriptorObus();
-  AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
-                            kEightSampleAudioFrame);
-  auto temporal_delimiter_obu = TemporalDelimiterObu(ObuHeader());
-  auto temporal_unit =
-      SerializeObusExpectOk({&audio_frame, &temporal_delimiter_obu});
-  source_data.insert(source_data.end(), temporal_unit.begin(),
-                     temporal_unit.end());
-
-  ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
-  EXPECT_TRUE(decoder->IsDescriptorProcessingComplete());
-  // Even though a temporal unit was provided, it has not been decoded yet. This
-  // is because Decode() returns after processing the descriptor OBUs, even if
-  // there is more data available. This is done to give the user a chance to do
-  // any configurations based on the descriptors before beginning to decode the
-  // temporal units.
-  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
-  // The user can call Decode() again to process the temporal unit still
-  // available in the buffer.
-  EXPECT_TRUE(decoder->Decode({}, 0).ok());
-  // Now, the temporal unit has been decoded and is available for output.
-  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
 }
 
 TEST(IsTemporalUnitAvailable, ReturnsTrueAfterDecodingMultipleTemporalUnits) {
@@ -849,6 +895,34 @@ TEST(GetOutputTemporalUnit, FillsOutputVectorWithInt16) {
   ASSERT_TRUE(
       api::IamfDecoder::Create(GetStereoDecoderSettings(), decoder).ok());
   decoder->ConfigureOutputSampleType(api::OutputSampleType::kInt16LittleEndian);
+  std::vector<uint8_t> source_data = GenerateBasicDescriptorObus();
+  AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
+                            kEightSampleAudioFrame);
+  auto temporal_units = SerializeObusExpectOk({&audio_frame, &audio_frame});
+  source_data.insert(source_data.end(), temporal_units.begin(),
+                     temporal_units.end());
+
+  ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
+  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
+  EXPECT_TRUE(decoder->Decode({}, 0).ok());
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+
+  size_t expected_size = 2 * 8 * 2;  // Stereo * 8 samples * 2 bytes (int16).
+  std::vector<uint8_t> output_data(expected_size);
+  size_t bytes_written;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_size);
+}
+
+TEST(GetOutputTemporalUnit, FillsOutputVectorWithInt16BasedOnInitialSettings) {
+  std::unique_ptr<api::IamfDecoder> decoder;
+  auto settings = GetStereoDecoderSettings();
+  settings.requested_output_sample_type =
+      api::OutputSampleType::kInt16LittleEndian;
+  ASSERT_TRUE(api::IamfDecoder::Create(settings, decoder).ok());
   std::vector<uint8_t> source_data = GenerateBasicDescriptorObus();
   AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
                             kEightSampleAudioFrame);
@@ -924,17 +998,52 @@ TEST(SignalEndOfDecoding, GetMultipleTemporalUnitsOutAfterCall) {
   AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
                             kEightSampleAudioFrame);
   auto temporal_delimiter_obu = TemporalDelimiterObu(ObuHeader());
-  auto temporal_units =
-      SerializeObusExpectOk({&audio_frame, &temporal_delimiter_obu,
-                             &audio_frame, &temporal_delimiter_obu});
+  auto temporal_units = SerializeObusExpectOk({&audio_frame, &audio_frame});
   source_data.insert(source_data.end(), temporal_units.begin(),
                      temporal_units.end());
   ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
   EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
-  EXPECT_TRUE(decoder->Decode({}, 0).ok());
-  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
 
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+
+  // Stereo * 8 samples * 4 bytes per sample
+  const size_t expected_size_per_temp_unit = 2 * 8 * 4;
+  std::vector<uint8_t> output_data(expected_size_per_temp_unit);
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+  size_t bytes_written;
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_size_per_temp_unit);
+
+  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
+  EXPECT_TRUE(decoder
+                  ->GetOutputTemporalUnit(output_data.data(),
+                                          output_data.size(), bytes_written)
+                  .ok());
+  EXPECT_EQ(bytes_written, expected_size_per_temp_unit);
+  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
+}
+
+TEST(SignalEndOfDecoding,
+     GetMultipleTemporalUnitsOutAfterCallWithTemporalDelimiters) {
+  std::unique_ptr<api::IamfDecoder> decoder;
+  ASSERT_TRUE(
+      api::IamfDecoder::Create(GetStereoDecoderSettings(), decoder).ok());
+  std::vector<uint8_t> source_data = GenerateBasicDescriptorObus();
+  AudioFrameObu audio_frame(ObuHeader(), kFirstSubstreamId,
+                            kEightSampleAudioFrame);
+  auto temporal_delimiter_obu = TemporalDelimiterObu(ObuHeader());
+  auto temporal_units =
+      SerializeObusExpectOk({&temporal_delimiter_obu, &audio_frame,
+                             &temporal_delimiter_obu, &audio_frame});
+  source_data.insert(source_data.end(), temporal_units.begin(),
+                     temporal_units.end());
+  ASSERT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
+  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
+
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
 
   // Stereo * 8 samples * 4 bytes per sample
   const size_t expected_size_per_temp_unit = 2 * 8 * 4;
@@ -963,7 +1072,7 @@ TEST(SignalEndOfDecoding, SucceedsWithNoTemporalUnits) {
 
   std::vector<std::vector<int32_t>> output_decoded_temporal_unit;
   std::vector<uint8_t> output_data;
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
 
   EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
   size_t bytes_written;
@@ -1017,7 +1126,7 @@ TEST(Reset, DecodingAfterResetSucceedsAfterCreateFromDescriptors) {
   EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
 
   // Signal end of decoding and reset.
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
   EXPECT_TRUE(decoder->Reset().ok());
 
   // Confirm that there is no temporal unit available after reset.
@@ -1038,7 +1147,7 @@ TEST(Reset, DecodingAfterResetSucceedsAfterCreateFromDescriptors) {
   EXPECT_EQ(bytes_written, expected_size);
 }
 
-TEST(Reset, DecodingAfterResetSucceedsInStandaloneCase) {
+TEST(Reset, DecodingAfterResetFailsInStandaloneCase) {
   // Create a decoder from descriptors.
   std::unique_ptr<api::IamfDecoder> decoder;
   ASSERT_TRUE(
@@ -1052,34 +1161,11 @@ TEST(Reset, DecodingAfterResetSucceedsInStandaloneCase) {
   source_data.insert(source_data.end(), temporal_units.begin(),
                      temporal_units.end());
   EXPECT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
-  // We have an inherent exit when initially decoding the descriptors, so we
-  // call again with an empty vector so that the first temporal unit is
-  // processed.
-  EXPECT_TRUE(decoder->Decode({}, 0).ok());
-  // We expect one temporal unit to be available since we are decoding in a
-  // standalone case and we've passed two in.
-  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
 
   // Signal end of decoding and reset.
-  decoder->SignalEndOfDecoding();
-  EXPECT_TRUE(decoder->Reset().ok());
-
-  // Confirm that there is no temporal unit available after reset.
-  EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
-
-  // Now, we put two temporal units into decode again.
-  EXPECT_TRUE(
-      decoder->Decode(temporal_units.data(), temporal_units.size()).ok());
-  // Confirm that one temporal unit is available and can be retrieved.
-  EXPECT_TRUE(decoder->IsTemporalUnitAvailable());
-  size_t expected_size = 2 * 8 * 4;
-  std::vector<uint8_t> output_data(expected_size);
-  size_t bytes_written;
-  EXPECT_TRUE(decoder
-                  ->GetOutputTemporalUnit(output_data.data(),
-                                          output_data.size(), bytes_written)
-                  .ok());
-  EXPECT_EQ(bytes_written, expected_size);
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+  // The decoder should fail to reset because we are in a standalone case.
+  EXPECT_FALSE(decoder->Reset().ok());
 }
 
 TEST(Reset, ResetFailsWhenDescriptorProcessingIncomplete) {
@@ -1109,14 +1195,16 @@ TEST(ResetWithNewLayout,
 
   // Signal end of decoding and reset with 5.1 layout, which is different from
   // the original stereo layout.
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
+  api::SelectedMix selected_mix;
   EXPECT_TRUE(
       decoder
-          ->ResetWithNewLayout(api::OutputLayout::kItu2051_SoundSystemB_0_5_0)
+          ->ResetWithNewMix(
+              {.output_layout = api::OutputLayout::kItu2051_SoundSystemB_0_5_0},
+              selected_mix)
           .ok());
-  api::OutputLayout output_layout;
-  EXPECT_TRUE(decoder->GetOutputLayout(output_layout).ok());
-  EXPECT_EQ(output_layout, api::OutputLayout::kItu2051_SoundSystemB_0_5_0);
+  EXPECT_EQ(selected_mix.output_layout,
+            api::OutputLayout::kItu2051_SoundSystemB_0_5_0);
 
   // Confirm that there is no temporal unit available after reset.
   EXPECT_FALSE(decoder->IsTemporalUnitAvailable());
@@ -1153,12 +1241,15 @@ TEST(ResetWithNewLayout, ResetWithNewLayoutFailsInStandaloneCase) {
                      temporal_units.end());
   EXPECT_TRUE(decoder->Decode(source_data.data(), source_data.size()).ok());
 
-  decoder->SignalEndOfDecoding();
+  EXPECT_TRUE(decoder->SignalEndOfDecoding().ok());
   // The decoder should fail to reset with a new layout because we are in a
   // standalone case.
+  api::SelectedMix selected_mix;
   EXPECT_FALSE(
       decoder
-          ->ResetWithNewLayout(api::OutputLayout::kItu2051_SoundSystemB_0_5_0)
+          ->ResetWithNewMix(
+              {.output_layout = api::OutputLayout::kItu2051_SoundSystemB_0_5_0},
+              selected_mix)
           .ok());
 }
 

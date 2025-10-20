@@ -2,21 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [2.0.0] - 2025-08-18
 
 ### Added
 
 -   Add a library to process ADM files into `UserMetadata`.
 -   Add support for ADM input in the encoder.
 -   Add support for binary proto input in the encoder.
--   Add support for encoding [Standalone IAMF Representation] for Base-Enhanced
+-   Add support for encoding [Standalone IAMF Representation] for Base-Enhanced.
     profile based on [IAMF v1.1.0]("Expanded" layouts, Mix Presentation Tags).
+-   Add an iterative [encoding API](iamf/api/encoder/README.md).
+-   Add an iterative [decoding API](iamf/api/decoder/README.md).
 
 ### Deprecated
 
--   Deprecate several fields and prefer using field names based on [IAMF v1.1.0]:
+-   Deprecate several fields and prefer using field names based on
+    [IAMF v1.1.0]:
     -   Deprecate `language_labels` in favor of `annotations_language`.
     -   Deprecate `MixPresentationAnnotations` and
         `mix_presentation_annotations_array` in favor of
@@ -30,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
         `element_mix_gain`.
 -   Deprecate `channel_ids` and `channel_labels` in `AudioElementObuMetadata` in
     favor of `ChannelMetadata`.
+-   Deprecate several fields which redundantly provided the size. In favor of
+    calculating the size from related elements.
+    -   Deprecate `num_substreams`, `num_parameters`, `num_layers` in
+        `AudioElementObuMetadata`.
+    -   Deprecate `num_subblocks` in `ParamDefinition` and
+        `ParameterBlockMetadata`.
+    -   Deprecate `extension_header_size` in `ObuHeaderMetadata`.
+    -   Deprecate `num_sub_mixes`, `num_audio_elements`, `num_layouts`,
+        `num_anchored_loudness`, and `num_tags` in `MixPresentationObuMetadata`.
 
 ### Removed
 
@@ -47,6 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `OpusDecoderConfig::pre_skip`, instead of throwing an error when user input
     was incorrect.
 -   Update Simple and Base profile to be based on [IAMF v1.0.0-errata].
+-   Update several library dependencies.
 
 ### Fixed
 
@@ -57,8 +74,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     annotations.
 -   Fix compliance with ISO 14496-1:2010 when writing AAC Codec Config OBUs
     (AOMediaCodec/libiamf#119).
+-   Fix issues decoding FLAC
+    [https://github.com/AOMediaCodec/iamf-tools/commit/8c1a71378].
 -   Fix issues when using AAC with a 24 kHz sample rate.
 -   Permit one fully trimmed audio frame at the end of a substream.
+-   Fix several CPU and memory inefficiencies to improve perforamnce.
+-   Avoid use of run-time type information (RTTI).
 
 ## [1.0.0] - 2024-01-26
 
@@ -80,7 +101,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `deprecated_param_definition_type`, `deprecated_loudspeaker_layout` from the
     forked `.protos`.
 
-[unreleased]: https://github.com/AOMediaCodec/iamf-tools/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/AOMediaCodec/iamf-tools/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/AOMediaCodec/iamf-tools/releases/tag/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/AOMediaCodec/iamf-tools/releases/tag/v1.0.0
 [Standalone IAMF Representation]: https://aomediacodec.github.io/iamf/#standalone
 [IAMF v1.0.0]: https://aomediacodec.github.io/iamf/v1.0.0.html

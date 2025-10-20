@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = ["//iamf:__subpackages__"])
 
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
@@ -19,7 +21,6 @@ cc_library(
     srcs = ["read_bit_buffer.cc"],
     hdrs = ["read_bit_buffer.h"],
     deps = [
-        "//iamf/common/utils:bit_buffer_util",
         "//iamf/common/utils:macros",
         "//iamf/obu:types",
         "@com_google_absl//absl/functional:any_invocable",
@@ -38,7 +39,6 @@ cc_library(
     hdrs = ["write_bit_buffer.h"],
     deps = [
         ":leb_generator",
-        "//iamf/common/utils:bit_buffer_util",
         "//iamf/common/utils:macros",
         "//iamf/obu:types",
         "@com_google_absl//absl/log",

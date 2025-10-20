@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
 package(default_visibility = ["//iamf/cli/renderer/tests:__subpackages__"])
 
 # keep-sorted start block=yes prefix_order=cc_test newline_separated=yes
@@ -23,7 +25,9 @@ cc_test(
     srcs = ["audio_element_renderer_base_test.cc"],
     deps = [
         "//iamf/cli/renderer:audio_element_renderer_base",
+        "//iamf/cli/tests:cli_test_utils",
         "//iamf/obu:types",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/types:span",
