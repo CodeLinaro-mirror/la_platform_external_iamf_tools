@@ -11,10 +11,8 @@
  */
 #include "iamf/cli/codec/opus_decoder.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <memory>
-#include <variant>
 #include <vector>
 
 #include "absl/functional/any_invocable.h"
@@ -28,10 +26,9 @@
 #include "iamf/cli/codec/decoder_base.h"
 #include "iamf/cli/codec/opus_utils.h"
 #include "iamf/common/utils/macros.h"
-#include "iamf/common/utils/numeric_utils.h"
 #include "iamf/common/utils/sample_processing_utils.h"
-#include "iamf/obu/codec_config.h"
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
+#include "iamf/obu/types.h"
 #include "include/opus.h"
 #include "include/opus_types.h"
 
@@ -60,19 +57,14 @@ absl::Status ValidateDecoderConfig(
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<DecoderBase>> OpusDecoder::Create(
-    const CodecConfigObu& codec_config_obu, int num_channels) {
-  const OpusDecoderConfig* decoder_config = std::get_if<OpusDecoderConfig>(
-      &codec_config_obu.GetCodecConfig().decoder_config);
-  if (decoder_config == nullptr) {
-    return absl::InvalidArgumentError(
-        "CodecConfigObu does not contain an `OpusDecoderConfig`.");
-  }
-  MAYBE_RETURN_IF_NOT_OK(ValidateDecoderConfig(*decoder_config));
+    const OpusDecoderConfig& decoder_config, int num_channels,
+    uint32_t num_samples_per_frame) {
+  MAYBE_RETURN_IF_NOT_OK(ValidateDecoderConfig(decoder_config));
 
   // Initialize the decoder.
   int opus_error_code;
   LibOpusDecoder* decoder = opus_decoder_create(
-      static_cast<opus_int32>(codec_config_obu.GetOutputSampleRate()),
+      static_cast<opus_int32>(decoder_config.GetOutputSampleRate()),
       num_channels, &opus_error_code);
   RETURN_IF_NOT_OK(OpusErrorCodeToAbslStatus(
       opus_error_code, "Failed to initialize Opus decoder."));
@@ -80,8 +72,8 @@ absl::StatusOr<std::unique_ptr<DecoderBase>> OpusDecoder::Create(
     return absl::UnknownError("Unexpected null decoder after initialization.");
   }
 
-  return absl::WrapUnique(new OpusDecoder(
-      num_channels, codec_config_obu.GetNumSamplesPerFrame(), decoder));
+  return absl::WrapUnique(
+      new OpusDecoder(num_channels, num_samples_per_frame, decoder));
 }
 
 OpusDecoder::~OpusDecoder() {
@@ -91,24 +83,15 @@ OpusDecoder::~OpusDecoder() {
 }
 
 absl::Status OpusDecoder::DecodeAudioFrame(
-    const std::vector<uint8_t>& encoded_frame) {
-  // TODO(b/382197581): Pre-allocate working buffers like `output_pcm_float` and
-  //                    `input_data`.
-
+    absl::Span<const uint8_t> encoded_frame) {
   // `opus_decode_float` decodes to `float` samples with channels interlaced.
   // Typically these values are in the range of [-1, +1] (always for
   // `iamf_tools`-encoded data). Values outside of that range will be clipped in
-  // `NormalizedFloatToInt32`.
-  std::vector<float> output_pcm_float(num_samples_per_channel_ * num_channels_);
-
-  // Transform the data and feed it to the decoder.
-  std::vector<unsigned char> input_data(encoded_frame.size());
-  std::transform(encoded_frame.begin(), encoded_frame.end(), input_data.begin(),
-                 [](uint8_t c) { return static_cast<unsigned char>(c); });
-
+  // `NormalizedFloatingPointToInt32`.
   const int num_output_samples = opus_decode_float(
-      decoder_, input_data.data(), static_cast<opus_int32>(input_data.size()),
-      output_pcm_float.data(),
+      decoder_, reinterpret_cast<const unsigned char*>(encoded_frame.data()),
+      static_cast<opus_int32>(encoded_frame.size()),
+      interleaved_float_from_libopus_.data(),
       /*frame_size=*/num_samples_per_channel_,
       /*decode_fec=*/0);
   if (num_output_samples < 0) {
@@ -119,14 +102,17 @@ absl::Status OpusDecoder::DecodeAudioFrame(
   LOG_FIRST_N(INFO, 1) << "Opus decoded " << num_output_samples
                        << " samples per channel. With " << num_channels_
                        << " channels.";
-  // Convert the interleaved data to (channel, time) axes.
+
+  // Convert the interleaved data to (channel, time) axes
+  const absl::AnyInvocable<absl::Status(float, InternalSampleType&) const>
+      kFloatToInternalSampleType = [](float input, InternalSampleType& output) {
+        output = static_cast<InternalSampleType>(input);
+        return absl::OkStatus();
+      };
   return ConvertInterleavedToChannelTime(
-      absl::MakeConstSpan(output_pcm_float)
+      absl::MakeConstSpan(interleaved_float_from_libopus_)
           .first(num_output_samples * num_channels_),
-      num_channels_,
-      absl::AnyInvocable<absl::Status(float, int32_t&) const>(
-          NormalizedFloatingPointToInt32<float>),
-      decoded_samples_);
+      num_channels_, decoded_samples_, kFloatToInternalSampleType);
 }
 
 }  // namespace iamf_tools

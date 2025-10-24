@@ -1,5 +1,7 @@
 # Files to create `iamf/obu` classes from proto definitions.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = ["//iamf/cli:__subpackages__"])
 
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
@@ -65,6 +67,7 @@ cc_library(
         "//iamf/cli:demixing_module",
         "//iamf/cli:global_timing_module",
         "//iamf/cli:parameters_manager",
+        "//iamf/cli:substream_frames",
         "//iamf/cli/codec:aac_encoder",
         "//iamf/cli/codec:encoder_base",
         "//iamf/cli/codec:flac_encoder",
@@ -84,6 +87,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:vlog_is_on",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

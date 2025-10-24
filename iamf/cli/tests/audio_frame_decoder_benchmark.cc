@@ -86,7 +86,8 @@ static AudioFrameWithData PrepareEncodedAudioFrame(
     CodecConfig::CodecId codec_id_type) {
   std::unique_ptr<EncoderBase> encoder;
   if (codec_id_type == CodecConfig::kCodecIdAacLc) {
-    AddAacCodecConfig(kCodecConfigId, num_samples_per_frame, codec_config_obus);
+    AddAacCodecConfig(kCodecConfigId, num_samples_per_frame, kSampleRate,
+                      codec_config_obus);
     encoder = CreateAacEncoder(codec_config_obus.at(kCodecConfigId));
   } else if (codec_id_type == CodecConfig::kCodecIdFlac) {
     AddFlacCodecConfig(kCodecConfigId, num_samples_per_frame, kSampleRate,
@@ -150,7 +151,7 @@ static void BM_DecodeForCodecId(const CodecConfig::CodecId codec_id_type,
   // Prepare the input, which is an encoded audio frame.
   const uint32_t num_samples_per_frame = state.range(0);
   absl::flat_hash_map<uint32_t, CodecConfigObu> codec_config_obus;
-  const AudioFrameWithData encoded_audio_frame = PrepareEncodedAudioFrame(
+  AudioFrameWithData audio_frame = PrepareEncodedAudioFrame(
       num_samples_per_frame, codec_config_obus, codec_id_type);
 
   // Prepare the audio frame decoder.
@@ -160,8 +161,7 @@ static void BM_DecodeForCodecId(const CodecConfig::CodecId codec_id_type,
 
   // Measure the calls to `AudioFrameDecoder::Decode()`, which decodes a frame.
   for (auto _ : state) {
-    const auto& decoded_audio_frame = decoder.Decode(encoded_audio_frame);
-    CHECK_OK(decoded_audio_frame);
+    CHECK_OK(decoder.Decode(audio_frame));
   }
 }
 

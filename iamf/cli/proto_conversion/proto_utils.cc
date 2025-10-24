@@ -12,6 +12,7 @@
 #include "iamf/cli/proto_conversion/proto_utils.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -19,7 +20,6 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "iamf/cli/proto/obu_header.pb.h"
 #include "iamf/cli/proto/param_definitions.pb.h"
@@ -56,17 +56,16 @@ absl::Status CopyParamDefinition(
     return absl::OkStatus();
   }
 
-  if (input_param_definition.num_subblocks() <
-      input_param_definition.subblock_durations_size()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Expected at least ", input_param_definition.num_subblocks(),
-        "subblock durations for parameter id = ",
-        input_param_definition.parameter_id()));
+  if (input_param_definition.has_num_subblocks()) {
+    LOG(WARNING) << "Ignoring deprecated `num_subblocks` field in Parameter "
+                    "Definition. Please remove it.";
   }
 
+  // Infer the number of subblocks.
+  const auto num_subblocks = input_param_definition.subblock_durations_size();
   param_definition.InitializeSubblockDurations(
-      static_cast<DecodedUleb128>(input_param_definition.num_subblocks()));
-  for (int i = 0; i < input_param_definition.num_subblocks(); ++i) {
+      static_cast<DecodedUleb128>(num_subblocks));
+  for (int i = 0; i < num_subblocks; ++i) {
     RETURN_IF_NOT_OK(param_definition.SetSubblockDuration(
         i, input_param_definition.subblock_durations(i)));
   }
@@ -76,8 +75,15 @@ absl::Status CopyParamDefinition(
 
 ObuHeader GetHeaderFromMetadata(
     const iamf_tools_cli_proto::ObuHeaderMetadata& input_obu_header) {
+  if (input_obu_header.has_extension_header_size()) {
+    LOG(WARNING)
+        << "Ignoring deprecated `ObuHeaderMetadata.extension_header_size`. "
+           "Please remove it.";
+  }
+  const uint32_t extension_header_size =
+      input_obu_header.extension_header_bytes().size();
   std::vector<uint8_t> extension_header_bytes(
-      input_obu_header.extension_header_bytes().size());
+      static_cast<size_t>(extension_header_size));
   std::transform(input_obu_header.extension_header_bytes().begin(),
                  input_obu_header.extension_header_bytes().end(),
                  extension_header_bytes.begin(),
@@ -91,7 +97,7 @@ ObuHeader GetHeaderFromMetadata(
           input_obu_header.num_samples_to_trim_at_end(),
       .num_samples_to_trim_at_start =
           input_obu_header.num_samples_to_trim_at_start(),
-      .extension_header_size = input_obu_header.extension_header_size(),
+      .extension_header_size = extension_header_size,
       .extension_header_bytes = extension_header_bytes};
 }
 

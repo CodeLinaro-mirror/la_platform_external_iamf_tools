@@ -19,6 +19,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -171,10 +172,12 @@ absl::Status ParametersManager::GetDownMixingParameters(
     DownMixingParams& down_mixing_params) {
   const auto demixing_states_iter = demixing_states_.find(audio_element_id);
   if (demixing_states_iter == demixing_states_.end()) {
-    LOG_FIRST_N(WARNING, 1)
-        << "No demixing parameter definition found for Audio "
-        << "Element with ID= " << audio_element_id
-        << "; using some sensible values.";
+    if (VLOG_IS_ON(1)) {
+      LOG_FIRST_N(WARNING, 1)
+          << "No demixing parameter definition found for Audio "
+          << "Element with ID= " << audio_element_id
+          << "; using some sensible values.";
+    }
 
     down_mixing_params = {
         0.707, 0.707, 0.707, 0.707, 0, 0, /*in_bitstream=*/false};

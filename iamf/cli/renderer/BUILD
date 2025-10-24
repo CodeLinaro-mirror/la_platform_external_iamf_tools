@@ -1,3 +1,5 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(default_visibility = ["//iamf/cli:__subpackages__"])
 
 # keep-sorted start block=yes prefix_order=cc_library newline_separated=yes
@@ -35,6 +37,7 @@ cc_library(
         "//iamf/common/utils:macros",
         "//iamf/obu:types",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -79,7 +82,6 @@ cc_library(
         "//iamf/cli:channel_label",
         "//iamf/common/utils:macros",
         "//iamf/common/utils:map_utils",
-        "//iamf/common/utils:sample_processing_utils",
         "//iamf/common/utils:validation_utils",
         "//iamf/obu:audio_element",
         "//iamf/obu:mix_presentation",
@@ -87,8 +89,8 @@ cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
