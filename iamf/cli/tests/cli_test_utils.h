@@ -32,6 +32,7 @@
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/demixing_module.h"
+#include "iamf/cli/descriptor_obu_parser.h"
 #include "iamf/cli/loudness_calculator_base.h"
 #include "iamf/cli/loudness_calculator_factory_base.h"
 #include "iamf/cli/obu_sequencer_base.h"
@@ -46,7 +47,6 @@
 #include "iamf/common/utils/numeric_utils.h"
 #include "iamf/obu/audio_element.h"
 #include "iamf/obu/codec_config.h"
-#include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_base.h"
 #include "iamf/obu/param_definitions.h"
@@ -61,20 +61,15 @@ namespace iamf_tools {
  *
  * \param read_bit_buffer Buffer reader that reads the IAMF bitstream. The
  *        reader's position will be moved past the first IA sequence.
- * \param sequence_header Output IA sequence header.
- * \param codec_config_obus Output codec configs.
- * \param audio_elements Output audio elements.
- * \param mix_presentations Output mix presentations.
+ * \param parsed_descriptor_obus Output parsed descriptor OBUs.
  * \param audio_frames Output audio frames.
  * \param parameter_blocks Output parameter blocks.
  * \return `absl::OkStatus()` if the process is successful. A specific status
  *         on failure.
  */
 absl::Status CollectObusFromIaSequence(
-    ReadBitBuffer& read_bit_buffer, IASequenceHeaderObu& ia_sequence_header,
-    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
-    absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements,
-    std::list<MixPresentationObu>& mix_presentations,
+    ReadBitBuffer& read_bit_buffer,
+    DescriptorObuParser::ParsedDescriptorObus& parsed_descriptor_obus,
     std::list<AudioFrameWithData>& audio_frames,
     std::list<ParameterBlockWithData>& parameter_blocks);
 
@@ -321,6 +316,21 @@ std::string GetAndCleanupOutputFileName(absl::string_view suffix);
  * \return Unique file path based on the current unit test info.
  */
 std::string GetAndCreateOutputDirectory(absl::string_view suffix);
+
+/*!\brief Gets the runfiles path for a given path.
+ *
+ * \param path Path to get the runfiles path for.
+ * \return Runfiles path for the given path.
+ */
+std::string GetRunfilesPath(absl::string_view path);
+
+/*!\brief Gets the runfiles path for a given path and filename.
+ *
+ * \param path Path to get the runfiles path for.
+ * \param filename Filename to join with the path.
+ * \return Runfiles path for the given path and filename.
+ */
+std::string GetRunfilesFile(absl::string_view path, std::string_view filename);
 
 /*!\brief Serializes a list of OBUs.
  *
@@ -629,8 +639,7 @@ class MockLoudnessCalculatorFactory : public LoudnessCalculatorFactoryBase {
 
   MOCK_METHOD(std::unique_ptr<LoudnessCalculatorBase>, CreateLoudnessCalculator,
               (const MixPresentationLayout& layout,
-               uint32_t num_samples_per_frame, int32_t rendered_sample_rate,
-               int32_t rendered_bit_depth),
+               uint32_t num_samples_per_frame, int32_t rendered_sample_rate),
               (const, override));
 };
 

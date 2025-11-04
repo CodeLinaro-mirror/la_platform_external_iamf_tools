@@ -18,11 +18,10 @@
 #include <string>
 #include <vector>
 
-#include "absl/log/check.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/types/span.h"
-#include "iamf/api/decoder/iamf_decoder.h"
 #include "iamf/cli/wav_writer.h"
+#include "iamf/include/iamf_tools/iamf_decoder_interface.h"
 #include "iamf/include/iamf_tools/iamf_tools_api_types.h"
 
 namespace iamf_tools {
@@ -30,8 +29,8 @@ namespace iamf_tools {
 // Configure the wav writer and reusable sample buffer, based on output
 // properties of the decoder.
 api::IamfStatus SetupAfterDescriptors(
-    const api::IamfDecoder& decoder, const std::string& output_filename,
-    std::unique_ptr<WavWriter>& wav_writer,
+    const api::IamfDecoderInterface& decoder,
+    const std::string& output_filename, std::unique_ptr<WavWriter>& wav_writer,
     std::vector<uint8_t>& reusable_sample_buffer) {
   // Gather statistics about the output.
   uint32_t frame_size;
@@ -65,10 +64,10 @@ api::IamfStatus SetupAfterDescriptors(
     return sample_rate_status;
   }
 
-  LOG(INFO) << "Output sample rate: " << sample_rate;
-  LOG(INFO) << "Output frame size: " << frame_size;
-  LOG(INFO) << "Output number of channels: " << num_channels;
-  LOG(INFO) << "Output sample size bytes: " << sample_size_bytes;
+  ABSL_LOG(INFO) << "Output sample rate: " << sample_rate;
+  ABSL_LOG(INFO) << "Output frame size: " << frame_size;
+  ABSL_LOG(INFO) << "Output number of channels: " << num_channels;
+  ABSL_LOG(INFO) << "Output sample size bytes: " << sample_size_bytes;
 
   // Now that we know output properties, create the wav writer, and configure
   // the size of the reusable sample buffer.
@@ -86,8 +85,9 @@ api::IamfStatus SetupAfterDescriptors(
 }
 
 api::IamfStatus DumpPendingTemporalUnitsToWav(
-    api::IamfDecoder& decoder, std::vector<uint8_t>& reusable_sample_buffer,
-    WavWriter& wav_writer, int32_t& output_num_temporal_units_processed) {
+    api::IamfDecoderInterface& decoder,
+    std::vector<uint8_t>& reusable_sample_buffer, WavWriter& wav_writer,
+    int32_t& output_num_temporal_units_processed) {
   // We could have fed in multiple (or none) temporal units. Flush all
   output_num_temporal_units_processed = 0;
   while (decoder.IsTemporalUnitAvailable()) {

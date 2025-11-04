@@ -7,15 +7,14 @@ cc_library(
     srcs = ["internal_utils.cc"],
     hdrs = ["internal_utils.h"],
     visibility = [
-        "//iamf/cli/internal/decoder:__pkg__",
+        "//iamf/cli:__subpackages__",
     ],
     deps = [
-        "//iamf/api/decoder:iamf_decoder",
         "//iamf/cli:wav_writer",
+        "//iamf/include/iamf_tools:iamf_decoder_interface",
         "//iamf/include/iamf_tools:iamf_tools_api_types",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/types:span",
+        "@abseil-cpp//absl/log:absl_log",
+        "@abseil-cpp//absl/types:span",
     ],
 )
 
@@ -24,10 +23,11 @@ cc_test(
     srcs = ["internal_utils_test.cc"],
     deps = [
         ":internal_utils",
-        "//iamf/api/decoder:iamf_decoder",
         "//iamf/cli:audio_element_with_data",
         "//iamf/cli:wav_writer",
         "//iamf/cli/tests:cli_test_utils",
+        "//iamf/include/iamf_tools:iamf_decoder_factory",
+        "//iamf/include/iamf_tools:iamf_decoder_interface",
         "//iamf/include/iamf_tools:iamf_tools_api_types",
         "//iamf/obu:audio_frame",
         "//iamf/obu:codec_config",
@@ -35,7 +35,7 @@ cc_test(
         "//iamf/obu:mix_presentation",
         "//iamf/obu:obu_header",
         "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@com_google_googletest//:gtest_main",
     ],
 )

@@ -105,9 +105,9 @@ class ObuProcessor {
    *        error.
    * \return std::unique_ptr<ObuProcessor> on success. `nullptr` on failure.
    */
-  static std::unique_ptr<ObuProcessor> Create(bool is_exhaustive_and_exact,
-                                              ReadBitBuffer* read_bit_buffer,
-                                              bool& output_insufficient_data);
+  static std::unique_ptr<ObuProcessor> absl_nullable Create(
+      bool is_exhaustive_and_exact, ReadBitBuffer* absl_nonnull read_bit_buffer,
+      bool& output_insufficient_data);
 
   /*!\brief Move constructor. */
   ObuProcessor(ObuProcessor&& obu_processor) = delete;
@@ -116,6 +116,9 @@ class ObuProcessor {
    *
    * Creation succeeds only if the descriptor OBUs are successfully processed
    * and all rendering modules are successfully initialized.
+   *
+   * Configures the OBU processor to render and manage a single Mix Presentation
+   * and a single Layout.
    *
    * \param desired_profile_versions Profiles that are permitted to be used
    *        selecting the mix presentation.
@@ -126,7 +129,6 @@ class ObuProcessor {
    * \param desired_layout Optionally, specifies the desired layout that will be
    *        used to render the audio, if available in the mix presentations.
    *        The actually selected Layout can be verified with `GetOutputLayout`.
-   * \param sample_processor_factory Factory to create post processors.
    * \param is_exhaustive_and_exact Whether the bitstream provided is meant to
    *        include all descriptor OBUs and no other data. This should only be
    *        set to true if the user knows the exact boundaries of their set of
@@ -138,13 +140,11 @@ class ObuProcessor {
    *        error.
    * \return Pointer to an ObuProcessor on success. `nullptr` on failure.
    */
-  static std::unique_ptr<ObuProcessor> CreateForRendering(
+  static std::unique_ptr<ObuProcessor> absl_nullable CreateForRendering(
       const absl::flat_hash_set<ProfileVersion>& desired_profile_versions,
       const std::optional<uint32_t>& desired_mix_presentation_id,
-      const std::optional<Layout>& desired_layout,
-      const RenderingMixPresentationFinalizer::SampleProcessorFactory&
-          sample_processor_factory,
-      bool is_exhaustive_and_exact, ReadBitBuffer* read_bit_buffer,
+      const std::optional<Layout>& desired_layout, bool is_exhaustive_and_exact,
+      ReadBitBuffer* absl_nonnull read_bit_buffer,
       bool& output_insufficient_data);
 
   /*!\brief Gets the sample rate of the output audio.
@@ -229,59 +229,58 @@ class ObuProcessor {
           output_rendered_samples);
 
   IASequenceHeaderObu ia_sequence_header_;
-  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus_ = {};
-  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements_ =
-      {};
-  std::list<MixPresentationObu> mix_presentations_ = {};
+  std::unique_ptr<
+      absl::flat_hash_map<DecodedUleb128, CodecConfigObu>> absl_nonnull
+  codec_config_obus_;
+  std::unique_ptr<absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>
+      audio_elements_;
+  std::list<MixPresentationObu> mix_presentations_;
 
  private:
+  /*\brief Models required to render audio for playback.
+   *
+   * The IAMF v1.0.0 specification describes several stages of processing in
+   * Figure 2. This struct contains classes which help perform audio processing
+   * in stages to ultimately produce audio content that can be played back.
+   */
+  struct RenderingModels {
+    // Substream IDs that are relevant to the rendering, below models are only
+    // initialized for these substreams.
+    absl::flat_hash_set<DecodedUleb128> relevant_substream_ids;
+    // "Codec Decoder", according to Figure 2 in IAMF specification.
+    AudioFrameDecoder audio_frame_decoder;
+    // "Element Reconstructor", according to Figure 2 in IAMF specification.
+    DemixingModule demixing_module;
+    // Combined "Renderer" and "Mixer", according to Figure 2 in IAMF
+    // specification.
+    RenderingMixPresentationFinalizer mix_presentation_finalizer;
+  };
+
   /*!\brief Private constructor used only by Create() and CreateForRendering().
    *
    * \param read_bit_buffer Pointer to the read bit buffer that reads the IAMF
    *        bitstream.
    * \return ObuProcessor instance.
    */
-  explicit ObuProcessor(ReadBitBuffer* /* absl_nonnull */ buffer)
-      : read_bit_buffer_(buffer) {}
+  explicit ObuProcessor(ReadBitBuffer* absl_nonnull buffer)
+      : codec_config_obus_(
+            std::make_unique<
+                absl::flat_hash_map<DecodedUleb128, CodecConfigObu>>()),
+        audio_elements_(
+            std::make_unique<
+                absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>()),
+        read_bit_buffer_(buffer) {}
 
-  /*!\brief Processes the Descriptor OBUs of an IA Sequence.
+  /*!\brief Configures the audio processing pipeline for rendering.
    *
-   * If insufficient data to process all descriptor OBUs is provided, a failing
-   * status will be returned. `insufficient_data` will be set to true, the
-   * read_bit_buffer will not be consumed, and the output parameters will not be
-   * populated. A user should call this function again after providing more
-   * data within the read_bit_buffer.
-   *
-   * \param is_exhaustive_and_exact Whether the bitstream provided is meant to
-   *        include all descriptor OBUs and no other data. This should only be
-   *        set to true if the user knows the exact boundaries of their set of
-   *        descriptor OBUs.
-   * \param read_bit_buffer Buffer containing a portion of an iamf bitstream
-   *        containing a sequence of OBUs. The buffer will be consumed up to the
-   *        end of the descriptor OBUs if processing is successful.
-   * \param output_sequence_header IA sequence header processed from the
-   *        bitstream.
-   * \param output_codec_config_obus Map of Codec Config OBUs processed from the
-   *        bitstream.
-   * \param output_audio_elements_with_data Map of Audio Elements and metadata
-   *        processed from the bitstream.
-   * \param output_mix_presentation_obus List of Mix Presentation OBUs processed
-   *        from the bitstream.
-   * \param insufficient_data Whether the bitstream provided is insufficient  to
-   *        process all descriptor OBUs.
-   * \return `absl::OkStatus()` if the process is successful. A specific status
-   *         on failure.
+   * \param audio_elements Audio elements, irrelevant ones will be ignored.
+   * \param simplified_mix_presentation Simplified mix presentation to render.
    */
-  [[deprecated("Remove when class starts using DescriptorObuParser")]]
-  static absl::Status ProcessDescriptorObus(
-      bool is_exhaustive_and_exact, ReadBitBuffer& read_bit_buffer,
-      IASequenceHeaderObu& output_sequence_header,
-      absl::flat_hash_map<DecodedUleb128, CodecConfigObu>&
-          output_codec_config_obus,
-      absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
-          output_audio_elements_with_data,
-      std::list<MixPresentationObu>& output_mix_presentation_obus,
-      bool& insufficient_data);
+  static absl::StatusOr<RenderingModels>
+  ConfigureSimplifiedAudioProcessingPipeline(
+      const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
+          audio_elements,
+      const MixPresentationObu& simplified_mix_presentation);
 
   /*!\brief Performs internal initialization of the OBU processor.
    *
@@ -313,22 +312,17 @@ class ObuProcessor {
    * \param desired_layout Optionally, specifies the desired layout that will be
    *        used to render the audio, if available in the mix presentations.
    *        The actually selected Layout can be verified with `GetOutputLayout`.
-   * \param sample_processor_factory Factory to create post processors.
    * \return `absl::OkStatus()` if the process is successful. A specific status
    *         on failure.
    */
   absl::Status InitializeForRendering(
       const absl::flat_hash_set<ProfileVersion>& desired_profile_versions,
       const std::optional<uint32_t>& desired_mix_presentation_id,
-      const std::optional<Layout>& desired_layout,
-      const RenderingMixPresentationFinalizer::SampleProcessorFactory&
-          sample_processor_factory);
+      const std::optional<Layout>& desired_layout);
 
   struct DecodingLayoutInfo {
     DecodedUleb128 mix_presentation_id;
     Layout layout;
-    int sub_mix_index;
-    int layout_index;
   };
 
   struct TemporalUnitData {
@@ -386,8 +380,8 @@ class ObuProcessor {
   absl::flat_hash_map<DecodedUleb128, const AudioElementWithData*>
       substream_id_to_audio_element_;
   std::unique_ptr<GlobalTimingModule> global_timing_module_;
-  std::optional<ParametersManager> parameters_manager_;
-  ReadBitBuffer* /* absl_nonnull */ read_bit_buffer_;
+  std::unique_ptr<ParametersManager> parameters_manager_;
+  ReadBitBuffer* absl_nonnull read_bit_buffer_;
 
   // Contains target layout information for rendering.
   DecodingLayoutInfo decoding_layout_info_;
@@ -396,11 +390,8 @@ class ObuProcessor {
   TemporalUnitData current_temporal_unit_;
   TemporalUnitData next_temporal_unit_;
 
-  // Modules used for rendering.
-  bool rendering_ = false;
-  std::optional<AudioFrameDecoder> audio_frame_decoder_;
-  std::optional<DemixingModule> demixing_module_;
-  std::optional<RenderingMixPresentationFinalizer> mix_presentation_finalizer_;
+  // Modules used for rendering, present iff `CreateForRendering()` was called.
+  std::optional<RenderingModels> rendering_models_;
 };
 }  // namespace iamf_tools
 #endif  // CLI_OBU_PROCESSOR_H_

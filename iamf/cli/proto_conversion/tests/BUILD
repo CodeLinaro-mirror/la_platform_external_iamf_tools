@@ -7,10 +7,23 @@ cc_test(
     deps = [
         "//iamf/cli:channel_label",
         "//iamf/cli/proto_conversion:channel_label_utils",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/strings:string_view",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/status:status_matchers",
+        "@abseil-cpp//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "codec_config_utils_test",
+    srcs = ["codec_config_utils_test.cc"],
+    deps = [
+        "//iamf/cli/proto:codec_config_cc_proto",
+        "//iamf/cli/proto_conversion:codec_config_utils",
+        "//iamf/obu:types",
+        "@abseil-cpp//absl/status:status_matchers",
+        "@com_google_googletest//:gtest_main",
+        "@libopus",
     ],
 )
 
@@ -27,9 +40,9 @@ cc_test(
         "//iamf/obu:audio_element",
         "//iamf/obu:obu_header",
         "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status:status_matchers",
-        "@com_google_absl//absl/status:statusor",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/status:status_matchers",
+        "@abseil-cpp//absl/status:statusor",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -60,7 +73,7 @@ cc_test(
         "//iamf/obu:obu_header",
         "//iamf/obu:param_definitions",
         "//iamf/obu:parameter_data",
-        "@com_google_absl//absl/status:status_matchers",
+        "@abseil-cpp//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
     ],

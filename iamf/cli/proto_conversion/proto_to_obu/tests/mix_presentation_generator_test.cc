@@ -79,7 +79,6 @@ void FillMixPresentationMetadata(
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         mix_presentation_id: 42
-        count_label: 0
         sub_mixes {
           audio_elements {
             audio_element_id: 300
@@ -87,7 +86,6 @@ void FillMixPresentationMetadata(
               headphones_rendering_mode: HEADPHONES_RENDERING_MODE_STEREO
             }
           }
-          num_layouts: 1
           layouts {
             loudness_layout {
               layout_type: LAYOUT_TYPE_LOUDSPEAKERS_SS_CONVENTION
@@ -185,7 +183,6 @@ TEST(Generate, CopiesReservedHeadphonesRenderingMode3) {
       generated_obus.front().sub_mixes_[0].audio_elements[0].rendering_config;
   EXPECT_EQ(generated_rendering_config.headphones_rendering_mode,
             kExpectedHeadphonesRenderingMode3);
-  EXPECT_EQ(generated_rendering_config.rendering_config_extension_size, 0);
   EXPECT_TRUE(
       generated_rendering_config.rendering_config_extension_bytes.empty());
 }
@@ -199,7 +196,6 @@ TEST(Generate, CopiesRenderingConfigExtension) {
                                       ->mutable_rendering_config();
   first_rendering_config.set_headphones_rendering_mode(
       HEADPHONES_RENDERING_MODE_RESERVED_3);
-  first_rendering_config.set_rendering_config_extension_size(5);
   first_rendering_config.set_rendering_config_extension_bytes("extra");
   constexpr std::array<char, 5> kExpectedRenderingConfigExtensionBytes = {
       'e', 'x', 't', 'r', 'a'};
@@ -211,13 +207,12 @@ TEST(Generate, CopiesRenderingConfigExtension) {
 
   const auto& generated_rendering_config =
       generated_obus.front().sub_mixes_[0].audio_elements[0].rendering_config;
-  EXPECT_EQ(generated_rendering_config.rendering_config_extension_size, 5);
   EXPECT_THAT(generated_rendering_config.rendering_config_extension_bytes,
               ElementsAreArray(kExpectedRenderingConfigExtensionBytes));
 }
 
-TEST(Generate, InvalidWhenRenderingConfigExtensionIsMismatched) {
-  constexpr size_t kMismatchedSize = 6;
+TEST(Generate, IgnoresDeprecatedRenderingConfigExtensionSize) {
+  constexpr uint32_t kMismatchedSize = std::numeric_limits<uint32_t>::max();
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
   auto& first_rendering_config = *mix_presentation_metadata.at(0)
@@ -228,19 +223,22 @@ TEST(Generate, InvalidWhenRenderingConfigExtensionIsMismatched) {
       HEADPHONES_RENDERING_MODE_RESERVED_3);
   first_rendering_config.set_rendering_config_extension_size(kMismatchedSize);
   first_rendering_config.set_rendering_config_extension_bytes("extra");
-
   MixPresentationGenerator generator(mix_presentation_metadata);
-  std::list<MixPresentationObu> undefined_generated_obus;
+  std::list<MixPresentationObu> generated_obus;
 
-  EXPECT_FALSE(
-      generator.Generate(kAppendBuildInformationTag, undefined_generated_obus)
-          .ok());
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              IsOk());
+
+  EXPECT_EQ(generated_obus.front()
+                .sub_mixes_[0]
+                .audio_elements[0]
+                .rendering_config.rendering_config_extension_bytes,
+            std::vector<uint8_t>({'e', 'x', 't', 'r', 'a'}));
 }
 
 TEST(Generate, CopiesNoAnnotations) {
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
-  mix_presentation_metadata.at(0).set_count_label(0);
   mix_presentation_metadata.at(0).clear_annotations_language();
   mix_presentation_metadata.at(0).clear_localized_presentation_annotations();
   mix_presentation_metadata.at(0)
@@ -263,7 +261,6 @@ TEST(Generate, CopiesNoAnnotations) {
 }
 
 TEST(Generate, CopiesDeprecatedAnnotations) {
-  constexpr int kCountLabel = 2;
   const std::vector<std::string> kAnnotationsLanguage = {"en-us", "en-gb"};
   const std::vector<std::string> kLocalizedPresentationAnnotations = {
       "US Label", "GB Label"};
@@ -272,7 +269,6 @@ TEST(Generate, CopiesDeprecatedAnnotations) {
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
   auto& mix_presentation = mix_presentation_metadata.at(0);
-  mix_presentation.set_count_label(kCountLabel);
   mix_presentation.mutable_language_labels()->Add(kAnnotationsLanguage.begin(),
                                                   kAnnotationsLanguage.end());
   *mix_presentation.mutable_mix_presentation_annotations_array()
@@ -308,7 +304,6 @@ TEST(Generate, CopiesDeprecatedAnnotations) {
 }
 
 TEST(Generate, CopiesAnnotations) {
-  constexpr int kCountLabel = 2;
   const std::vector<std::string> kAnnotationsLanguage = {"en-us", "en-gb"};
   const std::vector<std::string> kLocalizedPresentationAnnotations = {
       "US Label", "GB Label"};
@@ -317,7 +312,6 @@ TEST(Generate, CopiesAnnotations) {
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
   auto& mix_presentation = mix_presentation_metadata.at(0);
-  mix_presentation.set_count_label(kCountLabel);
   mix_presentation.mutable_annotations_language()->Add(
       kAnnotationsLanguage.begin(), kAnnotationsLanguage.end());
   mix_presentation.mutable_localized_presentation_annotations()->Add(
@@ -345,8 +339,7 @@ TEST(Generate, CopiesAnnotations) {
 }
 
 TEST(Generate, NonDeprecatedAnnotationsTakePrecedence) {
-  constexpr int kCountLabel = 1;
-  const std::vector<std::string> kDeprecatedAnotations = {"Deprecated"};
+  const std::vector<std::string> kDeprecatedAnnotations = {"Deprecated"};
   const std::vector<std::string> kAnnotationsLanguage = {"en-us"};
   const std::vector<std::string> kLocalizedPresentationAnnotations = {
       "US Label"};
@@ -355,7 +348,6 @@ TEST(Generate, NonDeprecatedAnnotationsTakePrecedence) {
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
   auto& mix_presentation = mix_presentation_metadata.at(0);
-  mix_presentation.set_count_label(kCountLabel);
   mix_presentation.mutable_annotations_language()->Add(
       kAnnotationsLanguage.begin(), kAnnotationsLanguage.end());
   mix_presentation.mutable_localized_presentation_annotations()->Add(
@@ -366,16 +358,16 @@ TEST(Generate, NonDeprecatedAnnotationsTakePrecedence) {
       ->mutable_localized_element_annotations()
       ->Add(kAudioElementLocalizedElementAnnotations.begin(),
             kAudioElementLocalizedElementAnnotations.end());
-  mix_presentation.mutable_language_labels()->Add(kDeprecatedAnotations.begin(),
-                                                  kDeprecatedAnotations.end());
+  mix_presentation.mutable_language_labels()->Add(
+      kDeprecatedAnnotations.begin(), kDeprecatedAnnotations.end());
   *mix_presentation.mutable_mix_presentation_annotations_array()
        ->Add()
-       ->mutable_mix_presentation_friendly_label() = kDeprecatedAnotations[0];
+       ->mutable_mix_presentation_friendly_label() = kDeprecatedAnnotations[0];
   *mix_presentation.mutable_sub_mixes(0)
        ->mutable_audio_elements(0)
        ->mutable_mix_presentation_element_annotations_array()
        ->Add()
-       ->mutable_audio_element_friendly_label() = kDeprecatedAnotations[0];
+       ->mutable_audio_element_friendly_label() = kDeprecatedAnnotations[0];
 
   MixPresentationGenerator generator(mix_presentation_metadata);
 
@@ -392,36 +384,85 @@ TEST(Generate, NonDeprecatedAnnotationsTakePrecedence) {
       kAudioElementLocalizedElementAnnotations);
 }
 
-TEST(Generate, ObeysInconsistentNumberOfLabels) {
-  const std::vector<std::string> kAnnotationsLanguage = {"Language 1",
-                                                         "Language 2"};
-  const std::vector<std::string> kOnlyOneLocalizedPresentationAnnotation = {
-      "Localized annotation 1"};
-  const std::vector<std::string> kNoAudioElementLocalizedElementAnnotations =
-      {};
+TEST(Generate, IgnoresDeprecatedCountLabel) {
+  constexpr DecodedUleb128 kMassiveCountLabel =
+      std::numeric_limits<DecodedUleb128>::max();
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
-  auto& mix_presentation = mix_presentation_metadata.at(0);
-  mix_presentation.set_count_label(2);
-  mix_presentation.mutable_annotations_language()->Add(
-      kAnnotationsLanguage.begin(), kAnnotationsLanguage.end());
-  mix_presentation.mutable_localized_presentation_annotations()->Add(
-      kOnlyOneLocalizedPresentationAnnotation.begin(),
-      kOnlyOneLocalizedPresentationAnnotation.end());
-
+  mix_presentation_metadata.at(0).set_count_label(kMassiveCountLabel);
   MixPresentationGenerator generator(mix_presentation_metadata);
 
   std::list<MixPresentationObu> generated_obus;
   EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
+  ASSERT_FALSE(generated_obus.empty());
 
   const auto& first_obu = generated_obus.front();
-  EXPECT_EQ(first_obu.GetAnnotationsLanguage(), kAnnotationsLanguage);
-  EXPECT_EQ(first_obu.GetLocalizedPresentationAnnotations(),
-            kOnlyOneLocalizedPresentationAnnotation);
-  EXPECT_EQ(
-      first_obu.sub_mixes_[0].audio_elements[0].localized_element_annotations,
-      kNoAudioElementLocalizedElementAnnotations);
+  EXPECT_TRUE(first_obu.GetAnnotationsLanguage().empty());
+  EXPECT_TRUE(first_obu.GetLocalizedPresentationAnnotations().empty());
+  EXPECT_TRUE(first_obu.sub_mixes_[0]
+                  .audio_elements[0]
+                  .localized_element_annotations.empty());
+}
+
+void FillMixPresentationMetadataWithAnnotations(
+    const std::vector<std::string>& annotations_language,
+    const std::vector<std::string>& localized_presentation_annotations,
+    const std::vector<std::string>& audio_element_localized_element_annotations,
+    iamf_tools_cli_proto::MixPresentationObuMetadata& mix_presentation) {
+  mix_presentation.mutable_annotations_language()->Add(
+      annotations_language.begin(), annotations_language.end());
+  mix_presentation.mutable_localized_presentation_annotations()->Add(
+      localized_presentation_annotations.begin(),
+      localized_presentation_annotations.end());
+  mix_presentation.mutable_sub_mixes(0)
+      ->mutable_audio_elements(0)
+      ->mutable_localized_element_annotations()
+      ->Add(audio_element_localized_element_annotations.begin(),
+            audio_element_localized_element_annotations.end());
+}
+
+TEST(Generate, InvalidWhenNumberOfAnnotationsLanguageIsInconsistent) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto& mix_presentation = *mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(&mix_presentation);
+  FillMixPresentationMetadataWithAnnotations({"en-us"}, {}, {},
+                                             mix_presentation);
+  MixPresentationGenerator generator(mix_presentation_metadata);
+
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
+}
+
+TEST(Generate,
+     InvalidWhenNumberOfLocalizedPresentationAnnotationsIsInconsistent) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto& mix_presentation = *mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(&mix_presentation);
+  FillMixPresentationMetadataWithAnnotations(
+      {}, {"localized presentation annotation 1"}, {}, mix_presentation);
+  MixPresentationGenerator generator(mix_presentation_metadata);
+
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
+}
+
+TEST(Generate, InvalidWhenNumberOfLocalizedElementAnnotationsIsInconsistent) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto& mix_presentation = *mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(&mix_presentation);
+  FillMixPresentationMetadataWithAnnotations(
+      {}, {}, {"localized element annotation 1"}, mix_presentation);
+  MixPresentationGenerator generator(mix_presentation_metadata);
+
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
 }
 
 TEST(Generate, CopiesMixPresentationTagsWithZeroTags) {
@@ -478,10 +519,10 @@ TEST(Generate, ReturnsErrorIfUserSpecifies256TagsWithoutBuildInformation) {
 
   MixPresentationGenerator generator(mix_presentation_metadata);
 
-  std::list<MixPresentationObu> ignored_generated_obus;
-  EXPECT_THAT(
-      generator.Generate(kOmitBuildInformationTag, ignored_generated_obus),
-      Not(IsOk()));
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kOmitBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
 }
 
 TEST(Generate, ReturnsErrorIfUserSpecifies255TagsWithoutBuildInformation) {
@@ -500,10 +541,10 @@ TEST(Generate, ReturnsErrorIfUserSpecifies255TagsWithoutBuildInformation) {
 
   // It would be OK to generate 255 tags, but the build information tag pushes
   // the final count over the limit.
-  std::list<MixPresentationObu> ignored_generated_obus;
-  EXPECT_THAT(
-      generator.Generate(kAppendBuildInformationTag, ignored_generated_obus),
-      Not(IsOk()));
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
 }
 
 TEST(Generate, CopiesDuplicateContentLanguageTags) {
@@ -511,7 +552,6 @@ TEST(Generate, CopiesDuplicateContentLanguageTags) {
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
   auto& mix_presentation = mix_presentation_metadata.at(0);
   mix_presentation.set_include_mix_presentation_tags(true);
-  mix_presentation.mutable_mix_presentation_tags()->set_num_tags(2);
   auto* first_tag =
       mix_presentation.mutable_mix_presentation_tags()->add_tags();
   first_tag->set_tag_name("content_language");
@@ -754,7 +794,7 @@ TEST(Generate, NonDeprecatedElementMixConfigTakesPrecedence) {
 
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
-  // When both both the deprecated and non-deprecated element mix config are
+  // When both the deprecated and non-deprecated element mix config are
   // provided, the non-deprecated config takes precedence.
   FillMixGainParamDefinition(kNonDeprecatedParameterId,
                              kNonDeprecatedElementMixGain,
@@ -789,7 +829,7 @@ TEST(Generate, NonDeprecatedOutputMixConfigTakesPrecedence) {
 
   MixPresentationObuMetadatas mix_presentation_metadata;
   FillMixPresentationMetadata(mix_presentation_metadata.Add());
-  // When both both the deprecated and non-deprecated element mix config are
+  // When both the deprecated and non-deprecated element mix config are
   // provided, the non-deprecated config takes precedence.
   FillMixGainParamDefinition(kNonDeprecatedParameterId,
                              kNonDeprecatedElementMixGain,
@@ -814,132 +854,146 @@ TEST(Generate, NonDeprecatedOutputMixConfigTakesPrecedence) {
             kNonDeprecatedElementMixGain);
 }
 
-class MixPresentationGeneratorTest : public ::testing::Test {
- public:
-  void SetUp() override {
-    FillMixPresentationMetadata(mix_presentation_metadata_.Add());
-
-    AddMixPresentationObuWithAudioElementIds(
-        kMixPresentationId, {kAudioElementId}, kCommonParameterId,
-        kCommonParameterRate, expected_obus_);
-  }
-
- protected:
-  MixPresentationObuMetadatas mix_presentation_metadata_;
-  std::list<MixPresentationObu> generated_obus_;
-  std::list<MixPresentationObu> expected_obus_;
-};
-
-TEST_F(MixPresentationGeneratorTest, EmptyUserMetadataGeneratesNoObus) {
+TEST(Generate, EmptyUserMetadataGeneratesNoObus) {
   MixPresentationGenerator generator(/*mix_presentation_metadata=*/{});
-  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
 
-  EXPECT_TRUE(generated_obus_.empty());
+  EXPECT_TRUE(generated_obus.empty());
 }
 
-TEST_F(MixPresentationGeneratorTest, SSConventionWithOneStereoAudioElement) {
-  MixPresentationGenerator generator(mix_presentation_metadata_);
-  EXPECT_THAT(generator.Generate(kOmitBuildInformationTag, generated_obus_),
+TEST(Generate, SSConventionWithOneStereoAudioElement) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  FillMixPresentationMetadata(mix_presentation_metadata.Add());
+  // Prepare a matching expected OBU.
+  std::list<MixPresentationObu> expected_obus;
+  AddMixPresentationObuWithAudioElementIds(
+      kMixPresentationId, {kAudioElementId}, kCommonParameterId,
+      kCommonParameterRate, expected_obus);
+  MixPresentationGenerator generator(mix_presentation_metadata);
+
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kOmitBuildInformationTag, generated_obus),
               IsOk());
-  EXPECT_EQ(generated_obus_, expected_obus_);
+
+  EXPECT_EQ(generated_obus, expected_obus);
 }
 
-TEST_F(MixPresentationGeneratorTest, SupportsUtf8) {
+TEST(Generate, SupportsUtf8) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto& mix_presentation = *mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(&mix_presentation);
   const std::string kUtf8FourByteSequenceCode = "\xf0\x9d\x85\x9e\x00)";
-  mix_presentation_metadata_.at(0).set_count_label(1);
-  mix_presentation_metadata_.at(0).add_localized_presentation_annotations(
-      kUtf8FourByteSequenceCode);
+  FillMixPresentationMetadataWithAnnotations(
+      {"en-us"}, {kUtf8FourByteSequenceCode},
+      {"localized element annotation 1"}, mix_presentation);
 
-  MixPresentationGenerator generator(mix_presentation_metadata_);
-  ASSERT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  MixPresentationGenerator generator(mix_presentation_metadata);
+  std::list<MixPresentationObu> generated_obus;
+  ASSERT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
 
-  const auto generated_annotations =
-      generated_obus_.back().GetLocalizedPresentationAnnotations();
-  ASSERT_FALSE(generated_annotations.empty());
-  EXPECT_EQ(generated_annotations[0], kUtf8FourByteSequenceCode);
+  EXPECT_EQ(generated_obus.back().GetLocalizedPresentationAnnotations(),
+            std::vector<std::string>{kUtf8FourByteSequenceCode});
 }
 
-TEST_F(MixPresentationGeneratorTest, InvalidHeadphonesRenderingMode) {
-  mix_presentation_metadata_.at(0)
-      .mutable_sub_mixes(0)
+TEST(Generate, InvalidHeadphonesRenderingMode) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
+  mix_presentation->mutable_sub_mixes(0)
       ->mutable_audio_elements(0)
       ->mutable_rendering_config()
       ->set_headphones_rendering_mode(
           iamf_tools_cli_proto::HEADPHONES_RENDERING_MODE_INVALID);
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_FALSE(
-      generator.Generate(kAppendBuildInformationTag, generated_obus_).ok());
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
 }
 
-TEST_F(MixPresentationGeneratorTest, IgnoresDeprecatedNumSubMixes) {
+TEST(Generate, IgnoresDeprecatedNumSubMixes) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
   // This test assumes the default metadata has one sub mix.
   constexpr uint32_t kExpectedNumSubMixes = 1;
-  ASSERT_EQ(mix_presentation_metadata_.at(0).sub_mixes_size(),
-            kExpectedNumSubMixes);
+  ASSERT_EQ(mix_presentation->sub_mixes_size(), kExpectedNumSubMixes);
   // Include a strange value for the deprecated `num_sub_mixes` field.
   constexpr uint32_t kIncorrectIgnoredNumSubMixes = 2;
-  mix_presentation_metadata_.at(0).set_num_sub_mixes(
-      kIncorrectIgnoredNumSubMixes);
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  mix_presentation->set_num_sub_mixes(kIncorrectIgnoredNumSubMixes);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
 
   // Regardless of the deprecated `num_layouts` field, the number of layouts is
   // inferred the `layouts` array.
-  EXPECT_EQ(generated_obus_.back().GetNumSubMixes(), kExpectedNumSubMixes);
-  EXPECT_EQ(generated_obus_.back().sub_mixes_.size(), kExpectedNumSubMixes);
+  EXPECT_EQ(generated_obus.back().GetNumSubMixes(), kExpectedNumSubMixes);
+  EXPECT_EQ(generated_obus.back().sub_mixes_.size(), kExpectedNumSubMixes);
 }
 
-TEST_F(MixPresentationGeneratorTest, IgnoresDeprecatedNumAudioElements) {
+TEST(Generate, IgnoresDeprecatedNumAudioElements) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
   // This test assumes the default metadata has one audio element.
   constexpr uint32_t kExpectedNumAudioElements = 1;
-  ASSERT_EQ(mix_presentation_metadata_.at(0).sub_mixes(0).audio_elements_size(),
+  ASSERT_EQ(mix_presentation->sub_mixes(0).audio_elements_size(),
             kExpectedNumAudioElements);
   // Include a strange value for the deprecated `num_audio_elements`.
   constexpr uint32_t kIncorrectIgnoredNumAudioElements = 2;
-  mix_presentation_metadata_.at(0).mutable_sub_mixes(0)->set_num_audio_elements(
+  mix_presentation->mutable_sub_mixes(0)->set_num_audio_elements(
       kIncorrectIgnoredNumAudioElements);
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
 
   // Regardless of the deprecated `num_audio_elements` field, the number of
   // audio elements the `audio_elements` array.
-  EXPECT_EQ(generated_obus_.back().sub_mixes_[0].audio_elements.size(),
+  EXPECT_EQ(generated_obus.back().sub_mixes_[0].audio_elements.size(),
             kExpectedNumAudioElements);
 }
 
-TEST_F(MixPresentationGeneratorTest, IgnoresDeprecatedNumLayouts) {
+TEST(Generate, IgnoresDeprecatedNumLayouts) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
   // This test assumes the default metadata has one layout.
   constexpr uint32_t kExpectedNumLayouts = 1;
-  ASSERT_EQ(mix_presentation_metadata_.at(0).sub_mixes(0).layouts().size(),
+  ASSERT_EQ(mix_presentation->sub_mixes(0).layouts().size(),
             kExpectedNumLayouts);
   // Include a strange value for the deprecated `num_layouts`.
   constexpr uint32_t kIncorrectIgnoredNumLayouts = 2;
-  mix_presentation_metadata_.at(0).mutable_sub_mixes(0)->set_num_layouts(
+  mix_presentation->mutable_sub_mixes(0)->set_num_layouts(
       kIncorrectIgnoredNumLayouts);
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
 
   // Regardless of the deprecated `num_layouts` field, the number of layouts is
   // inferred from the `layouts` array.
-  EXPECT_EQ(generated_obus_.back().sub_mixes_[0].layouts.size(),
+  EXPECT_EQ(generated_obus.back().sub_mixes_[0].layouts.size(),
             kExpectedNumLayouts);
 }
 
-TEST_F(MixPresentationGeneratorTest, CopiesUserLoudness) {
+TEST(Generate, CopiesUserLoudness) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
   const int16_t kIntegratedLoudness = -100;
   const int16_t kDigitalPeak = -101;
   const int16_t kTruePeak = -102;
-  auto* loudness = mix_presentation_metadata_.at(0)
-                       .mutable_sub_mixes(0)
+  auto* loudness = mix_presentation->mutable_sub_mixes(0)
                        ->mutable_layouts(0)
                        ->mutable_loudness();
   loudness->add_info_type_bit_masks(
@@ -947,33 +1001,42 @@ TEST_F(MixPresentationGeneratorTest, CopiesUserLoudness) {
   loudness->set_integrated_loudness(kIntegratedLoudness);
   loudness->set_digital_peak(kDigitalPeak);
   loudness->set_true_peak(kTruePeak);
-  expected_obus_.back().sub_mixes_[0].layouts[0].loudness = {
-      .info_type = LoudnessInfo::kTruePeak,
-      .integrated_loudness = kIntegratedLoudness,
-      .digital_peak = kDigitalPeak,
-      .true_peak = kTruePeak};
 
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
               IsOk());
+
+  auto& first_output_loudness =
+      generated_obus.front().sub_mixes_[0].layouts[0].loudness;
+  EXPECT_EQ(first_output_loudness.info_type, LoudnessInfo::kTruePeak);
+  EXPECT_EQ(first_output_loudness.integrated_loudness, kIntegratedLoudness);
+  EXPECT_EQ(first_output_loudness.digital_peak, kDigitalPeak);
+  EXPECT_EQ(first_output_loudness.true_peak, kTruePeak);
 }
 
-TEST_F(MixPresentationGeneratorTest, InvalidLayoutType) {
-  mix_presentation_metadata_.at(0)
-      .mutable_sub_mixes(0)
+TEST(Generate, InvalidLayoutType) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
+  mix_presentation->mutable_sub_mixes(0)
       ->mutable_layouts(0)
       ->mutable_loudness_layout()
       ->set_layout_type(iamf_tools_cli_proto::LAYOUT_TYPE_INVALID);
-  MixPresentationGenerator generator(mix_presentation_metadata_);
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  EXPECT_FALSE(
-      generator.Generate(kAppendBuildInformationTag, generated_obus_).ok());
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kAppendBuildInformationTag, generated_obus),
+              Not(IsOk()));
+  EXPECT_TRUE(generated_obus.empty());
 }
 
-TEST_F(MixPresentationGeneratorTest, ReservedLayoutWithOneStereoAudioElement) {
+TEST(Generate, ReservedLayoutWithOneStereoAudioElement) {
+  MixPresentationObuMetadatas mix_presentation_metadata;
+  auto* mix_presentation = mix_presentation_metadata.Add();
+  FillMixPresentationMetadata(mix_presentation);
   // Overwrite the user metadata with a reserved layout.
-  auto& input_sub_mix = *mix_presentation_metadata_.at(0).mutable_sub_mixes(0);
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         loudness_layout {
@@ -982,21 +1045,21 @@ TEST_F(MixPresentationGeneratorTest, ReservedLayoutWithOneStereoAudioElement) {
         }
         loudness { info_type_bit_masks: [] }
       )pb",
-      input_sub_mix.mutable_layouts(0)));
+      mix_presentation->mutable_sub_mixes(0)->mutable_layouts(0)));
+  MixPresentationGenerator generator(mix_presentation_metadata);
 
-  // Overwrite the expected OBU with a reserved layout. The actual loudness
-  // measurements are not modified by the generator.
-  expected_obus_.back().sub_mixes_[0].layouts = {
-      {.loudness_layout = {.layout_type = Layout::kLayoutTypeReserved1,
-                           .specific_layout =
-                               LoudspeakersReservedOrBinauralLayout{.reserved =
-                                                                        0}},
-       .loudness = {.info_type = 0}}};
-
-  MixPresentationGenerator generator(mix_presentation_metadata_);
-  EXPECT_THAT(generator.Generate(kOmitBuildInformationTag, generated_obus_),
+  std::list<MixPresentationObu> generated_obus;
+  EXPECT_THAT(generator.Generate(kOmitBuildInformationTag, generated_obus),
               IsOk());
-  EXPECT_EQ(generated_obus_, expected_obus_);
+
+  auto& first_output_layout = generated_obus.front().sub_mixes_[0].layouts[0];
+  EXPECT_EQ(first_output_layout.loudness_layout.layout_type,
+            Layout::kLayoutTypeReserved1);
+  auto* reserved_or_binaural_layout =
+      std::get_if<LoudspeakersReservedOrBinauralLayout>(
+          &first_output_layout.loudness_layout.specific_layout);
+  ASSERT_NE(reserved_or_binaural_layout, nullptr);
+  EXPECT_EQ(reserved_or_binaural_layout->reserved, 0);
 }
 
 TEST(CopySoundSystem, ValidSoundSystem) {
@@ -1088,7 +1151,7 @@ TEST(CopyUserIntegratedLoudnessAndPeaks, WithoutTruePeak) {
       )pb",
       &user_loudness));
 
-  // Configured expected data. The function only writes to the
+  // Configure expected data. The function only writes to the
   // integrated loudness and peak loudness fields.
   const LoudnessInfo expected_output_loudness = {
       .info_type = 0, .integrated_loudness = -99, .digital_peak = -100};
@@ -1114,7 +1177,7 @@ TEST(CopyUserIntegratedLoudnessAndPeaks, WithTruePeak) {
       )pb",
       &user_loudness));
 
-  // Configured expected data. The function only writes to the
+  // Configure expected data. The function only writes to the
   // integrated loudness and peak loudness fields.
   const LoudnessInfo expected_output_loudness = {
       .info_type = LoudnessInfo::kTruePeak,
@@ -1186,7 +1249,7 @@ TEST(CopyUserAnchoredLoudness, TwoAnchorElements) {
       )pb",
       &user_loudness);
 
-  // Configured expected data. The function only writes to the
+  // Configure expected data. The function only writes to the
   // `AnchoredLoudness`.
   const AnchoredLoudness expected_output_loudness = {
       .anchor_elements = {
@@ -1243,22 +1306,13 @@ TEST(CopyUserLayoutExtension, AllInfoTypeExtensions) {
 
   // Configure user data to copy in.
   iamf_tools_cli_proto::LoudnessInfo user_loudness;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        info_type_size: 3 info_type_bytes: "abc"
-      )pb",
-      &user_loudness));
-
-  // Configured expected data. The function only writes to the
-  // `LayoutExtension`.
-  const LayoutExtension expected_layout_extension = {
-      .info_type_size = 3,
-      .info_type_bytes = std::vector<uint8_t>({'a', 'b', 'c'})};
+  user_loudness.set_info_type_bytes("abc");
 
   EXPECT_THAT(MixPresentationGenerator::CopyUserLayoutExtension(
                   user_loudness, output_loudness),
               IsOk());
-  EXPECT_EQ(output_loudness.layout_extension, expected_layout_extension);
+  EXPECT_EQ(output_loudness.layout_extension.info_type_bytes,
+            std::vector<uint8_t>({'a', 'b', 'c'}));
 }
 
 TEST(CopyUserLayoutExtension, OneInfoTypeExtension) {
@@ -1267,22 +1321,32 @@ TEST(CopyUserLayoutExtension, OneInfoTypeExtension) {
 
   // Configure user data to copy in.
   iamf_tools_cli_proto::LoudnessInfo user_loudness;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
-      R"pb(
-        info_type_size: 3 info_type_bytes: "abc"
-      )pb",
-      &user_loudness));
-
-  // Configured expected data. The function only writes to the
-  // `LayoutExtension`.
-  const LayoutExtension expected_layout_extension = {
-      .info_type_size = 3,
-      .info_type_bytes = std::vector<uint8_t>({'a', 'b', 'c'})};
+  user_loudness.set_info_type_bytes("abc");
 
   EXPECT_THAT(MixPresentationGenerator::CopyUserLayoutExtension(
                   user_loudness, output_loudness),
               IsOk());
-  EXPECT_EQ(output_loudness.layout_extension, expected_layout_extension);
+  EXPECT_EQ(output_loudness.layout_extension.info_type_bytes,
+            std::vector<uint8_t>({'a', 'b', 'c'}));
+}
+
+TEST(CopyUserLayoutExtension, IgnoresDeprecatedInfoTypeSizeField) {
+  // `info_type` must be configured as a prerequisite.
+  LoudnessInfo output_loudness = {.info_type = LoudnessInfo::kInfoTypeBitMask4};
+
+  // Configure user data to copy in.
+  iamf_tools_cli_proto::LoudnessInfo user_loudness;
+  // Set up a non-sensical value for the deprecated field.
+  user_loudness.set_info_type_size(std::numeric_limits<uint32_t>::max());
+  user_loudness.set_info_type_bytes("abc");
+
+  EXPECT_THAT(MixPresentationGenerator::CopyUserLayoutExtension(
+                  user_loudness, output_loudness),
+              IsOk());
+  // Regardless the output size is calculated from the
+  // `info_type_bytes` field.
+  EXPECT_EQ(output_loudness.layout_extension.info_type_bytes,
+            std::vector<uint8_t>({'a', 'b', 'c'}));
 }
 
 }  // namespace

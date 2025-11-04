@@ -17,7 +17,6 @@
 #include <optional>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "iamf/common/read_bit_buffer.h"
@@ -25,7 +24,6 @@
 #include "iamf/obu/mix_gain_parameter_data.h"
 #include "iamf/obu/obu_base.h"
 #include "iamf/obu/obu_header.h"
-#include "iamf/obu/param_definition_variant.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/parameter_data.h"
 #include "iamf/obu/types.h"
@@ -70,7 +68,47 @@ struct ParameterSubblock {
  */
 class ParameterBlockObu : public ObuBase {
  public:
+  /*!\brief Peeks the parameter ID from the bitstream.
+   *
+   * This function does not consume any data from the bitstream.
+   *
+   * \param rb Buffer to read from.
+   * \return Parameter ID if successful. Returns `absl::ResourceExhaustedError`
+   *        if there is not enough data to read a parameter ID. Returns other
+   *        errors if the bitstream is invalid.
+   */
+  static absl::StatusOr<DecodedUleb128> PeekParameterId(ReadBitBuffer& rb);
+
+  /*!\brief Creates a `ParameterBlockObu` with `param_definition_mode` of 0.
+   *
+   * \param header `ObuHeader` of the OBU.
+   * \param param_definition Parameter definition to use.
+   * \return Unique pointer to a `ParameterBlockObu` on success, or `nullptr`
+   *         on failure.
+   */
+  static std::unique_ptr<ParameterBlockObu> CreateMode0(
+      const ObuHeader& header, const ParamDefinition& param_definition);
+
+  /*!\brief Creates a `ParameterBlockObu` with `param_definition_mode` of 1.
+   *
+   * \param header `ObuHeader` of the OBU.
+   * \param param_definition Parameter definition to use.
+   * \param duration Duration of the parameter block.
+   * \param constant_subblock_duration Constant subblock duration of the
+   *        parameter block.
+   * \param num_subblocks Number of subblocks in the parameter block.
+   * \return Unique pointer to a `ParameterBlockObu` on success, or `nullptr`
+   *         on failure.
+   */
+  static std::unique_ptr<ParameterBlockObu> CreateMode1(
+      const ObuHeader& header, const ParamDefinition& param_definition,
+      DecodedUleb128 duration, DecodedUleb128 constant_subblock_duration,
+      DecodedUleb128 num_subblocks);
+
   /*!\brief Creates a `ParameterBlockObu` from a `ReadBitBuffer`.
+   *
+   * The user may need to call `PeekParameterId` in order to determine the param
+   * definition to pass to this function.
    *
    * This function is designed to be used from the perspective of the decoder.
    * It will call `ReadAndValidatePayload` in order to read from the buffer;
@@ -78,8 +116,7 @@ class ParameterBlockObu : public ObuBase {
    *
    * \param header `ObuHeader` of the OBU.
    * \param payload_size Size of the obu payload in bytes.
-   * \param param_definition_variants Mapping from parameter IDs to param
-   *        definitions.
+   * \param param_definition Associated param definition.
    * \param rb `ReadBitBuffer` where the `ParameterBlockObu` data is stored.
    *        Data read from the buffer is consumed.
    * \return Unique pointer to a `ParameterBlockObu` on success. A specific
@@ -87,21 +124,7 @@ class ParameterBlockObu : public ObuBase {
    */
   static absl::StatusOr<std::unique_ptr<ParameterBlockObu>> CreateFromBuffer(
       const ObuHeader& header, int64_t payload_size,
-      const absl::flat_hash_map<DecodedUleb128, ParamDefinitionVariant>&
-          param_definition_variants,
-      ReadBitBuffer& rb);
-
-  /*!\brief Constructor.
-   *
-   * After constructing `InitializeSubblocks()` MUST be called and return
-   * successfully before using most functionality of the OBU.
-   *
-   * \param header `ObuHeader` of the OBU.
-   * \param parameter_id Parameter ID.
-   * \param param_definition Parameter definition.
-   */
-  ParameterBlockObu(const ObuHeader& header, DecodedUleb128 parameter_id,
-                    const ParamDefinition& param_definition);
+      const ParamDefinition& param_definition, ReadBitBuffer& rb);
 
   /*!\brief Destructor. */
   ~ParameterBlockObu() override = default;
@@ -174,27 +197,6 @@ class ParameterBlockObu : public ObuBase {
   absl::Status GetLinearMixGain(InternalTimestamp obu_relative_time,
                                 float& linear_mix_gain) const;
 
-  /*!\brief Initialize the vector of subblocks.
-   *
-   * \param duration Duration of the parameter block.
-   * \param constant_subblock_duration Constant subblock duration.
-   * \param num_subblocks Number of subblocks.
-   * \return `absl::OkStatus()` if successful. A specific status on failure.
-   */
-  absl::Status InitializeSubblocks(DecodedUleb128 duration,
-                                   DecodedUleb128 constant_subblock_duration,
-                                   DecodedUleb128 num_subblocks);
-
-  /*!\brief Initialize the vector of subblocks using existing information.
-   *
-   * This should only be called if the `param_definition_mode == 0`,
-   * and the `duration`, `constant_subblock_duration`, and `num_subblocks`
-   * defined in the `metadata_.param_definition` are already correct.
-   *
-   * \return `absl::OkStatus()` if successful. A specific status on failure.
-   */
-  absl::Status InitializeSubblocks();
-
   /*!\brief Prints logging information about the OBU.*/
   void PrintObu() const override;
 
@@ -205,29 +207,13 @@ class ParameterBlockObu : public ObuBase {
   std::vector<ParameterSubblock> subblocks_;
 
  private:
-  /*!\brief Sets the `duration` of the output OBU or metadata.
+  /*!\brief Constructor.
    *
-   * May modify the metadata or the OBU as required by `param_definition_mode`.
-   *
-   * \param duration `duration` to set.
+   * \param header `ObuHeader` of the OBU.
+   * \param param_definition Parameter definition.
    */
-  void SetDuration(DecodedUleb128 duration);
-
-  /*!\brief Sets the `constant_subblock_duration` of the output OBU or metadata.
-   *
-   * May modify the metadata or the OBU as required by `param_definition_mode`.
-   *
-   * \param constant_subblock_duration `constant_subblock_duration` to set.
-   */
-  void SetConstantSubblockDuration(DecodedUleb128 constant_subblock_duration);
-
-  /*!\brief Sets the `num_subblocks` of the output OBU or metadata.
-   *
-   * May modify the metadata or the OBU as required by `param_definition_mode`.
-   *
-   * \param num_subblocks `num_subblocks` to set.
-   */
-  void SetNumSubblocks(DecodedUleb128 num_subblocks);
+  ParameterBlockObu(const ObuHeader& header,
+                    const ParamDefinition& param_definition);
 
   /*!\brief Writes the OBU payload to the buffer.
    *
@@ -258,10 +244,6 @@ class ParameterBlockObu : public ObuBase {
 
   // Parameter definition corresponding to this parameter block.
   const ParamDefinition& param_definition_;
-
-  // Tracks whether the OBU was initialized correctly.
-  absl::Status init_status_ =
-      absl::UnknownError("Parameter Block OBU was not initialized correctly");
 };
 
 }  // namespace iamf_tools

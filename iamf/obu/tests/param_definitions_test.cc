@@ -13,7 +13,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
+#include <optional>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -33,58 +33,236 @@ namespace iamf_tools {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::testing::Not;
 
-constexpr DecodedUleb128 kParameterId = 100;
+constexpr int32_t kDefaultBufferSize = 64;
+constexpr DecodedUleb128 kParameterId = 0;
 constexpr DecodedUleb128 kParameterRate = 48000;
 constexpr DecodedUleb128 kDuration = 64;
 
-void PopulateParameterDefinition(ParamDefinition& param_definition) {
-  param_definition.parameter_id_ = 0;
+class MockParamDefinition : public ParamDefinition {
+ public:
+  MOCK_METHOD(absl::Status, ValidateAndWrite, (WriteBitBuffer & wb),
+              (const, override));
+  MOCK_METHOD(absl::Status, ReadAndValidate, (ReadBitBuffer & rb), (override));
+
+  MOCK_METHOD(std::unique_ptr<ParameterData>, CreateParameterData, (),
+              (const, override));
+  MOCK_METHOD(void, Print, (), (const, override));
+};
+
+void PopulateParameterDefinitionMode1(ParamDefinition& param_definition) {
+  param_definition.parameter_id_ = kParameterId;
   param_definition.parameter_rate_ = 1;
   param_definition.param_definition_mode_ = 1;
   param_definition.reserved_ = 0;
 }
 
-class ParamDefinitionTestBase : public testing::Test {
- public:
-  ParamDefinitionTestBase() = default;
+void PopulateParameterDefinitionMode0(ParamDefinition& param_definition) {
+  param_definition.parameter_id_ = kParameterId;
+  param_definition.parameter_rate_ = kParameterRate;
+  param_definition.param_definition_mode_ = 0;
+  param_definition.duration_ = kDuration;
+  param_definition.constant_subblock_duration_ = kDuration;
+  param_definition.reserved_ = 0;
+}
 
-  void Init() {
-    // Initialize the `subblock_durations_` vector then loop to populate it.
-    param_definition_->InitializeSubblockDurations(
-        static_cast<DecodedUleb128>(subblock_durations_.size()));
-    for (int i = 0; i < subblock_durations_.size(); ++i) {
-      EXPECT_THAT(
-          param_definition_->SetSubblockDuration(i, subblock_durations_[i]),
-          IsOk());
-    }
+void InitSubblockDurations(
+    ParamDefinition& param_definition,
+    absl::Span<const DecodedUleb128> subblock_durations) {
+  param_definition.InitializeSubblockDurations(
+      static_cast<DecodedUleb128>(subblock_durations.size()));
+  for (int i = 0; i < subblock_durations.size(); ++i) {
+    EXPECT_THAT(param_definition.SetSubblockDuration(i, subblock_durations[i]),
+                IsOk());
   }
+}
 
-  void TestWrite(std::vector<uint8_t> expected_data) {
-    ASSERT_NE(leb_generator_, nullptr);
-    WriteBitBuffer wb(expected_data.size(), *leb_generator_);
-    EXPECT_EQ(param_definition_->ValidateAndWrite(wb).code(),
-              expected_status_code_);
-    if (expected_status_code_ == absl::StatusCode::kOk) {
-      ValidateWriteResults(wb, expected_data);
-    }
-  }
+TEST(GetNumSubblocks, ReturnsZeroWhenSubblockDurationsAreImplicitMode1) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.InitializeSubblockDurations(0);
 
- protected:
-  std::unique_ptr<ParamDefinition> param_definition_;
-  std::vector<DecodedUleb128> subblock_durations_ = {};
-  absl::StatusCode expected_status_code_ = absl::StatusCode::kOk;
+  EXPECT_EQ(param_definition.GetNumSubblocks(), 0);
+}
 
-  std::unique_ptr<LebGenerator> leb_generator_ = LebGenerator::Create();
-};
+TEST(GetNumSubblocks, ReturnsZeroWhenSubblockDurationsAreImplicitMode0) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 64;
+  param_definition.InitializeSubblockDurations(1);
+
+  // TODO(b/345799072): Reporting zero is strange here, the parameter definition
+  //                    represents one subblock, because the duration is implied
+  //                    by "constant_subblock_duration". Also,
+  //                    `GetSubblockDuration` calls would index out of bounds.
+  EXPECT_EQ(param_definition.GetNumSubblocks(), 0);
+}
+
+TEST(GetNumSubblocks,
+     ReturnsNumSubblocksWhenSubblockDurationsAreExplicitMode0) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  const DecodedUleb128 kNumSubblocks = 2;
+  param_definition.InitializeSubblockDurations(kNumSubblocks);
+
+  EXPECT_EQ(param_definition.GetNumSubblocks(), kNumSubblocks);
+}
+
+TEST(Validate, ValidatesParamDefinitionMode1) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+
+  EXPECT_THAT(param_definition.Validate(), IsOk());
+}
+
+TEST(Validate, InvalidWhenParameterRateIsZero) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.parameter_rate_ = 0;
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(Validate, ValidatesParamDefinitionMode0) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+
+  EXPECT_THAT(param_definition.Validate(), IsOk());
+}
+
+TEST(Validate, InvalidWhenParameterDefinitionMode0DurationIsZero) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 0;
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(Validate, InvalidWhenConstantSubblockDurationIsGreaterThanDuration) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 65;
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(Validate, ValidWhenConstantSubblockDurationIsLessThanDuration) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  // It is OK for `constant_subblock_duration` to be less than `duration`. The
+  // spec has rounding rules for the final subblock duration.
+  param_definition.constant_subblock_duration_ = 63;
+
+  EXPECT_THAT(param_definition.Validate(), IsOk());
+}
+
+TEST(Validate, ValidForExplicitSubblockDurations) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  // Subblock durations sum to 64.
+  InitSubblockDurations(param_definition, {60, 4});
+
+  EXPECT_THAT(param_definition.Validate(), IsOk());
+}
+
+TEST(Validate, InvalidWhenSubblockDurationsSumIsLessThanDuration) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  // Subblock durations sum to less than 64.
+  InitSubblockDurations(param_definition, {60, 3});
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(Validate, InvalidWhenSubblockDurationsSumIsGreaterThanDuration) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  // Subblock durations sum to less than 64.
+  InitSubblockDurations(param_definition, {60, 5});
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(Validate, InvalidWhenAnySubblockDurationIsZero) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  // Subblock durations sum to less than 64.
+  InitSubblockDurations(param_definition, {64, 0});
+
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
+}
+
+TEST(GetType, ReturnsNulloptForDefaultConstructor) {
+  MockParamDefinition param_definition;
+
+  EXPECT_EQ(param_definition.GetType(), std::nullopt);
+}
+
+TEST(GetSubblockDuration, MatchesExplicitSetSubblockDurations) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  const DecodedUleb128 kNumSubblocks = 2;
+  param_definition.InitializeSubblockDurations(kNumSubblocks);
+
+  const DecodedUleb128 kSubblockDuration0 = 60;
+  const DecodedUleb128 kSubblockDuration1 = 4;
+  EXPECT_THAT(param_definition.SetSubblockDuration(0, kSubblockDuration0),
+              IsOk());
+  EXPECT_THAT(param_definition.SetSubblockDuration(1, kSubblockDuration1),
+              IsOk());
+
+  EXPECT_EQ(param_definition.GetSubblockDuration(0), kSubblockDuration0);
+  EXPECT_EQ(param_definition.GetSubblockDuration(1), kSubblockDuration1);
+}
+
+TEST(SetSubblockDuration, InvalidWhenSubblockIndexIsTooLarge) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  const DecodedUleb128 kNumSubblocks = 2;
+  param_definition.InitializeSubblockDurations(kNumSubblocks);
+
+  // The indices are zero-based, configure an off-by-one error.
+  EXPECT_THAT(param_definition.SetSubblockDuration(2, 0), Not(IsOk()));
+}
+
+TEST(SetSubblockDuration, InvalidWhenSubblockIndexIsNegative) {
+  MockParamDefinition param_definition;
+  PopulateParameterDefinitionMode0(param_definition);
+  param_definition.duration_ = 64;
+  param_definition.constant_subblock_duration_ = 0;
+  const DecodedUleb128 kNumSubblocks = 2;
+  param_definition.InitializeSubblockDurations(kNumSubblocks);
+
+  EXPECT_THAT(param_definition.SetSubblockDuration(-1, 0), Not(IsOk()));
+}
+
+TEST(MixGainParamDefinition, ConstructorSetsDefaultMixGainToZero) {
+  MixGainParamDefinition mix_gain_param_definition;
+
+  EXPECT_EQ(mix_gain_param_definition.default_mix_gain_, 0);
+}
 
 TEST(MixGainParamDefinition, CopyConstructible) {
   MixGainParamDefinition mix_gain_param_definition;
-  mix_gain_param_definition.param_definition_mode_ = 0;
-  mix_gain_param_definition.parameter_id_ = kParameterId;
-  mix_gain_param_definition.parameter_rate_ = kParameterRate;
-  mix_gain_param_definition.duration_ = kDuration;
-  mix_gain_param_definition.constant_subblock_duration_ = kDuration;
+  PopulateParameterDefinitionMode1(mix_gain_param_definition);
   mix_gain_param_definition.default_mix_gain_ = -16;
 
   const auto other = mix_gain_param_definition;
@@ -92,182 +270,165 @@ TEST(MixGainParamDefinition, CopyConstructible) {
   EXPECT_EQ(mix_gain_param_definition, other);
 }
 
-class MixGainParamDefinitionTest : public ParamDefinitionTestBase {
- public:
-  MixGainParamDefinitionTest() {
-    auto mix_gain = std::make_unique<MixGainParamDefinition>();
-    mix_gain_ = mix_gain.get();
-    PopulateParameterDefinition(*mix_gain_);
-    mix_gain->default_mix_gain_ = 0;
-    param_definition_ = std::move(mix_gain);
-  }
+TEST(MixGainParamDefinition, GetTypeHasCorrectValue) {
+  MixGainParamDefinition mix_gain_param_definition;
 
- protected:
-  // Alias for accessing the sub-class data.
-  MixGainParamDefinition* mix_gain_;
-};
-
-TEST_F(MixGainParamDefinitionTest, GetTypeHasCorrectValue) {
-  ASSERT_TRUE(mix_gain_->GetType().has_value());
-  EXPECT_EQ(*mix_gain_->GetType(),
+  EXPECT_EQ(mix_gain_param_definition.GetType(),
             ParamDefinition::kParameterDefinitionMixGain);
 }
 
-TEST_F(MixGainParamDefinitionTest, DefaultParamDefinitionMode1) {
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite, DefaultParamDefinitionMode1) {
+  MixGainParamDefinition mix_gain_param_definition;
+  PopulateParameterDefinitionMode1(mix_gain_param_definition);
+  mix_gain_param_definition.default_mix_gain_ = 0;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             1,
-             // Param Definition Mode (upper bit).
-             0x80,
-             // Default Mix Gain.
-             0, 0});
+  EXPECT_THAT(mix_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            1,
+                            // Param Definition Mode (upper bit).
+                            0x80,
+                            // Default Mix Gain.
+                            0, 0});
 }
 
-TEST_F(MixGainParamDefinitionTest, ParameterId) {
-  param_definition_->parameter_id_ = 1;
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite, WritesParameterId) {
+  MixGainParamDefinition mix_gain_param_definition;
+  PopulateParameterDefinitionMode1(mix_gain_param_definition);
+  mix_gain_param_definition.parameter_id_ = 1;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x01,
-             // Same as default.
-             1, 0x80, 0, 0});
+  EXPECT_THAT(mix_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x01,
+                            // Same as default.
+                            1, 0x80, 0, 0});
 }
 
-TEST_F(MixGainParamDefinitionTest, NonMinimalLeb) {
-  leb_generator_ =
+TEST(MixGainParamDefinitionValidateAndWrite, NonMinimalLeb) {
+  MixGainParamDefinition mix_gain_param_definition;
+  PopulateParameterDefinitionMode1(mix_gain_param_definition);
+  mix_gain_param_definition.parameter_id_ = 1;
+  mix_gain_param_definition.parameter_rate_ = 5;
+  auto leb_generator =
       LebGenerator::Create(LebGenerator::GenerationMode::kFixedSize, 2);
-  param_definition_->parameter_id_ = 1;
-  param_definition_->parameter_rate_ = 5;
-  Init();
+  ASSERT_NE(leb_generator, nullptr);
+  WriteBitBuffer wb(kDefaultBufferSize, *leb_generator);
 
-  TestWrite({// Parameter ID.
-             0x81, 0x00,
-             // Parameter Rate.
-             0x85, 0x00,
-             // Same as default.
-             0x80, 0, 0});
+  EXPECT_THAT(mix_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x81, 0x00,
+                            // Parameter Rate.
+                            0x85, 0x00,
+                            // Same as default.
+                            0x80, 0, 0});
 }
 
-TEST_F(MixGainParamDefinitionTest, ParameterRate) {
-  param_definition_->parameter_rate_ = 64;
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite, WritesParameterRate) {
+  MixGainParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.parameter_rate_ = 64;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00,
-             // Parameter Rate.
-             64,
-             // Same as default.
-             0x80, 0, 0});
+  EXPECT_THAT(param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00,
+                            // Parameter Rate.
+                            64,
+                            // Same as default.
+                            0x80, 0, 0});
 }
 
-TEST_F(MixGainParamDefinitionTest, DefaultMixGain) {
-  mix_gain_->default_mix_gain_ = 3;
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite, WritesDefaultMixGain) {
+  MixGainParamDefinition param_definition;
+  param_definition.default_mix_gain_ = 3;
+  PopulateParameterDefinitionMode1(param_definition);
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00, 1, 0x80,
-             // Default Mix Gain.
-             0, 3});
+  EXPECT_THAT(param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00, 1, 0x80,
+                            // Default Mix Gain.
+                            0, 3});
 }
 
-TEST_F(MixGainParamDefinitionTest, ParameterRateMustNotBeZero) {
-  param_definition_->parameter_rate_ = 0;
-  Init();
+TEST(MixGainParamDefinitionValidate, ParameterRateMustNotBeZero) {
+  MixGainParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.parameter_rate_ = 0;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(MixGainParamDefinitionTest,
-       ParamDefinitionMode0WithConstantSubblockDurationNonZero) {
-  param_definition_->param_definition_mode_ = false;
-  param_definition_->duration_ = 3;
-  param_definition_->constant_subblock_duration_ = 3;
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite,
+     ParamDefinitionMode0WithConstantSubblockDurationNonZero) {
+  MixGainParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.param_definition_mode_ = false;
+  param_definition.duration_ = 3;
+  param_definition.constant_subblock_duration_ = 3;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             1,
-             // Param Definition Mode (upper bit).
-             0,
-             // Duration.
-             3,
-             // Constant Subblock Duration.
-             3,
-             // Default Mix Gain.
-             0, 0});
+  EXPECT_THAT(param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            1,
+                            // Param Definition Mode (upper bit).
+                            0,
+                            // Duration.
+                            3,
+                            // Constant Subblock Duration.
+                            3,
+                            // Default Mix Gain.
+                            0, 0});
 }
 
-TEST_F(MixGainParamDefinitionTest,
-       ParamDefinitionMode0WithConstantSubblockDurationZeroIncludesDurations) {
-  param_definition_->param_definition_mode_ = false;
-  param_definition_->duration_ = 10;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {1, 2, 3, 4};
-  Init();
+TEST(MixGainParamDefinitionValidateAndWrite,
+     ParamDefinitionMode0WithConstantSubblockDurationZeroIncludesDurations) {
+  MixGainParamDefinition param_definition;
+  PopulateParameterDefinitionMode1(param_definition);
+  param_definition.param_definition_mode_ = false;
+  param_definition.duration_ = 10;
+  param_definition.constant_subblock_duration_ = 0;
+  InitSubblockDurations(param_definition, {1, 2, 3, 4});
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             1,
-             // Parameter Definition Mode (upper bit).
-             0,
-             // Duration.
-             10,
-             // Constant Subblock Duration.
-             0,
-             // Num subblocks.
-             4,
-             // Subblock 0.
-             1,
-             // Subblock 1.
-             2,
-             // Subblock 2.
-             3,
-             // Subblock 3.
-             4,
-             // Default Mix Gain.
-             0, 0});
-}
+  EXPECT_THAT(param_definition.ValidateAndWrite(wb), IsOk());
 
-TEST_F(MixGainParamDefinitionTest,
-       InvalidWhenExplicitSubblockDurationsDoNotSumToDuration) {
-  param_definition_->param_definition_mode_ = false;
-  param_definition_->duration_ = 100;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {1, 2, 3, 4};  // Does not sum 100.
-  Init();
-
-  EXPECT_FALSE(param_definition_->Validate().ok());
-}
-
-TEST_F(MixGainParamDefinitionTest, InvalidWhenDurationIsZero) {
-  param_definition_->param_definition_mode_ = false;
-  param_definition_->duration_ = 0;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {0};
-  Init();
-
-  EXPECT_FALSE(param_definition_->Validate().ok());
-}
-
-TEST_F(MixGainParamDefinitionTest, InvalidWhenSubblockDurationIsZero) {
-  param_definition_->param_definition_mode_ = false;
-  param_definition_->duration_ = 10;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {5, 0, 5};
-
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            1,
+                            // Parameter Definition Mode (upper bit).
+                            0,
+                            // Duration.
+                            10,
+                            // Constant Subblock Duration.
+                            0,
+                            // Num subblocks.
+                            4,
+                            // Subblock 0.
+                            1,
+                            // Subblock 1.
+                            2,
+                            // Subblock 2.
+                            3,
+                            // Subblock 3.
+                            4,
+                            // Default Mix Gain.
+                            0, 0});
 }
 
 TEST(DemixingParamDefinition, CopyConstructible) {
   DemixingParamDefinition demixing_param_definition;
-  demixing_param_definition.param_definition_mode_ = 0;
-  demixing_param_definition.parameter_id_ = kParameterId;
-  demixing_param_definition.parameter_rate_ = kParameterRate;
-  demixing_param_definition.duration_ = kDuration;
-  demixing_param_definition.constant_subblock_duration_ = kDuration;
+  PopulateParameterDefinitionMode0(demixing_param_definition);
   demixing_param_definition.default_demixing_info_parameter_data_.dmixp_mode =
       DemixingInfoParameterData::kDMixPMode1;
   demixing_param_definition.default_demixing_info_parameter_data_.reserved = 0;
@@ -280,250 +441,274 @@ TEST(DemixingParamDefinition, CopyConstructible) {
   EXPECT_EQ(demixing_param_definition, other);
 }
 
-class DemixingParamDefinitionTest : public ParamDefinitionTestBase {
- public:
-  DemixingParamDefinitionTest() {
-    auto demixing = std::make_unique<DemixingParamDefinition>();
-    demixing_ = demixing.get();
-    PopulateParameterDefinition(*demixing_);
-    demixing->param_definition_mode_ = 0;
-    demixing->duration_ = kDuration;
-    demixing->constant_subblock_duration_ = kDuration;
-    demixing->default_demixing_info_parameter_data_.dmixp_mode =
-        DemixingInfoParameterData::kDMixPMode1;
-    demixing->default_demixing_info_parameter_data_.reserved = 0;
-    demixing->default_demixing_info_parameter_data_.default_w = 0;
-    demixing->default_demixing_info_parameter_data_.reserved_for_future_use = 0;
-    param_definition_ = std::move(demixing);
-  }
+DemixingParamDefinition CreateDemixingParamDefinition() {
+  DemixingParamDefinition demixing_param_definition;
+  PopulateParameterDefinitionMode0(demixing_param_definition);
+  demixing_param_definition.parameter_id_ = 0;
+  demixing_param_definition.parameter_rate_ = 1;
+  demixing_param_definition.default_demixing_info_parameter_data_.dmixp_mode =
+      DemixingInfoParameterData::kDMixPMode1;
+  demixing_param_definition.default_demixing_info_parameter_data_.reserved = 0;
+  demixing_param_definition.default_demixing_info_parameter_data_.default_w = 0;
+  demixing_param_definition.default_demixing_info_parameter_data_
+      .reserved_for_future_use = 0;
+  return demixing_param_definition;
+}
 
- protected:
-  // Alias for accessing the sub-class data.
-  DemixingParamDefinition* demixing_;
-};
+TEST(DemixingParamDefinition, GetTypeHasCorrectValue) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
 
-TEST_F(DemixingParamDefinitionTest, GetTypeHasCorrectValue) {
-  EXPECT_TRUE(demixing_->GetType().has_value());
-  EXPECT_EQ(*demixing_->GetType(),
+  EXPECT_TRUE(demixing_param_definition.GetType().has_value());
+  EXPECT_EQ(*demixing_param_definition.GetType(),
             ParamDefinition::kParameterDefinitionDemixing);
 }
 
-TEST_F(DemixingParamDefinitionTest, DefaultParamDefinitionMode0) {
-  Init();
+TEST(DemixingParamDefinitionValidateAndWrite, DefaultParamDefinitionMode0) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             0x01,
-             // Parameter Definition Mode (upper bit).
-             0x00,
-             // Duration.
-             64,
-             // Constant Subblock Duration.
-             64,
-             // Default Demixing Info Parameter Data.
-             DemixingInfoParameterData::kDMixPMode1 << 5, 0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            0x01,
+                            // Parameter Definition Mode (upper bit).
+                            0x00,
+                            // Duration.
+                            64,
+                            // Constant Subblock Duration.
+                            64,
+                            // Default Demixing Info Parameter Data.
+                            DemixingInfoParameterData::kDMixPMode1 << 5, 0});
 }
 
-TEST_F(DemixingParamDefinitionTest, ParameterId) {
-  param_definition_->parameter_id_ = 1;
-  Init();
+TEST(DemixingParamDefinitionValidateAndWrite, WritesParameterId) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.parameter_id_ = 1;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x01,
-             // Same as default.
-             0x01, 0x00, 64, 64, DemixingInfoParameterData::kDMixPMode1 << 5,
-             0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(
+      wb, {// Parameter ID.
+           0x01,
+           // Same as default.
+           0x01, 0x00, 64, 64, DemixingInfoParameterData::kDMixPMode1 << 5, 0});
 }
 
-TEST_F(DemixingParamDefinitionTest, ParameterRate) {
-  param_definition_->parameter_rate_ = 2;
-  Init();
+TEST(DemixingParamDefinitionValidateAndWrite, WritesParameterRate) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.parameter_rate_ = 2;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00,
-             // Parameter Rate.
-             0x02,
-             // Same as default.
-             0x00, 64, 64, DemixingInfoParameterData::kDMixPMode1 << 5, 0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(
+      wb, {0x00,
+           // Parameter Rate.
+           0x02,
+           // Same as default.
+           0x00, 64, 64, DemixingInfoParameterData::kDMixPMode1 << 5, 0});
 }
 
-TEST_F(DemixingParamDefinitionTest, EqualDurationAndConstantSubblockDuration) {
-  param_definition_->duration_ = 32;
-  param_definition_->constant_subblock_duration_ = 32;
-  Init();
+TEST(DemixingParamDefinitionValidateAndWrite,
+     EqualDurationAndConstantSubblockDuration) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.duration_ = 32;
+  demixing_param_definition.constant_subblock_duration_ = 32;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00, 0x01, 0x00,
-             // Duration.
-             32,
-             // Constant Subblock Duration.
-             32, 0, 0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00, 0x01, 0x00,
+                            // Duration.
+                            32,
+                            // Constant Subblock Duration.
+                            32, 0, 0});
 }
 
-TEST_F(DemixingParamDefinitionTest,
-       InvalidWhenDurationDoesNotEqualConstantSubblockDuration) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 65;
-  Init();
+TEST(DemixingParamDefinitionValidate,
+     InvalidWhenDurationDoesNotEqualConstantSubblockDuration) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.duration_ = 64;
+  demixing_param_definition.constant_subblock_duration_ = 63;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(demixing_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(DemixingParamDefinitionTest, DefaultDmixPMode) {
-  demixing_->default_demixing_info_parameter_data_.dmixp_mode =
+TEST(DemixingParamDefinitionValidateAndWrite, WritesDefaultDmixPMode) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.default_demixing_info_parameter_data_.dmixp_mode =
       DemixingInfoParameterData::kDMixPMode2;
-  Init();
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00, 0x01, 0x00, 64, 64,
-             // `dmixp_mode`.
-             DemixingInfoParameterData::kDMixPMode2 << 5,
-             // `default_w`.
-             0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00, 0x01, 0x00, 64, 64,
+                            // `dmixp_mode`.
+                            DemixingInfoParameterData::kDMixPMode2 << 5,
+                            // `default_w`.
+                            0});
 }
 
-TEST_F(DemixingParamDefinitionTest, DefaultW) {
-  demixing_->default_demixing_info_parameter_data_.default_w = 1;
-  Init();
+TEST(DemixingParamDefinitionValidateAndWrite, WritesDefaultW) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.default_demixing_info_parameter_data_.default_w = 1;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00, 0x01, 0x00, 64, 64,
-             DemixingInfoParameterData::kDMixPMode1 << 5,
-             // `default_w`.
-             1 << 4});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00, 0x01, 0x00, 64, 64,
+                            DemixingInfoParameterData::kDMixPMode1 << 5,
+                            // `default_w`.
+                            1 << 4});
 }
 
-TEST_F(DemixingParamDefinitionTest, NonMinimalLebGeneratorAffectsAllLeb128s) {
-  leb_generator_ =
+TEST(DemixingParamDefinitionValidateAndWrite,
+     NonMinimalLebGeneratorAffectsAllLeb128s) {
+  auto leb_generator =
       LebGenerator::Create(LebGenerator::GenerationMode::kFixedSize, 2);
-  param_definition_->parameter_id_ = 0;
-  param_definition_->parameter_rate_ = 1;
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 64;
-  Init();
+  ASSERT_NE(leb_generator, nullptr);
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.parameter_id_ = 0;
+  demixing_param_definition.parameter_rate_ = 1;
+  demixing_param_definition.duration_ = 64;
+  demixing_param_definition.constant_subblock_duration_ = 64;
+  WriteBitBuffer wb(kDefaultBufferSize, *leb_generator);
 
-  TestWrite({// `parameter_id`.
-             0x80, 0x00,
-             // `parameter_rate`.
-             0x81, 0x00,
-             // `param_definition_mode` (1), reserved (7).
-             0x00,
-             // `duration`.
-             0xc0, 0x00,
-             // `constant_subblock_duration`.
-             0xc0, 0x00, DemixingInfoParameterData::kDMixPMode1 << 5, 0});
+  EXPECT_THAT(demixing_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(
+      wb, {// `parameter_id`.
+           0x80, 0x00,
+           // `parameter_rate`.
+           0x81, 0x00,
+           // `param_definition_mode` (1), reserved (7).
+           0x00,
+           // `duration`.
+           0xc0, 0x00,
+           // `constant_subblock_duration`.
+           0xc0, 0x00, DemixingInfoParameterData::kDMixPMode1 << 5, 0});
 }
 
-TEST_F(DemixingParamDefinitionTest, InvalidWhenConstantSubblockDurationIsZero) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {32, 32};
-  Init();
+TEST(DemixingParamDefinitionValidate,
+     InvalidWhenConstantSubblockDurationIsZero) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.duration_ = 64;
+  demixing_param_definition.constant_subblock_duration_ = 0;
+  InitSubblockDurations(demixing_param_definition, {32, 32});
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(demixing_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(DemixingParamDefinitionTest, InvalidWhenImpliedNumSubblocksIsNotOne) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 32;
-  Init();
+TEST(DemixingParamDefinitionValidate, InvalidWhenImpliedNumSubblocksIsNotOne) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.duration_ = 64;
+  demixing_param_definition.constant_subblock_duration_ = 32;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(demixing_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(DemixingParamDefinitionTest, InvalidWhenParamDefinitionModeIsOne) {
-  param_definition_->param_definition_mode_ = true;
-  Init();
+TEST(DemixingParamDefinitionValidate, InvalidWhenParamDefinitionModeIsOne) {
+  auto demixing_param_definition = CreateDemixingParamDefinition();
+  demixing_param_definition.param_definition_mode_ = true;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(demixing_param_definition.Validate(), Not(IsOk()));
+}
+
+ReconGainParamDefinition CreateReconGainParamDefinition() {
+  ReconGainParamDefinition recon_gain_param_definition(0);
+  recon_gain_param_definition.parameter_id_ = 0;
+  recon_gain_param_definition.parameter_rate_ = 1;
+  recon_gain_param_definition.param_definition_mode_ = false;
+  recon_gain_param_definition.duration_ = 64;
+  recon_gain_param_definition.constant_subblock_duration_ = 64;
+  return recon_gain_param_definition;
 }
 
 TEST(ReconGainParamDefinition, CopyConstructible) {
-  ReconGainParamDefinition recon_gain_param_definition(0);
-  recon_gain_param_definition.param_definition_mode_ = 0;
-  recon_gain_param_definition.parameter_id_ = kParameterId;
-  recon_gain_param_definition.parameter_rate_ = kParameterRate;
-  recon_gain_param_definition.duration_ = kDuration;
-  recon_gain_param_definition.constant_subblock_duration_ = kDuration;
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
 
   const auto other = recon_gain_param_definition;
 
   EXPECT_EQ(recon_gain_param_definition, other);
 }
 
-class ReconGainParamDefinitionTest : public ParamDefinitionTestBase {
- public:
-  ReconGainParamDefinitionTest() {
-    auto recon_gain = std::make_unique<ReconGainParamDefinition>(0);
-    recon_gain_param_definition_ = recon_gain.get();
-    PopulateParameterDefinition(*recon_gain);
-    recon_gain->param_definition_mode_ = 0;
-    recon_gain->reserved_ = 0;
-    recon_gain->duration_ = kDuration;
-    recon_gain->constant_subblock_duration_ = kDuration;
-    param_definition_ = std::move(recon_gain);
-  }
-
-  // Alias for accessing the sub-class data.
-  ReconGainParamDefinition* recon_gain_param_definition_;
-};
-
-TEST_F(ReconGainParamDefinitionTest, GetTypeHasCorrectValue) {
-  EXPECT_TRUE(param_definition_->GetType().has_value());
-  EXPECT_EQ(*param_definition_->GetType(),
+TEST(ReconGainParamDefinition, GetTypeHasCorrectValue) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  EXPECT_TRUE(recon_gain_param_definition.GetType().has_value());
+  EXPECT_EQ(*recon_gain_param_definition.GetType(),
             ParamDefinition::kParameterDefinitionReconGain);
 }
 
-TEST_F(ReconGainParamDefinitionTest, Default) {
-  Init();
+TEST(ReconGainParamDefinitionValidateAndWrite,
+     WritesCorrectlyWithDefaultValues) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             0x01,
-             // Parameter Definition Mode (upper bit).
-             0x00,
-             // Duration.
-             64,
-             // Constant Subblock Duration.
-             64});
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            0x01,
+                            // Parameter Definition Mode (upper bit).
+                            0x00,
+                            // Duration.
+                            64,
+                            // Constant Subblock Duration.
+                            64});
 }
 
-TEST_F(ReconGainParamDefinitionTest, ParameterId) {
-  param_definition_->parameter_id_ = 1;
-  Init();
+TEST(ReconGainParamDefinitionValidateAndWrite, WritesParameterId) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.parameter_id_ = 1;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Parameter ID.
-             0x01,
-             // Same as default.
-             0x01, 0x00, 64, 64});
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x01,
+                            // Same as default.
+                            0x01, 0x00, 64, 64});
 }
 
-TEST_F(ReconGainParamDefinitionTest, ParameterRate) {
-  param_definition_->parameter_id_ = 1;
-  Init();
+TEST(ReconGainParamDefinitionValidateAndWrite, WritesParameterRate) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.parameter_id_ = 1;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x01,
-             // Parameter Rate.
-             0x01,
-             // Same as default.
-             0x00, 64, 64});
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x01,
+                            // Parameter Rate.
+                            0x01,
+                            // Same as default.
+                            0x00, 64, 64});
 }
 
-TEST_F(ReconGainParamDefinitionTest, Duration) {
-  param_definition_->duration_ = 32;
-  param_definition_->constant_subblock_duration_ = 32;
-  Init();
+TEST(ReconGainParamDefinitionValidateAndWrite, WritesDuration) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.duration_ = 32;
+  recon_gain_param_definition.constant_subblock_duration_ = 32;
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({0x00, 0x01, 0x00,
-             // Duration.
-             32,
-             // Constant Subblock Duration.
-             32});
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {0x00, 0x01, 0x00,
+                            // Duration.
+                            32,
+                            // Constant Subblock Duration.
+                            32});
 }
 
-TEST_F(ReconGainParamDefinitionTest, AuxiliaryDataNotWritten) {
-  Init();
+TEST(ReconGainParamDefinitionValidateAndWrite, AuxiliaryDataNotWritten) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  WriteBitBuffer wb(kDefaultBufferSize);
 
   // Fill in some auxililary data.
-  recon_gain_param_definition_->aux_data_ = {
+  recon_gain_param_definition.aux_data_ = {
       {
           .recon_gain_is_present_flag = false,
           .channel_numbers_for_layer = {2, 0, 0},
@@ -533,73 +718,79 @@ TEST_F(ReconGainParamDefinitionTest, AuxiliaryDataNotWritten) {
           .channel_numbers_for_layer = {5, 1, 2},
       },
   };
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
 
   // Same as the bitstream in the `ReconGainParamDefinitionTest.Default` test
   // above, without the auxiliary data.
-  TestWrite({// Parameter ID.
-             0x00,
-             // Parameter Rate.
-             0x01,
-             // Parameter Definition Mode (upper bit).
-             0x00,
-             // Duration.
-             64,
-             // Constant Subblock Duration.
-             64});
+  ValidateWriteResults(wb, {// Parameter ID.
+                            0x00,
+                            // Parameter Rate.
+                            0x01,
+                            // Parameter Definition Mode (upper bit).
+                            0x00,
+                            // Duration.
+                            64,
+                            // Constant Subblock Duration.
+                            64});
 }
 
-TEST_F(ReconGainParamDefinitionTest, NonMinimalLebGeneratorAffectsAllLeb128s) {
-  leb_generator_ =
+TEST(ReconGainParamDefinitionValidateAndWrite,
+     NonMinimalLebGeneratorAffectsAllLeb128s) {
+  auto leb_generator =
       LebGenerator::Create(LebGenerator::GenerationMode::kFixedSize, 2);
-  param_definition_->parameter_id_ = 0;
-  param_definition_->parameter_rate_ = 1;
-  param_definition_->constant_subblock_duration_ = 64;
-  Init();
+  ASSERT_NE(leb_generator, nullptr);
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.parameter_id_ = 0;
+  recon_gain_param_definition.parameter_rate_ = 1;
+  recon_gain_param_definition.constant_subblock_duration_ = 64;
+  WriteBitBuffer wb(kDefaultBufferSize, *leb_generator);
 
-  TestWrite({// `parameter_id`.
-             0x80, 0x00,
-             // `parameter_rate`.
-             0x81, 0x00,
-             // `param_definition_mode` (1), reserved (7).
-             0x00,
-             // `duration`.
-             0x80 | 64, 0x00,
-             // `constant_subblock_duration`.
-             0x80 | 64, 0x00});
+  EXPECT_THAT(recon_gain_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// `parameter_id`.
+                            0x80, 0x00,
+                            // `parameter_rate`.
+                            0x81, 0x00,
+                            // `param_definition_mode` (1), reserved (7).
+                            0x00,
+                            // `duration`.
+                            0x80 | 64, 0x00,
+                            // `constant_subblock_duration`.
+                            0x80 | 64, 0x00});
 }
 
-TEST_F(ReconGainParamDefinitionTest,
-       InvalidWhenConstantSubblockDurationIsZero) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 0;
-  subblock_durations_ = {32, 32};
-  Init();
+TEST(ReconGainParamDefinitionValidate,
+     InvalidWhenConstantSubblockDurationIsZero) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.duration_ = 64;
+  recon_gain_param_definition.constant_subblock_duration_ = 0;
+  InitSubblockDurations(recon_gain_param_definition, {32, 32});
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(recon_gain_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(ReconGainParamDefinitionTest, InvalidWhenImpliedNumSubblocksIsNotOne) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 32;
-  Init();
+TEST(ReconGainParamDefinitionValidate, InvalidWhenImpliedNumSubblocksIsNotOne) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.duration_ = 64;
+  recon_gain_param_definition.constant_subblock_duration_ = 32;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(recon_gain_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(ReconGainParamDefinitionTest,
-       InvalidWhenDurationDoesNotEqualConstantSubblockDuration) {
-  param_definition_->duration_ = 64;
-  param_definition_->constant_subblock_duration_ = 65;
-  Init();
+TEST(ReconGainParamDefinitionValidate,
+     InvalidWhenDurationDoesNotEqualConstantSubblockDuration) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.duration_ = 64;
+  recon_gain_param_definition.constant_subblock_duration_ = 63;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(recon_gain_param_definition.Validate(), Not(IsOk()));
 }
 
-TEST_F(ReconGainParamDefinitionTest, InvalidWhenParamDefinitionModeIsOne) {
-  param_definition_->param_definition_mode_ = true;
-  Init();
+TEST(ReconGainParamDefinitionValidate, InvalidWhenParamDefinitionModeIsOne) {
+  auto recon_gain_param_definition = CreateReconGainParamDefinition();
+  recon_gain_param_definition.param_definition_mode_ = true;
 
-  EXPECT_FALSE(param_definition_->Validate().ok());
+  EXPECT_THAT(recon_gain_param_definition.Validate(), Not(IsOk()));
 }
 
 TEST(ExtendedParamDefinition, CopyConstructible) {
@@ -608,7 +799,6 @@ TEST(ExtendedParamDefinition, CopyConstructible) {
   extended_param_definition.param_definition_mode_ = 1;
   extended_param_definition.parameter_id_ = kParameterId;
   extended_param_definition.parameter_rate_ = kParameterRate;
-  extended_param_definition.param_definition_size_ = 5;
   extended_param_definition.param_definition_bytes_ = {'e', 'x', 't', 'r', 'a'};
 
   const auto other = extended_param_definition;
@@ -616,59 +806,43 @@ TEST(ExtendedParamDefinition, CopyConstructible) {
   EXPECT_EQ(extended_param_definition, other);
 }
 
-class ExtendedParamDefinitionTest : public ParamDefinitionTestBase {
- public:
-  ExtendedParamDefinitionTest() = default;
-  void Init(ParamDefinition::ParameterDefinitionType param_definition_type) {
-    auto extended_param_definition =
-        std::make_unique<ExtendedParamDefinition>(param_definition_type);
-    extended_param_definition_ = extended_param_definition.get();
-    PopulateParameterDefinition(*extended_param_definition);
-    param_definition_ = std::move(extended_param_definition);
-    ParamDefinitionTestBase::Init();
-  }
+TEST(ExtendedParamDefinition, GetTypeHasCorrectValue) {
+  ExtendedParamDefinition extended_param_definition(
+      ParamDefinition::kParameterDefinitionReservedEnd);
+  PopulateParameterDefinitionMode1(extended_param_definition);
 
- protected:
-  // Alias for accessing the sub-class data.
-  ExtendedParamDefinition* extended_param_definition_;
-};
-
-TEST_F(ExtendedParamDefinitionTest, GetTypeHasCorrectValue) {
-  Init(ParamDefinition::kParameterDefinitionReservedEnd);
-
-  EXPECT_TRUE(param_definition_->GetType().has_value());
-  EXPECT_EQ(*param_definition_->GetType(),
+  EXPECT_TRUE(extended_param_definition.GetType().has_value());
+  EXPECT_EQ(*extended_param_definition.GetType(),
             ParamDefinition::kParameterDefinitionReservedEnd);
 }
 
-TEST_F(ExtendedParamDefinitionTest, SizeMayBeZero) {
-  Init(ParamDefinition::kParameterDefinitionReservedEnd);
-  extended_param_definition_->param_definition_size_ = 0;
-  extended_param_definition_->param_definition_bytes_ = {};
+TEST(ExtendedParamDefinitionValidateAndWrite, SizeMayBeZero) {
+  ExtendedParamDefinition extended_param_definition(
+      ParamDefinition::kParameterDefinitionReservedEnd);
+  PopulateParameterDefinitionMode1(extended_param_definition);
+  extended_param_definition.param_definition_bytes_ = {};
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Param Definition Size.
-             0x00});
+  EXPECT_THAT(extended_param_definition.ValidateAndWrite(wb), IsOk());
+
+  ValidateWriteResults(wb, {// Param Definition Size.
+                            0x00});
 }
 
-TEST_F(ExtendedParamDefinitionTest, WritesOnlySizeAndParamDefinitionBytes) {
-  Init(ParamDefinition::kParameterDefinitionReservedEnd);
-  extended_param_definition_->param_definition_size_ = 4;
-  extended_param_definition_->param_definition_bytes_ = {0x01, 0x02, 0x03,
-                                                         0x04};
+TEST(ExtendedParamDefinitionValidateAndWrite,
+     WritesOnlySizeAndParamDefinitionBytes) {
+  ExtendedParamDefinition extended_param_definition(
+      ParamDefinition::kParameterDefinitionReservedEnd);
+  PopulateParameterDefinitionMode1(extended_param_definition);
+  extended_param_definition.param_definition_bytes_ = {0x01, 0x02, 0x03, 0x04};
+  WriteBitBuffer wb(kDefaultBufferSize);
 
-  TestWrite({// Param Definition Size.
-             0x04,
-             // Param Definition Bytes.
-             0x01, 0x02, 0x03, 0x04});
-}
+  EXPECT_THAT(extended_param_definition.ValidateAndWrite(wb), IsOk());
 
-TEST_F(ExtendedParamDefinitionTest, WriteFailsIfSizeIsInconsistent) {
-  Init(ParamDefinition::kParameterDefinitionReservedEnd);
-  extended_param_definition_->param_definition_size_ = 0;
-  extended_param_definition_->param_definition_bytes_ = {100};
-
-  expected_status_code_ = absl::StatusCode::kInvalidArgument;
-  TestWrite({});
+  ValidateWriteResults(wb, {// Param Definition Size.
+                            0x04,
+                            // Param Definition Bytes.
+                            0x01, 0x02, 0x03, 0x04});
 }
 
 TEST(ReadMixGainParamDefinitionTest, DefaultMixGainMode1) {
@@ -720,7 +894,7 @@ TEST(ReadMixGainParamDefinitionTest, DefaultMixGainWithSubblockArray) {
   EXPECT_EQ(param_definition.default_mix_gain_, 3);
 }
 
-TEST(ReadReconGainParamDefinitionTest, Default) {
+TEST(ReadReconGainParamDefinitionTest, ReadsCorrectlyWithDefaultValues) {
   std::vector<uint8_t> bitstream = {// Parameter ID.
                                     0x00,
                                     // Parameter Rate.
@@ -734,12 +908,12 @@ TEST(ReadReconGainParamDefinitionTest, Default) {
   auto buffer =
       MemoryBasedReadBitBuffer::CreateFromSpan(absl::MakeConstSpan(bitstream));
   ReconGainParamDefinition param_definition = ReconGainParamDefinition(0);
-  EXPECT_TRUE(param_definition.ReadAndValidate(*buffer).ok());
+  EXPECT_THAT(param_definition.ReadAndValidate(*buffer), IsOk());
   EXPECT_EQ(*param_definition.GetType(),
             ParamDefinition::kParameterDefinitionReconGain);
 }
 
-TEST(ReadReconGainParamDefinitionTest, Mode1) {
+TEST(ReadReconGainParamDefinitionTest, ReadsMode1) {
   std::vector<uint8_t> bitstream = {
       // Parameter ID.
       0x00,
@@ -794,7 +968,7 @@ TEST(ReadReconGainParamDefinitionTest, Mode0SubblockArray) {
   EXPECT_THAT(param_definition.ReadAndValidate(*buffer), IsOk());
 }
 
-TEST(ReadDemixingParamDefinitionTest, DefaultDmixPMode) {
+TEST(ReadDemixingParamDefinitionTest, ReadsDefaultDmixPMode) {
   std::vector<uint8_t> bitstream = {// Parameter ID.
                                     0x00,
                                     // Parameter Rate.
@@ -820,7 +994,7 @@ TEST(ReadDemixingParamDefinitionTest, DefaultDmixPMode) {
             DemixingInfoParameterData::kDMixPMode2);
 }
 
-TEST(ReadDemixingParamDefinitionTest, DefaultW) {
+TEST(ReadDemixingParamDefinitionTest, ReadsDefaultW) {
   std::vector<uint8_t> bitstream = {// Parameter ID.
                                     0x00,
                                     // Parameter Rate.
@@ -861,12 +1035,10 @@ TEST(ExtendedParamDefinition, ReadAndValidateWithZeroSize) {
   EXPECT_THAT(param_definition.ReadAndValidate(*buffer), IsOk());
 
   EXPECT_EQ(*param_definition.GetType(), kExtensiontype);
-  EXPECT_EQ(param_definition.param_definition_size_, 0);
   EXPECT_TRUE(param_definition.param_definition_bytes_.empty());
 }
 
 TEST(ExtendedParamDefinition, ReadAndValidateWithNonZeroSize) {
-  const DecodedUleb128 kExpectedParamDefinitionSize = 5;
   const std::vector<uint8_t> kExpectedParamDefinitionBytes = {'e', 'x', 't',
                                                               'r', 'a'};
   std::vector<uint8_t> bitstream = {// param_definition_size.
@@ -881,8 +1053,6 @@ TEST(ExtendedParamDefinition, ReadAndValidateWithNonZeroSize) {
   EXPECT_THAT(param_definition.ReadAndValidate(*buffer), IsOk());
 
   EXPECT_EQ(*param_definition.GetType(), kExtensiontype);
-  EXPECT_EQ(param_definition.param_definition_size_,
-            kExpectedParamDefinitionSize);
   EXPECT_EQ(param_definition.param_definition_bytes_,
             kExpectedParamDefinitionBytes);
 }
@@ -890,14 +1060,12 @@ TEST(ExtendedParamDefinition, ReadAndValidateWithNonZeroSize) {
 TEST(ExtendedParamDefinitionEqualityOperator, Equals) {
   ExtendedParamDefinition lhs(
       ParamDefinition::kParameterDefinitionReservedStart);
-  lhs.param_definition_size_ = 5;
   lhs.param_definition_bytes_ = {'e', 'x', 't', 'r', 'a'};
   ExtendedParamDefinition rhs(
       ParamDefinition::kParameterDefinitionReservedStart);
-  rhs.param_definition_size_ = 5;
   rhs.param_definition_bytes_ = {'e', 'x', 't', 'r', 'a'};
 
-  EXPECT_TRUE(lhs == rhs);
+  EXPECT_EQ(lhs, rhs);
 }
 
 TEST(ExtendedParamDefinitionEqualityOperator, NotEqualsWhenTypeIsDifferent) {
@@ -912,11 +1080,9 @@ TEST(ExtendedParamDefinitionEqualityOperator, NotEqualsWhenTypeIsDifferent) {
 TEST(ExtendedParamDefinitionEqualityOperator, NotEqualsWhenPayloadIsDifferent) {
   ExtendedParamDefinition lhs(
       ParamDefinition::kParameterDefinitionReservedStart);
-  lhs.param_definition_size_ = 3;
   lhs.param_definition_bytes_ = {'e', 'x', 't'};
   ExtendedParamDefinition rhs(
       ParamDefinition::kParameterDefinitionReservedStart);
-  rhs.param_definition_size_ = 5;
   rhs.param_definition_bytes_ = {'e', 'x', 't', 'r', 'a'};
 
   EXPECT_NE(lhs, rhs);

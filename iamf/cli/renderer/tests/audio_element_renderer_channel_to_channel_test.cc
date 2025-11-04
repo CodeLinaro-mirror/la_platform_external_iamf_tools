@@ -22,6 +22,7 @@
 #include "iamf/cli/demixing_module.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/obu/audio_element.h"
+#include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/types.h"
 
@@ -41,6 +42,7 @@ constexpr InternalSampleType kArbitrarySample3 = 0.000101112;
 constexpr InternalSampleType kArbitrarySample4 = 0.009999999;
 constexpr InternalSampleType kArbitrarySample5 = 0.987654321;
 constexpr InternalSampleType kArbitrarySample6 = 0.000001024;
+constexpr double kFloatingPointTolerance = 1e-9;
 
 constexpr int kMonoChannelIndex = 0;
 constexpr int kStereoL2ChannelIndex = 0;
@@ -88,26 +90,28 @@ const Layout k3_1_2Layout = {
         LoudspeakersSsConventionLayout{.sound_system = kSoundSystem11_2_3_0}};
 
 const ScalableChannelLayoutConfig kBinauralScalableChannelLayoutConfig = {
-    .num_layers = 1,
     .channel_audio_layer_configs = {{.loudspeaker_layout = kLayoutBinaural}}};
 const ScalableChannelLayoutConfig kStereoScalableChannelLayoutConfig = {
-    .num_layers = 1,
     .channel_audio_layer_configs = {{.loudspeaker_layout = kLayoutStereo}}};
 const ScalableChannelLayoutConfig k5_1_0ScalableChannelLayoutConfig = {
-    .num_layers = 1,
     .channel_audio_layer_configs = {{.loudspeaker_layout = kLayout5_1_ch}}};
 const ScalableChannelLayoutConfig k7_1_4ScalableChannelLayoutConfig = {
-    .num_layers = 1,
     .channel_audio_layer_configs = {{.loudspeaker_layout = kLayout7_1_4_ch}}};
 
 ScalableChannelLayoutConfig
 GetScalableChannelLayoutConfigForExpandedLayoutSoundSystem(
     ChannelAudioLayerConfig::ExpandedLoudspeakerLayout expanded_layout) {
-  return {.num_layers = 1,
-          .channel_audio_layer_configs = {
+  return {.channel_audio_layer_configs = {
               {.loudspeaker_layout = kLayoutExpanded,
                .expanded_loudspeaker_layout = expanded_layout}}};
 }
+
+constexpr DownMixingParams kDMixPMode1DownMixingParams = {.alpha = 1.0,
+                                                          .beta = 1.0,
+                                                          .gamma = 0.707,
+                                                          .delta = 0.707,
+                                                          .w = 0.707,
+                                                          .in_bitstream = true};
 
 TEST(CreateFromScalableChannelLayoutConfig, SupportsDownMixingStereoToMono) {
   EXPECT_NE(AudioElementRendererChannelToChannel::
@@ -354,6 +358,73 @@ TEST(RenderLabeledFrame,
               Pointwise(DoubleEq(), rendered_samples[kStereoR2ChannelIndex]));
 }
 
+TEST(RenderLabeledFrame, Renders5_1_0WithDemixingParametersToStereo) {
+  auto renderer = AudioElementRendererChannelToChannel::
+      CreateFromScalableChannelLayoutConfig(k5_1_0ScalableChannelLayoutConfig,
+                                            kStereoLayout, kOneSamplePerFrame);
+  ASSERT_NE(renderer, nullptr);
+
+  std::vector<std::vector<InternalSampleType>> rendered_samples;
+  RenderAndFlushExpectOk(
+      {
+          .label_to_samples =
+              {
+                  {kL5, {1.0}},
+                  {kR5, {2.0}},
+                  {kCentre, {3.0}},
+                  {kLFE, {100.0}},  // LFE should be ignored.
+                  {kLs5, {4.0}},
+                  {kRs5, {5.0}},
+              },
+          .demixing_params = kDMixPMode1DownMixingParams,
+      },
+      renderer.get(), rendered_samples);
+
+  // Just check that rendering successfully completed and there are two output
+  // channels.
+  EXPECT_EQ(rendered_samples.size(), 2);
+}
+
+TEST(RenderLabeledFrame,
+     AppliesGammaToHeightChannelsWhenDownmixing7_1_4to7_1_2) {
+  auto renderer = AudioElementRendererChannelToChannel::
+      CreateFromScalableChannelLayoutConfig(k7_1_4ScalableChannelLayoutConfig,
+                                            k7_1_2Layout, kOneSamplePerFrame);
+  ASSERT_NE(renderer, nullptr);
+  constexpr DownMixingParams kDownMixParams = {.gamma = 0.5,
+                                               .in_bitstream = true};
+  const InternalSampleType kLtbSample = kArbitrarySample1;
+  const InternalSampleType kRtbSample = kArbitrarySample2;
+
+  std::vector<std::vector<InternalSampleType>> rendered_samples;
+  RenderAndFlushExpectOk({.label_to_samples = {{kL7, {0}},
+                                               {kR7, {0}},
+                                               {kCentre, {0}},
+                                               {kLFE, {0}},
+                                               {kLss7, {0}},
+                                               {kRss7, {0}},
+                                               {kLrs7, {0}},
+                                               {kRrs7, {0}},
+                                               {kLtf4, {0}},
+                                               {kRtf4, {0}},
+                                               {kLtb4, {kLtbSample}},
+                                               {kRtb4, {kRtbSample}}},
+                          .demixing_params = kDownMixParams},
+                         renderer.get(), rendered_samples);
+
+  // The output is 7.1.2 layout, which has 10 channels:
+  // L7, R7, C, LFE, Lss7, Rss7, Lrs7, Rrs7, Ltf2, Rtf2
+  // We expect Ltb4 to be mixed into Ltf2, and Rtb4 into Rtf2, both scaled by
+  // gamma.
+  constexpr int k7_1_2Ltf2ChannelIndex = 8;
+  constexpr int k7_1_2Rtf2ChannelIndex = 9;
+  EXPECT_EQ(rendered_samples.size(), 10);
+  EXPECT_NEAR(rendered_samples[k7_1_2Ltf2ChannelIndex][0],
+              kDownMixParams.gamma * kLtbSample, kFloatingPointTolerance);
+  EXPECT_NEAR(rendered_samples[k7_1_2Rtf2ChannelIndex][0],
+              kDownMixParams.gamma * kRtbSample, kFloatingPointTolerance);
+}
+
 TEST(RenderLabeledFrame, PassThroughLFE) {
   auto renderer = AudioElementRendererChannelToChannel::
       CreateFromScalableChannelLayoutConfig(
@@ -441,7 +512,7 @@ TEST(RenderLabeledFrame, PassThroughStereoS) {
                                                {kRs5, {kArbitrarySample2}}}},
                          renderer.get(), rendered_samples);
 
-  EXPECT_DOUBLE_EQ(rendered_samples.size(), 6);
+  EXPECT_EQ(rendered_samples.size(), 6);
   EXPECT_THAT(rendered_samples[k5_1_0Ls5ChannelIndex],
               Pointwise(DoubleEq(), {kArbitrarySample1}));
   EXPECT_THAT(rendered_samples[k5_1_0Rs5ChannelIndex],

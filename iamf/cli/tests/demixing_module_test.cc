@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
@@ -30,8 +31,6 @@
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/channel_label.h"
 #include "iamf/cli/proto/user_metadata.pb.h"
-#include "iamf/cli/proto_conversion/channel_label_utils.h"
-#include "iamf/cli/proto_conversion/downmixing_reconstruction_util.h"
 #include "iamf/cli/substream_frames.h"
 #include "iamf/cli/tests/cli_test_utils.h"
 #include "iamf/common/utils/numeric_utils.h"
@@ -66,6 +65,8 @@ constexpr size_t kNumSamplesPerFrame = 4;
 constexpr DecodedUleb128 kMonoSubstreamId = 0;
 constexpr DecodedUleb128 kL2SubstreamId = 1;
 constexpr DecodedUleb128 kStereoSubstreamId = 2;
+
+constexpr DownMixingParams kIrrelevantDownMixingParams = {};
 
 // TODO(b/305927287): Test computation of linear output gains. Test some cases
 //                    of erroneous input.
@@ -180,14 +181,14 @@ TEST(InitializeForReconstruction, NeverCreatesDownMixers) {
                                       {ChannelAudioLayerConfig::kLayoutMono,
                                        ChannelAudioLayerConfig::kLayoutStereo},
                                       audio_elements);
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
-  const std::list<Demixer>* down_mixers = nullptr;
-  EXPECT_THAT(demixing_module->GetDownMixers(kAudioElementId, down_mixers),
-              IsOk());
-  EXPECT_TRUE(down_mixers->empty());
+  absl::StatusOr<const std::list<Demixer>*> down_mixers =
+      demixing_module->GetDownMixers(kAudioElementId);
+  EXPECT_THAT(down_mixers, IsOk());
+  EXPECT_TRUE((*down_mixers)->empty());
 }
 
 TEST(CreateForReconstruction, CreatesOneDemixerForTwoLayerStereo) {
@@ -196,13 +197,14 @@ TEST(CreateForReconstruction, CreatesOneDemixerForTwoLayerStereo) {
                                       {ChannelAudioLayerConfig::kLayoutMono,
                                        ChannelAudioLayerConfig::kLayoutStereo},
                                       audio_elements);
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
-  const std::list<Demixer>* demixer = nullptr;
-  EXPECT_THAT(demixing_module->GetDemixers(kAudioElementId, demixer), IsOk());
-  EXPECT_EQ(demixer->size(), 1);
+  absl::StatusOr<const std::list<Demixer>*> demixer =
+      demixing_module->GetDemixers(kAudioElementId);
+  EXPECT_THAT(demixer, IsOk());
+  EXPECT_EQ((*demixer)->size(), 1);
 }
 
 TEST(CreateForReconstruction, FailsForReservedLayout14) {
@@ -211,8 +213,8 @@ TEST(CreateForReconstruction, FailsForReservedLayout14) {
       {{0, {kOmitted}}}, {ChannelAudioLayerConfig::kLayoutReserved14},
       audio_elements);
 
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
 
   EXPECT_FALSE(demixing_module.ok());
 }
@@ -228,8 +230,8 @@ TEST(CreateForReconstruction, ValidForExpandedLayoutLFE) {
       .expanded_loudspeaker_layout =
       ChannelAudioLayerConfig::kExpandedLayoutLFE;
 
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
 
   EXPECT_THAT(demixing_module, IsOk());
 }
@@ -239,13 +241,14 @@ TEST(CreateForReconstruction, CreatesNoDemixersForSingleLayerChannelBased) {
   InitAudioElementWithLabelsAndLayers({{0, {kL2, kR2}}},
                                       {ChannelAudioLayerConfig::kLayoutStereo},
                                       audio_elements);
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
-  const std::list<Demixer>* demixer = nullptr;
-  EXPECT_THAT(demixing_module->GetDemixers(kAudioElementId, demixer), IsOk());
-  EXPECT_TRUE(demixer->empty());
+  absl::StatusOr<const std::list<Demixer>*> demixer =
+      demixing_module->GetDemixers(kAudioElementId);
+  EXPECT_THAT(demixer, IsOk());
+  EXPECT_TRUE((*demixer)->empty());
 }
 
 TEST(CreateForReconstruction, CreatesNoDemixersForAmbisonics) {
@@ -258,13 +261,14 @@ TEST(CreateForReconstruction, CreatesNoDemixersForAmbisonics) {
                                                 kAmbisonicsSubstreamIds,
                                                 codec_configs, audio_elements);
 
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
-  const std::list<Demixer>* demixer = nullptr;
-  EXPECT_THAT(demixing_module->GetDemixers(kAudioElementId, demixer), IsOk());
-  EXPECT_TRUE(demixer->empty());
+  absl::StatusOr<const std::list<Demixer>*> demixer =
+      demixing_module->GetDemixers(kAudioElementId);
+  EXPECT_THAT(demixer, IsOk());
+  EXPECT_TRUE((*demixer)->empty());
 }
 
 TEST(DemixOriginalAudioSamples, ReturnsErrorAfterCreateForReconstruction) {
@@ -274,8 +278,8 @@ TEST(DemixOriginalAudioSamples, ReturnsErrorAfterCreateForReconstruction) {
       {ChannelAudioLayerConfig::kLayoutMono,
        ChannelAudioLayerConfig::kLayoutStereo},
       audio_elements);
-  auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
   EXPECT_THAT(demixing_module->DemixOriginalAudioSamples({}), Not(IsOk()));
@@ -309,8 +313,8 @@ TEST(DemixDecodedAudioSamples, OutputContainsOriginalAndDemixedSamples) {
       .end_timestamp = kEndTimestamp,
       .decoded_samples = absl::MakeConstSpan(kDecodedSamples),
       .down_mixing_params = DownMixingParams()});
-  auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
   const auto id_to_labeled_decoded_frame =
       demixing_module->DemixDecodedAudioSamples(decoded_audio_frames);
@@ -330,8 +334,8 @@ TEST(DemixDecodedAudioSamples, ReturnsErrorWhenChannelCountsMismatch) {
   InitAudioElementWithLabelsAndLayers({{kStereoSubstreamId, {kL2, kR2}}},
                                       {ChannelAudioLayerConfig::kLayoutStereo},
                                       audio_elements);
-  auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
   std::list<AudioFrameWithData> decoded_audio_frames;
   // The decoded audio frame has one channel, which is inconsistent with a
@@ -393,8 +397,8 @@ TEST(DemixDecodedAudioSamples, OutputEchoesTimingInformation) {
       .end_timestamp = kEndTimestamp,
       .decoded_samples = absl::MakeConstSpan(kDecodedSamples),
       .down_mixing_params = DownMixingParams()});
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
   const auto id_to_labeled_decoded_frame =
@@ -443,8 +447,8 @@ TEST(DemixDecodedAudioSamples, OutputEchoesOriginalLabels) {
       .end_timestamp = kEndTimestamp,
       .decoded_samples = absl::MakeConstSpan(kDecodedL2Samples),
       .down_mixing_params = DownMixingParams()});
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
   IdLabeledFrameMap unused_id_labeled_frame;
@@ -502,8 +506,8 @@ TEST(DemixDecodedAudioSamples, OutputHasReconstructedLayers) {
       .end_timestamp = kEndTimestamp,
       .decoded_samples = absl::MakeConstSpan(kDecodedL2Samples),
       .down_mixing_params = DownMixingParams()});
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
 
   const auto id_to_labeled_decoded_frame =
@@ -557,8 +561,8 @@ TEST(DemixDecodedAudioSamples, OutputContainsReconGainAndLayerInfo) {
       .down_mixing_params = DownMixingParams(),
       .recon_gain_info_parameter_data = recon_gain_info_parameter_data,
       .audio_element_with_data = &audio_elements.at(kAudioElementId)});
-  const auto demixing_module =
-      DemixingModule::CreateForReconstruction(audio_elements);
+  const auto demixing_module = DemixingModule::CreateForReconstruction(
+      DemixingModule::CreateIdToReconstructionConfig(audio_elements));
   ASSERT_THAT(demixing_module, IsOk());
   const auto id_to_labeled_decoded_frame =
       demixing_module->DemixDecodedAudioSamples(decoded_audio_frames);
@@ -585,97 +589,55 @@ TEST(DemixDecodedAudioSamples, OutputContainsReconGainAndLayerInfo) {
                                    ChannelAudioLayerConfig::kLayoutStereo));
 }
 
-class DemixingModuleTestBase {
- public:
-  DemixingModuleTestBase() {
-    audio_frame_metadata_.set_audio_element_id(kAudioElementId);
-  }
+void ExpectHasNumDownMixers(const DemixingModule& demixing_module,
+                            int expected_number_of_down_mixers) {
+  absl::StatusOr<const std::list<Demixer>*> down_mixers =
+      demixing_module.GetDownMixers(kAudioElementId);
+  ASSERT_THAT(down_mixers, IsOk());
+  EXPECT_EQ((*down_mixers)->size(), expected_number_of_down_mixers);
+}
 
-  void CreateDemixingModuleExpectOk() {
-    iamf_tools_cli_proto::UserMetadata user_metadata;
-    *user_metadata.add_audio_frame_metadata() = audio_frame_metadata_;
-    audio_elements_.emplace(
-        kAudioElementId,
-        AudioElementWithData{
-            .obu = AudioElementObu(ObuHeader(), kAudioElementId,
-                                   AudioElementObu::kAudioElementChannelBased,
-                                   /*reserved=*/0,
-                                   /*codec_config_id=*/0),
-            .substream_id_to_labels = substream_id_to_labels_,
-        });
-    const absl::StatusOr<absl::flat_hash_map<
-        DecodedUleb128, DemixingModule::DownmixingAndReconstructionConfig>>
-        audio_element_id_to_demixing_metadata =
-            CreateAudioElementIdToDemixingMetadata(user_metadata,
-                                                   audio_elements_);
-    ASSERT_THAT(audio_element_id_to_demixing_metadata.status(), IsOk());
-    auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
-        std::move(audio_element_id_to_demixing_metadata.value()));
-    ASSERT_THAT(demixing_module, IsOk());
-    demixing_module_.emplace(*std::move(demixing_module));
-  }
+void ExpectHasNumDemixers(const DemixingModule& demixing_module,
+                          int expected_number_of_demixers) {
+  absl::StatusOr<const std::list<Demixer>*> demixers =
+      demixing_module.GetDemixers(kAudioElementId);
+  ASSERT_THAT(demixers, IsOk());
+  EXPECT_EQ((*demixers)->size(), expected_number_of_demixers);
+}
 
-  void TestCreateDemixingModule(int expected_number_of_down_mixers) {
-    CreateDemixingModuleExpectOk();
-    const std::list<Demixer>* down_mixers = nullptr;
-    const std::list<Demixer>* demixers = nullptr;
+void DownMixAndExpectOutput(
+    const DemixingModule& demixing_module,
+    const DownMixingParams& down_mixing_params,
+    const absl::flat_hash_map<uint32_t, std::vector<std::vector<int32_t>>>&
+        substream_id_to_expected_samples,
+    LabelSamplesMap input_label_to_samples,
+    absl::flat_hash_map<uint32_t, SubstreamData>&
+        substream_id_to_substream_data) {
+  EXPECT_THAT(demixing_module.DownMixSamplesToSubstreams(
+                  kAudioElementId, down_mixing_params, input_label_to_samples,
+                  substream_id_to_substream_data),
+              IsOk());
 
-    ASSERT_THAT(demixing_module_->GetDownMixers(kAudioElementId, down_mixers),
-                IsOk());
-    ASSERT_THAT(demixing_module_->GetDemixers(kAudioElementId, demixers),
-                IsOk());
-    EXPECT_EQ(down_mixers->size(), expected_number_of_down_mixers);
-    EXPECT_EQ(demixers->size(), expected_number_of_down_mixers);
-  }
+  for (auto& [substream_id, substream_data] : substream_id_to_substream_data) {
+    const auto& output_samples = substream_data.frames_in_obu.Front();
 
- protected:
-  void ConfigureAudioFrameMetadata(
-      absl::Span<const ChannelLabel::Label> labels) {
-    for (const auto& label : labels) {
-      auto proto_label = ChannelLabelUtils::LabelToProto(label);
-      ASSERT_TRUE(proto_label.ok());
-      audio_frame_metadata_.add_channel_metadatas()->set_channel_label(
-          *proto_label);
+    ASSERT_TRUE(substream_id_to_expected_samples.contains(substream_id));
+    ASSERT_EQ(substream_id_to_expected_samples.at(substream_id).size(),
+              output_samples.size());
+    for (int c = 0; c < output_samples.size(); c++) {
+      EXPECT_THAT(
+          output_samples[c],
+          Pointwise(InternalSampleMatchesIntegralSample(),
+                    substream_id_to_expected_samples.at(substream_id).at(c)));
     }
   }
+}
 
-  iamf_tools_cli_proto::AudioFrameObuMetadata audio_frame_metadata_;
-  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements_;
-  SubstreamIdLabelsMap substream_id_to_labels_;
-
-  // Held in `std::optional` for delayed construction.
-  std::optional<DemixingModule> demixing_module_;
-};
-
-class DownMixingModuleTest : public DemixingModuleTestBase,
-                             public ::testing::Test {
+class DownMixingModuleTest : public ::testing::Test {
  protected:
-  void TestDownMixing(const DownMixingParams& down_mixing_params,
-                      int expected_number_of_down_mixers) {
-    TestCreateDemixingModule(expected_number_of_down_mixers);
-
-    EXPECT_THAT(demixing_module_->DownMixSamplesToSubstreams(
-                    kAudioElementId, down_mixing_params,
-                    input_label_to_samples_, substream_id_to_substream_data_),
-                IsOk());
-
-    for (auto& [substream_id, substream_data] :
-         substream_id_to_substream_data_) {
-      const auto& output_samples = substream_data.frames_in_obu.Front();
-      EXPECT_EQ(output_samples.size(),
-                substream_id_to_expected_samples_[substream_id].size());
-      for (int c = 0; c < output_samples.size(); c++) {
-        EXPECT_THAT(
-            output_samples[c],
-            Pointwise(InternalSampleMatchesIntegralSample(),
-                      substream_id_to_expected_samples_[substream_id][c]));
-      }
-    }
-  }
-
   void ConfigureInputChannel(ChannelLabel::Label label,
                              absl::Span<const int32_t> input_samples) {
-    ConfigureAudioFrameMetadata({label});
+    input_labels_.insert(label);
 
     auto [iter, inserted] = input_label_to_samples_.emplace(
         label, std::vector<InternalSampleType>(input_samples.size(), 0));
@@ -703,7 +665,10 @@ class DownMixingModuleTest : public DemixingModuleTestBase,
     substream_id_to_expected_samples_[substream_id] = expected_output_samples;
   }
 
+  absl::flat_hash_set<ChannelLabel::Label> input_labels_;
   LabelSamplesMap input_label_to_samples_;
+
+  SubstreamIdLabelsMap substream_id_to_labels_;
 
   absl::flat_hash_map<uint32_t, SubstreamData> substream_id_to_substream_data_;
 
@@ -711,64 +676,81 @@ class DownMixingModuleTest : public DemixingModuleTestBase,
       substream_id_to_expected_samples_;
 };
 
-TEST_F(DownMixingModuleTest, OneLayerStereoHasNoDownMixers) {
-  ConfigureInputChannel(kL2, {});
-  ConfigureInputChannel(kR2, {});
+TEST(Create, OneLayerStereoHasNoDownMixers) {
+  const absl::flat_hash_set<ChannelLabel::Label> kStereoInputLabels = {kL2,
+                                                                       kR2};
+  const SubstreamIdLabelsMap kOneLayerStereoOutputIdToLabels = {
+      {kStereoSubstreamId, {kL2, kR2}}};
 
-  ConfigureOutputChannel({kL2, kR2}, {});
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = kStereoInputLabels,
+            .substream_id_to_labels = kOneLayerStereoOutputIdToLabels}}});
+  ASSERT_THAT(demixing_module, IsOk());
 
-  TestCreateDemixingModule(0);
+  ExpectHasNumDownMixers(*demixing_module, 0);
+  ExpectHasNumDemixers(*demixing_module, 0);
 }
 
-TEST_F(DownMixingModuleTest, OneLayer7_1_4HasNoDownMixers) {
+TEST(Create, OneLayer7_1_4HasNoDownMixers) {
   // Initialize arguments for single layer 7.1.4.
-  ConfigureInputChannel(kL7, {});
-  ConfigureInputChannel(kR7, {});
-  ConfigureInputChannel(kCentre, {});
-  ConfigureInputChannel(kLFE, {});
-  ConfigureInputChannel(kLss7, {});
-  ConfigureInputChannel(kRss7, {});
-  ConfigureInputChannel(kLrs7, {});
-  ConfigureInputChannel(kRrs7, {});
-  ConfigureInputChannel(kLtf4, {});
-  ConfigureInputChannel(kRtf4, {});
-  ConfigureInputChannel(kLtb4, {});
-  ConfigureInputChannel(kRtb4, {});
+  const absl::flat_hash_set<ChannelLabel::Label> k7_1_4InputLabels = {
+      kL7,   kR7,   kCentre, kLFE,  kLss7, kRss7,
+      kLrs7, kRrs7, kLtf4,   kRtf4, kLtb4, kRtb4};
+  const SubstreamIdLabelsMap kOneLayer7_1_4OutputIdToLabels = {
+      {0, {kL7, kR7}},     {1, {kLss7, kRss7}}, {2, {kLrs7, kRrs7}},
+      {3, {kLtf4, kRtf4}}, {4, {kLtb4, kRtb4}}, {5, {kCentre}},
+      {6, {kLFE}}};
 
-  ConfigureOutputChannel({kCentre}, {});
-  ConfigureOutputChannel({kL7, kR7}, {});
-  ConfigureOutputChannel({kLss7, kRss7}, {});
-  ConfigureOutputChannel({kLrs7, kRrs7}, {});
-  ConfigureOutputChannel({kLtf4, kRtf4}, {});
-  ConfigureOutputChannel({kLtb4, kRtb4}, {});
-  ConfigureOutputChannel({kLFE}, {});
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = k7_1_4InputLabels,
+            .substream_id_to_labels = kOneLayer7_1_4OutputIdToLabels}}});
+  ASSERT_THAT(demixing_module, IsOk());
 
-  TestCreateDemixingModule(0);
+  ExpectHasNumDownMixers(*demixing_module, 0);
+  ExpectHasNumDemixers(*demixing_module, 0);
 }
 
-TEST_F(DownMixingModuleTest, AmbisonicsHasNoDownMixers) {
-  ConfigureInputChannel(kA0, {});
-  ConfigureInputChannel(kA1, {});
-  ConfigureInputChannel(kA2, {});
-  ConfigureInputChannel(kA3, {});
+TEST(Create, AmbisonicsHasNoDownMixers) {
+  const absl::flat_hash_set<ChannelLabel::Label> kAmbisonicsInputLabels = {
+      kA0, kA1, kA2, kA3};
+  const SubstreamIdLabelsMap kAmbisonicsOutputIdToLabels = {
+      {0, {kA0}}, {1, {kA1}}, {2, {kA2}}, {3, {kA3}}};
 
-  ConfigureOutputChannel({kA0}, {});
-  ConfigureOutputChannel({kA1}, {});
-  ConfigureOutputChannel({kA2}, {});
-  ConfigureOutputChannel({kA3}, {});
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = kAmbisonicsInputLabels,
+            .substream_id_to_labels = kAmbisonicsOutputIdToLabels}}});
+  ASSERT_THAT(demixing_module, IsOk());
 
-  TestCreateDemixingModule(0);
+  ExpectHasNumDownMixers(*demixing_module, 0);
+  ExpectHasNumDemixers(*demixing_module, 0);
 }
 
 TEST_F(DownMixingModuleTest, OneLayerStereo) {
   ConfigureInputChannel(kL2, {0, 1, 2, 3});
   ConfigureInputChannel(kR2, {100, 101, 102, 103});
-
   // Down-mix to stereo as the highest layer. The highest layer always matches
   // the original input.
   ConfigureOutputChannel({kL2, kR2}, {{0, 1, 2, 3}, {100, 101, 102, 103}});
 
-  TestDownMixing({}, 0);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 0);
+  ExpectHasNumDemixers(*demixing_module, 0);
+
+  DownMixAndExpectOutput(*demixing_module, kIrrelevantDownMixingParams,
+                         substream_id_to_expected_samples_,
+                         input_label_to_samples_,
+                         substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S2ToS1DownMixer) {
@@ -783,7 +765,18 @@ TEST_F(DownMixingModuleTest, S2ToS1DownMixer) {
   // M = (L2 - 6 dB) + (R2 - 6 dB).
   ConfigureOutputChannel({kMono}, {{50, 50, 500, 750}});
 
-  TestDownMixing({}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(
+      *demixing_module, {}, substream_id_to_expected_samples_,
+      input_label_to_samples_, substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S3ToS2DownMixer) {
@@ -802,7 +795,18 @@ TEST_F(DownMixingModuleTest, S3ToS2DownMixer) {
   // R2 = R3 + (C - 3 dB).
   ConfigureOutputChannel({kL2, kR2}, {{70, 170}, {70, 170}});
 
-  TestDownMixing({}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(
+      *demixing_module, {}, substream_id_to_expected_samples_,
+      input_label_to_samples_, substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S5ToS3ToS2DownMixer) {
@@ -825,7 +829,18 @@ TEST_F(DownMixingModuleTest, S5ToS3ToS2DownMixer) {
   ConfigureOutputChannel({kL2, kR2}, {{2221}, {3028}});
 
   // Internally there is a down-mixer to L3/R3 then another for L2/R2.
-  TestDownMixing({.delta = .707}, 2);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 2);
+  ExpectHasNumDemixers(*demixing_module, 2);
+
+  DownMixAndExpectOutput(
+      *demixing_module, {.delta = .707}, substream_id_to_expected_samples_,
+      input_label_to_samples_, substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S5ToS3ToDownMixer) {
@@ -852,7 +867,19 @@ TEST_F(DownMixingModuleTest, S5ToS3ToDownMixer) {
 
   // Internally there is a down-mixer for the height and another for the
   // surround.
-  TestDownMixing({.delta = .707, .w = 0.25}, 2);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 2);
+  ExpectHasNumDemixers(*demixing_module, 2);
+
+  DownMixAndExpectOutput(*demixing_module, {.delta = .707, .w = 0.25},
+                         substream_id_to_expected_samples_,
+                         input_label_to_samples_,
+                         substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, T4ToT2DownMixer) {
@@ -879,7 +906,18 @@ TEST_F(DownMixingModuleTest, T4ToT2DownMixer) {
   ConfigureOutputChannel({kLtf2, kRtf2}, {{1707}, {3414}});
   ConfigureOutputChannel({kLFE}, {{10}});
 
-  TestDownMixing({.gamma = .707}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(
+      *demixing_module, {.gamma = .707}, substream_id_to_expected_samples_,
+      input_label_to_samples_, substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithoutT0) {
@@ -903,7 +941,19 @@ TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithoutT0) {
   ConfigureOutputChannel({kLs5, kRs5}, {{3598}, {5464}});
   ConfigureOutputChannel({kLFE}, {{8}});
 
-  TestDownMixing({.alpha = 1, .beta = .866}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(*demixing_module, {.alpha = 1, .beta = .866},
+                         substream_id_to_expected_samples_,
+                         input_label_to_samples_,
+                         substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithT2) {
@@ -930,7 +980,19 @@ TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithT2) {
   ConfigureOutputChannel({kLtf2, kRtf2}, {{8}, {9}});
   ConfigureOutputChannel({kLFE}, {{10}});
 
-  TestDownMixing({.alpha = 1, .beta = .866}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(*demixing_module, {.alpha = 1, .beta = .866},
+                         substream_id_to_expected_samples_,
+                         input_label_to_samples_,
+                         substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithT4) {
@@ -960,7 +1022,19 @@ TEST_F(DownMixingModuleTest, S7ToS5DownMixerWithT4) {
   ConfigureOutputChannel({kLtb4, kRtb4}, {{10}, {11}});
   ConfigureOutputChannel({kLFE}, {{12}});
 
-  TestDownMixing({.alpha = 1, .beta = .866}, 1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
+  DownMixAndExpectOutput(*demixing_module, {.alpha = 1, .beta = .866},
+                         substream_id_to_expected_samples_,
+                         input_label_to_samples_,
+                         substream_id_to_substream_data_);
 }
 
 TEST_F(DownMixingModuleTest, SixLayer7_1_4) {
@@ -1011,12 +1085,23 @@ TEST_F(DownMixingModuleTest, SixLayer7_1_4) {
   // M = (L2 - 6 dB) + (R2 - 6 dB).
   ConfigureOutputChannel({kMono}, {{6130}});
 
-  TestDownMixing(
-      {.alpha = 1, .beta = .866, .gamma = .866, .delta = .866, .w = 0.25}, 6);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 6);
+  ExpectHasNumDemixers(*demixing_module, 6);
+
+  DownMixAndExpectOutput(
+      *demixing_module,
+      {.alpha = 1, .beta = .866, .gamma = .866, .delta = .866, .w = 0.25},
+      substream_id_to_expected_samples_, input_label_to_samples_,
+      substream_id_to_substream_data_);
 }
 
-class DemixingModuleTest : public DemixingModuleTestBase,
-                           public ::testing::Test {
+class DemixingModuleTest : public ::testing::Test {
  protected:
   void ConfigureLosslessAudioFrame(
       const std::list<ChannelLabel::Label>& labels,
@@ -1074,10 +1159,17 @@ class DemixingModuleTest : public DemixingModuleTestBase,
   }
 
   void TestLosslessDemixing(int expected_number_of_down_mixers) {
-    TestCreateDemixingModule(expected_number_of_down_mixers);
+    auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+        {{kAudioElementId,
+          DemixingModule::DownmixingAndReconstructionConfig{
+              .user_labels = input_labels_,
+              .substream_id_to_labels = substream_id_to_labels_}}});
+    ASSERT_THAT(demixing_module, IsOk());
+    ExpectHasNumDownMixers(*demixing_module, expected_number_of_down_mixers);
+    ExpectHasNumDemixers(*demixing_module, expected_number_of_down_mixers);
 
     const auto id_to_labeled_decoded_frame =
-        demixing_module_->DemixDecodedAudioSamples(audio_frames_);
+        demixing_module->DemixDecodedAudioSamples(audio_frames_);
     ASSERT_THAT(id_to_labeled_decoded_frame, IsOk());
     ASSERT_TRUE(id_to_labeled_decoded_frame->contains(kAudioElementId));
 
@@ -1099,22 +1191,23 @@ class DemixingModuleTest : public DemixingModuleTestBase,
     // Also, since this is lossless, we expect demixing the original samples
     // should give the same result.
     const auto id_to_labeled_frame =
-        demixing_module_->DemixOriginalAudioSamples(audio_frames_);
+        demixing_module->DemixOriginalAudioSamples(audio_frames_);
     ASSERT_THAT(id_to_labeled_frame, IsOk());
     ASSERT_TRUE(id_to_labeled_frame->contains(kAudioElementId));
     EXPECT_EQ(id_to_labeled_frame->at(kAudioElementId).label_to_samples,
               actual_label_to_samples);
   }
 
+  absl::flat_hash_set<ChannelLabel::Label> input_labels_;
+  SubstreamIdLabelsMap substream_id_to_labels_;
+
   std::list<AudioFrameWithData> audio_frames_;
 
-  // Memory for the samples, so that the span in `AudioFrameWithData` points
-  // to valid memory addresses.
+  // Backing memory for the span in the `AudioFrameWithData`s.
   std::list<std::vector<std::vector<InternalSampleType>>>
       encoded_sampes_buffer_;
 
   IdLabeledFrameMap expected_id_to_labeled_decoded_frame_;
-
 };  // namespace
 
 TEST(DemixingModule, DemixingOriginalAudioSamplesSucceedsWithEmptyInputs) {
@@ -1136,7 +1229,7 @@ TEST(DemixingModule, DemixingDecodedAudioSamplesSucceedsWithEmptyInputs) {
 }
 
 TEST_F(DemixingModuleTest, AmbisonicsHasNoDemixers) {
-  ConfigureAudioFrameMetadata({kA0, kA1, kA2, kA3});
+  input_labels_ = {kA0, kA1, kA2, kA3};
 
   ConfigureLosslessAudioFrame({kA0}, {{1}});
   ConfigureLosslessAudioFrame({kA1}, {{1}});
@@ -1148,7 +1241,7 @@ TEST_F(DemixingModuleTest, AmbisonicsHasNoDemixers) {
 
 TEST_F(DemixingModuleTest, S1ToS2Demixer) {
   // The highest layer is stereo.
-  ConfigureAudioFrameMetadata({kL2, kR2});
+  input_labels_ = {kL2, kR2};
 
   // Mono is the lowest layer.
   ConfigureLosslessAudioFrame({kMono}, {{750, 1500}});
@@ -1164,21 +1257,29 @@ TEST_F(DemixingModuleTest, S1ToS2Demixer) {
 
 TEST_F(DemixingModuleTest,
        DemixOriginalAudioSamplesReturnsErrorIfAudioFrameIsMissingPcmSamples) {
-  ConfigureAudioFrameMetadata({kL2, kR2});
+  input_labels_ = {kL2, kR2};
   ConfigureLosslessAudioFrame({kMono}, {{750, 1500}});
   ConfigureLosslessAudioFrame({kL2}, {{1000, 2000}});
   IdLabeledFrameMap unused_id_to_labeled_frame, id_to_labeled_decoded_frame;
-  TestCreateDemixingModule(1);
+  auto demixing_module = DemixingModule::CreateForDownMixingAndReconstruction(
+      {{kAudioElementId,
+        DemixingModule::DownmixingAndReconstructionConfig{
+            .user_labels = input_labels_,
+            .substream_id_to_labels = substream_id_to_labels_}}});
+  ASSERT_THAT(demixing_module, IsOk());
+  ExpectHasNumDownMixers(*demixing_module, 1);
+  ExpectHasNumDemixers(*demixing_module, 1);
+
   // Destroy the raw samples.
   audio_frames_.back().encoded_samples = std::nullopt;
 
-  EXPECT_THAT(demixing_module_->DemixOriginalAudioSamples(audio_frames_),
+  EXPECT_THAT(demixing_module->DemixOriginalAudioSamples(audio_frames_),
               Not(IsOk()));
 }
 
 TEST_F(DemixingModuleTest, S2ToS3Demixer) {
   // The highest layer is 3.1.2.
-  ConfigureAudioFrameMetadata({kL3, kR3, kCentre, kLtf3, kRtf3});
+  input_labels_ = {kL3, kR3, kCentre, kLtf3, kRtf3};
 
   // Stereo is the lowest layer.
   ConfigureLosslessAudioFrame({kL2, kR2}, {{70, 1700}, {70, 1700}});
@@ -1200,7 +1301,7 @@ TEST_F(DemixingModuleTest, S3ToS5AndTf2ToT2Demixers) {
   // Adding a (valid) layer on top of 3.1.2 will always result in both S3ToS5
   // and Tf2ToT2 demixers.
   // The highest layer is 5.1.2.
-  ConfigureAudioFrameMetadata({kL5, kR5, kCentre, kLtf2, kRtf2});
+  input_labels_ = {kL5, kR5, kCentre, kLtf2, kRtf2};
 
   const DownMixingParams kDownMixingParams = {.delta = .866, .w = 0.25};
 
@@ -1232,7 +1333,7 @@ TEST_F(DemixingModuleTest, S3ToS5AndTf2ToT2Demixers) {
 
 TEST_F(DemixingModuleTest, S5ToS7Demixer) {
   // The highest layer is 7.1.0.
-  ConfigureAudioFrameMetadata({kL7, kR7, kCentre, kLss7, kRss7, kLrs7, kRrs7});
+  input_labels_ = {kL7, kR7, kCentre, kLss7, kRss7, kLrs7, kRrs7};
 
   const DownMixingParams kDownMixingParams = {.alpha = 0.866, .beta = .866};
 
@@ -1263,7 +1364,7 @@ TEST_F(DemixingModuleTest, S5ToS7Demixer) {
 
 TEST_F(DemixingModuleTest, T2ToT4Demixer) {
   // The highest layer is 5.1.4.
-  ConfigureAudioFrameMetadata({kL5, kR5, kCentre, kLtf4, kRtf4});
+  input_labels_ = {kL5, kR5, kCentre, kLtf4, kRtf4};
 
   const DownMixingParams kDownMixingParams = {.gamma = .866};
 

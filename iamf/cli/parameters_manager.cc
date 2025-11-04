@@ -13,14 +13,18 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <variant>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
-#include "absl/log/vlog_is_on.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "iamf/cli/audio_element_with_data.h"
@@ -86,16 +90,24 @@ absl::Status UpdateParameterState(
 
 }  // namespace
 
-ParametersManager::ParametersManager(
+absl::StatusOr<std::unique_ptr<ParametersManager> absl_nonnull>
+ParametersManager::Create(
     const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
-        audio_elements)
-    : audio_elements_(audio_elements) {}
-
-absl::Status ParametersManager::Initialize() {
+        audio_elements) {
   // Collect all `DemixingParamDefinition`s and all `ReconGainParamDefinitions`
   // in all Audio Elements. Validate there is no more than one per Audio
   // Element.
-  for (const auto& [audio_element_id, audio_element] : audio_elements_) {
+  // Mapping from Parameter ID to demixing parameter blocks.
+  absl::flat_hash_map<DecodedUleb128, const ParameterBlockWithData*>
+      demixing_parameter_blocks;
+  // Mapping from Parameter ID to recon gain parameter blocks.
+  absl::flat_hash_map<DecodedUleb128, const ParameterBlockWithData*>
+      recon_gain_parameter_blocks;
+  // Mapping from Audio Element ID to the demixing state.
+  absl::flat_hash_map<DecodedUleb128, DemixingState> demixing_states;
+  // Mapping from Audio Element ID to the recon gain state.
+  absl::flat_hash_map<DecodedUleb128, ReconGainState> recon_gain_states;
+  for (const auto& [audio_element_id, audio_element] : audio_elements) {
     const DemixingParamDefinition* demixing_param_definition = nullptr;
     const ReconGainParamDefinition* recon_gain_param_definition = nullptr;
     for (const auto& param : audio_element.obu.audio_element_params_) {
@@ -109,7 +121,7 @@ absl::Status ParametersManager::Initialize() {
         }
         demixing_param_definition =
             std::get_if<DemixingParamDefinition>(&param.param_definition);
-        CHECK_NE(demixing_param_definition, nullptr);
+        ABSL_CHECK_NE(demixing_param_definition, nullptr);
 
         // Continue searching. Only to validate that there is at most one
         // `DemixingParamDefinition`.
@@ -122,7 +134,7 @@ absl::Status ParametersManager::Initialize() {
         }
         recon_gain_param_definition =
             std::get_if<ReconGainParamDefinition>(&param.param_definition);
-        CHECK_NE(recon_gain_param_definition, nullptr);
+        ABSL_CHECK_NE(recon_gain_param_definition, nullptr);
       }
     }
 
@@ -130,9 +142,9 @@ absl::Status ParametersManager::Initialize() {
       // Insert a `nullptr` for a parameter ID. If no parameter blocks have
       // this parameter ID, then it will remain null and default values will
       // be used.
-      demixing_parameter_blocks_.insert(
+      demixing_parameter_blocks.insert(
           {demixing_param_definition->parameter_id_, nullptr});
-      demixing_states_[audio_element_id] = {
+      demixing_states[audio_element_id] = {
           .param_definition = demixing_param_definition,
           .previous_w_idx = 0,
           .next_timestamp = 0,
@@ -143,20 +155,22 @@ absl::Status ParametersManager::Initialize() {
       // Insert a `nullptr` for a parameter ID. If no parameter blocks have
       // this parameter ID, then it will remain null and default values will
       // be used.
-      recon_gain_parameter_blocks_.insert(
+      recon_gain_parameter_blocks.insert(
           {recon_gain_param_definition->parameter_id_, nullptr});
-      recon_gain_states_[audio_element_id] = {
+      recon_gain_states[audio_element_id] = {
           .param_definition = recon_gain_param_definition,
           .next_timestamp = 0,
       };
     }
   }
 
-  return absl::OkStatus();
+  return absl::WrapUnique(new ParametersManager(
+      demixing_parameter_blocks, recon_gain_parameter_blocks, demixing_states,
+      recon_gain_states));
 }
 
 bool ParametersManager::DemixingParamDefinitionAvailable(
-    const DecodedUleb128 audio_element_id) {
+    const DecodedUleb128 audio_element_id) const {
   return demixing_states_.find(audio_element_id) != demixing_states_.end();
 }
 
@@ -172,8 +186,8 @@ absl::Status ParametersManager::GetDownMixingParameters(
     DownMixingParams& down_mixing_params) {
   const auto demixing_states_iter = demixing_states_.find(audio_element_id);
   if (demixing_states_iter == demixing_states_.end()) {
-    if (VLOG_IS_ON(1)) {
-      LOG_FIRST_N(WARNING, 1)
+    if (ABSL_VLOG_IS_ON(1)) {
+      ABSL_LOG_FIRST_N(WARNING, 1)
           << "No demixing parameter definition found for Audio "
           << "Element with ID= " << audio_element_id
           << "; using some sensible values.";
@@ -193,7 +207,7 @@ absl::Status ParametersManager::GetDownMixingParameters(
     // no parameter blocks covering this substream. If there is only partial
     // coverage this will be marked invalid when the coverage of parameter
     // blocks is checked.
-    LOG_FIRST_N(WARNING, 10)
+    ABSL_LOG_FIRST_N(WARNING, 10)
         << "Failed to find a parameter block; using the default values";
     RETURN_IF_NOT_OK(DemixingInfoParameterData::DMixPModeToDownMixingParams(
         param_definition->default_demixing_info_parameter_data_.dmixp_mode,
@@ -219,10 +233,10 @@ absl::Status ParametersManager::GetDownMixingParameters(
 
 absl::Status ParametersManager::GetReconGainInfoParameterData(
     DecodedUleb128 audio_element_id, int32_t num_layers,
-    ReconGainInfoParameterData& recon_gain_info_parameter_data) {
+    ReconGainInfoParameterData& recon_gain_info_parameter_data) const {
   const auto recon_gain_states_iter = recon_gain_states_.find(audio_element_id);
   if (recon_gain_states_iter == recon_gain_states_.end()) {
-    LOG_FIRST_N(WARNING, 1)
+    ABSL_LOG_FIRST_N(WARNING, 1)
         << "No recon gain parameter definition found for Audio "
         << "Element with ID= " << audio_element_id
         << "; setting recon gain to 255 (which represents a multiplier of 1.0, "
@@ -248,7 +262,7 @@ absl::Status ParametersManager::GetReconGainInfoParameterData(
     // OBUs provided. This is OK when there are no parameter blocks covering
     // this substream. If there is only partial coverage this will be marked
     // invalid when the coverage of parameter blocks is checked.
-    LOG_FIRST_N(WARNING, 10)
+    ABSL_LOG_FIRST_N(WARNING, 10)
         << "Failed to find a recon gain parameter block; "
            "A default recon gain value of 0 dB is implied when there are no "
            "Parameter Block OBUs provided";
