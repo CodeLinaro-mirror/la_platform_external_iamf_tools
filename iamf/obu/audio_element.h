@@ -18,7 +18,7 @@
 #include <variant>
 #include <vector>
 
-#include "absl/log/check.h"
+#include "absl/log/absl_check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "iamf/common/read_bit_buffer.h"
@@ -59,7 +59,7 @@ struct AudioElementParam {
               concrete_param_definition.GetType();
 
           // All alternatives have well-defined types.
-          CHECK(param_definition_type.has_value());
+          ABSL_CHECK(param_definition_type.has_value());
           return *param_definition_type;
         },
         param_definition);
@@ -132,13 +132,13 @@ struct ChannelAudioLayerConfig {
   absl::Status Read(ReadBitBuffer& rb);
 
   LoudspeakerLayout loudspeaker_layout;  // 4 bits.
-  uint8_t output_gain_is_present_flag;   // 1 bit.
-  uint8_t recon_gain_is_present_flag;    // 1 bit.
-  uint8_t reserved_a;                    // 2 bits.
+  bool output_gain_is_present_flag;
+  bool recon_gain_is_present_flag;
+  uint8_t reserved_a;  // 2 bits.
   uint8_t substream_count;
   uint8_t coupled_substream_count;
 
-  // if (output_gain_is_present_flag(i) == 1) {
+  // if (output_gain_is_present_flag(i)) {
   uint8_t output_gain_flag = 0;  // 6 bits.
   uint8_t reserved_b = 0;        // 2 bits.
   int16_t output_gain = 0;
@@ -166,10 +166,15 @@ struct ScalableChannelLayoutConfig {
    */
   absl::Status Validate(DecodedUleb128 num_substreams_in_audio_element) const;
 
-  uint8_t num_layers;  // 3 bits.
-  uint8_t reserved;    // 5 bits.
+  /*!\brief Gets the number of layers in the configuration.
+   *
+   * \return Number of layers.
+   */
+  uint8_t GetNumLayers() const { return channel_audio_layer_configs.size(); }
 
-  // Vector of length `num_layers`.
+  uint8_t reserved = 0;  // 5 bits.
+
+  // Vector of layers.
   std::vector<ChannelAudioLayerConfig> channel_audio_layer_configs;
 };
 
@@ -257,7 +262,8 @@ struct ExtensionConfig {
   friend bool operator==(const ExtensionConfig& lhs,
                          const ExtensionConfig& rhs) = default;
 
-  DecodedUleb128 audio_element_config_size;
+  // `audio_element_config_size` is inferred from the size of
+  // `audio_element_config_bytes`.
   std::vector<uint8_t> audio_element_config_bytes;
 };
 
@@ -272,9 +278,14 @@ struct ExtensionConfig {
  *      `InitializeExtensionConfig()`
  *    ].
  *
+ * This class has stricter limits than the specification:
+ *   - Maximum number parameters is limited to `kMaxNumParameters`.
  */
 class AudioElementObu : public ObuBase {
  public:
+  /*!\brief Artificial limit on the maximum number of parameters. */
+  static constexpr uint32_t kMaxNumParameters = 256;
+
   /*!\brief A 3-bit enum for the type of Audio Element. */
   enum AudioElementType : uint8_t {
     kAudioElementChannelBased = 0,
@@ -385,11 +396,8 @@ class AudioElementObu : public ObuBase {
    * For future use when new `audio_element_type_` values are defined. Must be
    * called if and only if `audio_element_type_` is in the range of
    * [`kAudioElementBeginReserved`, `kAudioElementEndReserved`].
-   *
-   * \param audio_element_config_size Size in bytes of the
-   *        `audio_element_config_bytes`.
    */
-  void InitializeExtensionConfig(uint32_t audio_element_config_size);
+  void InitializeExtensionConfig();
 
   /*!\brief Prints logging information about the OBU.*/
   void PrintObu() const override;

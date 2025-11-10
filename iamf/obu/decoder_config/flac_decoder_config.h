@@ -32,6 +32,9 @@ struct FlacStreamInfoStrictConstraints {
   // Required 0 audio_roll_distance as per IAMF spec.
   static constexpr int16_t kAudioRollDistance = 0;
 
+  // The stream info block length is encoded using fields of fixed lengths.
+  static constexpr uint16_t kStreamInfoBlockLength = 34;
+
   // Block size must be equal to num_samples_per_frame and at least 16, as per
   // FLAC spec.
   static constexpr uint16_t kMinMinAndMaxBlockSize = 16;
@@ -107,9 +110,9 @@ struct FlacMetaBlockHeader {
   friend bool operator==(const FlacMetaBlockHeader& lhs,
                          const FlacMetaBlockHeader& rhs) = default;
 
-  bool last_metadata_block_flag;
-  FlacBlockType block_type;             // 7 bits.
-  uint32_t metadata_data_block_length;  // 24 bits.
+  // `last_metadata_block_flag` is automatically inserted (1 bit).
+  FlacBlockType block_type;  // 7 bits.
+  // `metadata_data_block_length` is automatically inserted (24 bits).
 };
 
 struct FlacMetadataBlock {

@@ -20,9 +20,10 @@
 #include <vector>
 
 #include "absl/base/no_destructor.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "iamf/cli/proto/mix_presentation.pb.h"
 #include "iamf/cli/proto/param_definitions.pb.h"
@@ -32,65 +33,83 @@
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/map_utils.h"
 #include "iamf/common/utils/numeric_utils.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/param_definitions.h"
 #include "iamf/obu/types.h"
+#include "src/google/protobuf/repeated_ptr_field.h"
 
 namespace iamf_tools {
 
 namespace {
 
-void FillAnnotationsLanguageAndAnnotations(
+// Fills a vector of strings from one of two proto fields. Prefers the newer
+// field if present. The `old_field` may require an extractor to get a string
+// from a sub-message.
+template <typename DeprecatedFieldContainer, typename OldFieldExtractor>
+std::vector<std::string> CreateVectorFromNewOrOldProtoField(
+    absl::string_view new_field_name,
+    const google::protobuf::RepeatedPtrField<std::string>& new_field,
+    absl::string_view deprecated_field_name,
+    const DeprecatedFieldContainer& deprecated_field,
+    OldFieldExtractor deprecated_field_extractor) {
+  if (!new_field.empty()) {
+    return std::vector<std::string>(new_field.begin(), new_field.end());
+  } else if (!deprecated_field.empty()) {
+    ABSL_LOG(WARNING) << "Please upgrade deprecated `" << deprecated_field_name
+                      << "` to `" << new_field_name << "`.";
+    std::vector<std::string> result;
+    result.reserve(deprecated_field.size());
+    for (const auto& item : deprecated_field) {
+      result.push_back(deprecated_field_extractor(item));
+    }
+    return result;
+  } else {
+    // OK, both fields were empty.
+    return {};
+  }
+}
+
+absl::Status FillAnnotationsLanguageAndAnnotations(
     const iamf_tools_cli_proto::MixPresentationObuMetadata&
         mix_presentation_metadata,
     DecodedUleb128& count_label, std::vector<std::string>& annotations_language,
     std::vector<std::string>& localized_presentation_annotations) {
-  count_label = mix_presentation_metadata.count_label();
-
-  annotations_language.reserve(mix_presentation_metadata.count_label());
-  // Prioritize the `annotations_language` field from IAMF v1.1.0.
-  if (!mix_presentation_metadata.annotations_language().empty()) {
-    for (const auto& language :
-         mix_presentation_metadata.annotations_language()) {
-      annotations_language.push_back(language);
-    }
-  } else if (!mix_presentation_metadata.language_labels().empty()) {
-    LOG(WARNING) << "Please upgrade `language_labels` to "
-                    "`annotations_language`.";
-    for (const auto& language_label :
-         mix_presentation_metadata.language_labels()) {
-      annotations_language.push_back(language_label);
-    }
+  if (mix_presentation_metadata.has_count_label()) {
+    ABSL_LOG(WARNING) << "Ignoring deprecated `count_label` field."
+                      << "Please remove it.";
   }
 
-  localized_presentation_annotations.reserve(
-      mix_presentation_metadata.count_label());
-  // Prioritize the `localized_presentation_annotations` field from
-  // IAMF v1.1.0.
-  if (!mix_presentation_metadata.localized_presentation_annotations().empty()) {
-    for (const auto& localized_presentation_annotation :
-         mix_presentation_metadata.localized_presentation_annotations()) {
-      localized_presentation_annotations.push_back(
-          localized_presentation_annotation);
-    }
-  } else if (!mix_presentation_metadata.mix_presentation_annotations_array()
-                  .empty()) {
-    LOG(WARNING) << "Please upgrade `mix_presentation_annotations_array` to "
-                    "`localized_presentation_annotations`.";
-    for (const auto& mix_presentation_annotation :
-         mix_presentation_metadata.mix_presentation_annotations_array()) {
-      localized_presentation_annotations.push_back(
-          mix_presentation_annotation.mix_presentation_friendly_label());
-    }
-  }
+  // Prioritize the newer `annotations_language` field from IAMF v1.1.0, over
+  // the deprecated `language_labels` field from IAMF v1.0.0.
+  annotations_language = CreateVectorFromNewOrOldProtoField(
+      "annotations_language", mix_presentation_metadata.annotations_language(),
+      "language_labels", mix_presentation_metadata.language_labels(),
+      [](const std::string& s) { return s; });
+  count_label = annotations_language.size();
+
+  // Prioritize the newer `localized_presentation_annotations` field from IAMF
+  // v1.1.0, over the deprecated `mix_presentation_annotations_array` field from
+  // IAMF v1.0.0.
+  localized_presentation_annotations = CreateVectorFromNewOrOldProtoField(
+      "localized_presentation_annotations",
+      mix_presentation_metadata.localized_presentation_annotations(),
+      "mix_presentation_annotations_array",
+      mix_presentation_metadata.mix_presentation_annotations_array(),
+      [](const auto& annotation) {
+        return annotation.mix_presentation_friendly_label();
+      });
+  return ValidateContainerSizeEqual("localized_presentation_annotations",
+                                    localized_presentation_annotations,
+                                    count_label);
 }
 
 void ReserveNumSubMixes(const iamf_tools_cli_proto::MixPresentationObuMetadata&
                             mix_presentation_metadata,
                         std::vector<MixPresentationSubMix>& sub_mixes) {
   if (mix_presentation_metadata.has_num_sub_mixes()) {
-    LOG(WARNING) << "Ignoring deprecated `num_sub_mixes` field."
-                 << "Please remove it.";
+    ABSL_LOG(WARNING) << "Ignoring deprecated `num_sub_mixes` field."
+                      << "Please remove it.";
   }
 
   sub_mixes.reserve(mix_presentation_metadata.sub_mixes_size());
@@ -100,35 +119,27 @@ void ReserveSubMixNumAudioElements(
     const iamf_tools_cli_proto::MixPresentationSubMix& input_sub_mix,
     MixPresentationSubMix& sub_mix) {
   if (input_sub_mix.has_num_audio_elements()) {
-    LOG(WARNING) << "Ignoring deprecated `num_audio_elements` field."
-                 << "Please remove it.";
+    ABSL_LOG(WARNING) << "Ignoring deprecated `num_audio_elements` field."
+                      << "Please remove it.";
   }
   sub_mix.audio_elements.reserve(input_sub_mix.audio_elements_size());
 }
 
 absl::Status FillLocalizedElementAnnotations(
     const iamf_tools_cli_proto::SubMixAudioElement& input_sub_mix_audio_element,
-    SubMixAudioElement& sub_mix_audio_element) {
-  if (!input_sub_mix_audio_element.localized_element_annotations().empty()) {
-    for (const auto& localized_element_annotation :
-         input_sub_mix_audio_element.localized_element_annotations()) {
-      sub_mix_audio_element.localized_element_annotations.push_back(
-          localized_element_annotation);
-    }
-  } else if (!input_sub_mix_audio_element
-                  .mix_presentation_element_annotations_array()
-                  .empty()) {
-    LOG(WARNING)
-        << "Please upgrade `mix_presentation_element_annotations_array` to "
-           "`localized_element_annotations`.";
-    for (const auto& input_audio_element_friendly_label :
-         input_sub_mix_audio_element
-             .mix_presentation_element_annotations_array()) {
-      sub_mix_audio_element.localized_element_annotations.push_back(
-          input_audio_element_friendly_label.audio_element_friendly_label());
-    }
-  }
-  return absl::OkStatus();
+    DecodedUleb128& count_label,
+    std::vector<std::string>& localized_element_annotations) {
+  localized_element_annotations = CreateVectorFromNewOrOldProtoField(
+      "localized_element_annotations",
+      input_sub_mix_audio_element.localized_element_annotations(),
+      "mix_presentation_element_annotations_array",
+      input_sub_mix_audio_element.mix_presentation_element_annotations_array(),
+      [](const auto& annotation) {
+        return annotation.audio_element_friendly_label();
+      });
+
+  return ValidateContainerSizeEqual("localized_element_annotations",
+                                    localized_element_annotations, count_label);
 }
 
 absl::Status FillRenderingConfig(
@@ -163,10 +174,14 @@ absl::Status FillRenderingConfig(
       "RenderingConfig.reserved", input_rendering_config.reserved(),
       rendering_config.reserved));
 
-  const auto user_size =
-      input_rendering_config.rendering_config_extension_size();
-  rendering_config.rendering_config_extension_size = user_size;
-  rendering_config.rendering_config_extension_bytes.resize(user_size);
+  if (input_rendering_config.has_rendering_config_extension_size()) {
+    ABSL_LOG(WARNING)
+        << "Ignoring deprecated `rendering_config_extension_size` "
+           "field. Please remove it.";
+  }
+
+  rendering_config.rendering_config_extension_bytes.resize(
+      input_rendering_config.rendering_config_extension_bytes().size());
   return StaticCastSpanIfInRange(
       "rendering_config_extension_bytes",
       absl::MakeConstSpan(
@@ -182,7 +197,7 @@ const iamf_tools_cli_proto::MixGainParamDefinition& SelectElementMixConfig(
   if (sub_mix_audio_element.has_element_mix_gain()) {
     return sub_mix_audio_element.element_mix_gain();
   } else {
-    LOG(WARNING)
+    ABSL_LOG(WARNING)
         << "Please upgrade `element_mix_config` to `element_mix_gain`.";
     return sub_mix_audio_element.element_mix_config().mix_gain();
   }
@@ -197,7 +212,8 @@ const iamf_tools_cli_proto::MixGainParamDefinition& SelectOutputMixConfig(
   if (mix_presentation_sub_mix.has_output_mix_gain()) {
     return mix_presentation_sub_mix.output_mix_gain();
   } else {
-    LOG(WARNING) << "Please upgrade `output_mix_config` to `output_mix_gain`.";
+    ABSL_LOG(WARNING)
+        << "Please upgrade `output_mix_config` to `output_mix_gain`.";
     return mix_presentation_sub_mix.output_mix_config().output_mix_gain();
   }
 }
@@ -234,8 +250,8 @@ absl::Status FillLayouts(
     const iamf_tools_cli_proto::MixPresentationSubMix& input_sub_mix,
     MixPresentationSubMix& sub_mix) {
   if (input_sub_mix.has_num_layouts()) {
-    LOG(WARNING) << "Ignoring deprecated `num_layouts` field."
-                 << "Please remove it.";
+    ABSL_LOG(WARNING) << "Ignoring deprecated `num_layouts` field."
+                      << "Please remove it.";
   }
 
   // Reserve the layouts vector and copy in the layouts.
@@ -307,7 +323,8 @@ absl::Status FillMixPresentationTags(
     const iamf_tools_cli_proto::MixPresentationTags& mix_presentation_tags,
     std::optional<MixPresentationTags>& obu_mix_presentation_tags) {
   if (mix_presentation_tags.has_num_tags()) {
-    LOG(WARNING) << "Ignoring deprecated `num_tags` field. Please remove it.";
+    ABSL_LOG(WARNING)
+        << "Ignoring deprecated `num_tags` field. Please remove it.";
   }
   obu_mix_presentation_tags = MixPresentationTags{};
 
@@ -417,8 +434,9 @@ absl::Status MixPresentationGenerator::CopyUserAnchoredLoudness(
     return absl::OkStatus();
   }
   if (user_loudness.anchored_loudness().has_num_anchored_loudness()) {
-    LOG(WARNING) << "Ignoring deprecated `num_anchored_loudness` field. Please "
-                    "remove it.";
+    ABSL_LOG(WARNING)
+        << "Ignoring deprecated `num_anchored_loudness` field. Please "
+           "remove it.";
   }
 
   uint8_t num_anchored_loudness;
@@ -466,9 +484,13 @@ absl::Status MixPresentationGenerator::CopyUserLayoutExtension(
     // Not using layout extension.
     return absl::OkStatus();
   }
-  auto user_size = user_loudness.info_type_size();
-  output_loudness.layout_extension.info_type_size = user_size;
-  output_loudness.layout_extension.info_type_bytes.resize(user_size);
+  if (user_loudness.has_info_type_size()) {
+    ABSL_LOG(WARNING) << "Ignoring deprecated `info_type_size` field."
+                      << "Please remove it.";
+  }
+
+  output_loudness.layout_extension.info_type_bytes.resize(
+      user_loudness.info_type_bytes().size());
   return StaticCastSpanIfInRange(
       "layout_extension_bytes",
       absl::MakeConstSpan(user_loudness.info_type_bytes()),
@@ -495,10 +517,10 @@ absl::Status MixPresentationGenerator::Generate(
     obu_args.mix_presentation_id =
         mix_presentation_metadata.mix_presentation_id();
 
-    FillAnnotationsLanguageAndAnnotations(
+    RETURN_IF_NOT_OK(FillAnnotationsLanguageAndAnnotations(
         mix_presentation_metadata, obu_args.count_label,
         obu_args.annotations_language,
-        obu_args.localized_presentation_annotations);
+        obu_args.localized_presentation_annotations));
 
     ReserveNumSubMixes(mix_presentation_metadata, obu_args.sub_mixes);
     for (const auto& input_sub_mix : mix_presentation_metadata.sub_mixes()) {
@@ -512,7 +534,8 @@ absl::Status MixPresentationGenerator::Generate(
             input_sub_mix_audio_element.audio_element_id();
 
         RETURN_IF_NOT_OK(FillLocalizedElementAnnotations(
-            input_sub_mix_audio_element, sub_mix_audio_element));
+            input_sub_mix_audio_element, obu_args.count_label,
+            sub_mix_audio_element.localized_element_annotations));
 
         RETURN_IF_NOT_OK(
             FillRenderingConfig(input_sub_mix_audio_element.rendering_config(),

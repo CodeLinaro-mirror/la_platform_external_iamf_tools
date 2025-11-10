@@ -11,6 +11,7 @@
  */
 #include "iamf/cli/codec/flac_encoder.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -20,14 +21,14 @@
 #include <vector>
 
 #include "absl/functional/any_invocable.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/map_utils.h"
 #include "iamf/common/utils/sample_processing_utils.h"
 #include "iamf/obu/decoder_config/flac_decoder_config.h"
 #include "include/FLAC/format.h"
@@ -37,6 +38,44 @@
 namespace iamf_tools {
 
 namespace {
+
+absl::Status FlacStreamEncoderInitStatusToAbslStatus(
+    FLAC__StreamEncoderInitStatus init_status) {
+  if (init_status == FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
+    return absl::OkStatus();
+  }
+
+  using enum absl::StatusCode;
+  constexpr auto kFlacErrorAndAbslStatusCode = std::to_array<
+      std::pair<FLAC__StreamEncoderInitStatus, absl::StatusCode>>({
+      {FLAC__STREAM_ENCODER_INIT_STATUS_ENCODER_ERROR, kFailedPrecondition},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_UNSUPPORTED_CONTAINER, kUnimplemented},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_CALLBACKS, kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_NUMBER_OF_CHANNELS,
+       kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_BITS_PER_SAMPLE,
+       kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_SAMPLE_RATE, kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_BLOCK_SIZE, kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_MAX_LPC_ORDER,
+       kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_QLP_COEFF_PRECISION,
+       kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_BLOCK_SIZE_TOO_SMALL_FOR_LPC_ORDER,
+       kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_NOT_STREAMABLE, kFailedPrecondition},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_INVALID_METADATA, kInvalidArgument},
+      {FLAC__STREAM_ENCODER_INIT_STATUS_ALREADY_INITIALIZED,
+       kFailedPrecondition},
+  });
+  static const auto kFlacErrorToAbslStatusCode =
+      BuildStaticMapFromPairs(kFlacErrorAndAbslStatusCode);
+
+  return absl::Status(LookupInMap(*kFlacErrorToAbslStatusCode, init_status,
+                                  "FLAC__StreamEncoderInitStatus")
+                          .value_or(kUnknown),
+                      FLAC__StreamEncoderInitStatusString[init_status]);
+}
 
 absl::Status Configure(
     const iamf_tools_cli_proto::FlacEncoderMetadata& encoder_metadata,
@@ -84,7 +123,7 @@ FLAC__StreamEncoderWriteStatus LibFlacWriteCallback(
   const unsigned int kLibFlacMetadataSentinel = 0;
   if (samples == kLibFlacMetadataSentinel) {
     // `libflac` uses a value of `0` to indicate this callback is for metadata.
-    LOG_FIRST_N(INFO, 1)
+    ABSL_LOG_FIRST_N(INFO, 1)
         << "`iamf_tools` currently ignores all additional FLAC metadata.";
     return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
   }
@@ -96,8 +135,8 @@ FLAC__StreamEncoderWriteStatus LibFlacWriteCallback(
   auto flac_frame_iter =
       flac_encoder->frame_index_to_frame_.find(current_frame);
   if (flac_frame_iter == flac_encoder->frame_index_to_frame_.end()) {
-    LOG(ERROR) << "Failed to find a frame with index " << current_frame
-               << " in Flac encoder. Data may be lost or corrupted.";
+    ABSL_LOG(ERROR) << "Failed to find a frame with index " << current_frame
+                    << " in Flac encoder. Data may be lost or corrupted.";
     return FLAC__STREAM_ENCODER_WRITE_STATUS_FATAL_ERROR;
   }
 
@@ -124,10 +163,10 @@ FLAC__StreamEncoderWriteStatus LibFlacWriteCallback(
 void LibFlacMetadataCallback(const FLAC__StreamEncoder* /*encoder*/,
                              const FLAC__StreamMetadata* metadata,
                              void* client_data) {
-  LOG_FIRST_N(INFO, 1) << "Begin `LibFlacMetadataCallback`.";
+  ABSL_LOG_FIRST_N(INFO, 1) << "Begin `LibFlacMetadataCallback`.";
 
   if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
-    LOG_FIRST_N(INFO, 1) << "Received `STREAMINFO` metadata.";
+    ABSL_LOG_FIRST_N(INFO, 1) << "Received `STREAMINFO` metadata.";
     // Just validate we got the `STREAMINFO` metadata at some point. IAMF
     // requires some fields to be set constant and different from what will be
     // returned by `libflac`.
@@ -143,42 +182,41 @@ FlacEncoder::~FlacEncoder() {
 
   absl::MutexLock lock(&mutex_);
   if (!frame_index_to_frame_.empty()) {
-    LOG(ERROR) << "Some frames were not fully processed. Maybe `Finalize()` "
-                  "was not called.";
+    ABSL_LOG(ERROR)
+        << "Some frames were not fully processed. Maybe `Finalize()` "
+           "was not called.";
   }
 }
 
 absl::Status FlacEncoder::EncodeAudioFrame(
-    int input_bit_depth, const std::vector<std::vector<int32_t>>& samples,
+    const std::vector<std::vector<int32_t>>& samples,
     std::unique_ptr<AudioFrameWithData> partial_audio_frame_with_data) {
   RETURN_IF_NOT_OK(ValidateNotFinalized());
   RETURN_IF_NOT_OK(ValidateInputSamples(samples));
   const int num_samples_per_channel = static_cast<int>(num_samples_per_frame_);
 
-  LOG_FIRST_N(INFO, 1) << "num_samples_per_channel: "
-                       << num_samples_per_channel;
-  LOG_FIRST_N(INFO, 1) << "num_channels: " << num_channels_;
+  ABSL_LOG_FIRST_N(INFO, 1)
+      << "num_samples_per_channel: " << num_samples_per_channel;
+  ABSL_LOG_FIRST_N(INFO, 1) << "num_channels: " << num_channels_;
 
   // FLAC requires a right-justified sign extended value. Calculate what the
   // mask is to sign extend a `input_bit_depth`-bit value.
   uint32_t base_sign_extension_mask = 0;
-  for (int i = 31; i > input_bit_depth - 1; --i) {
+  for (int i = 31; i > input_pcm_bit_depth_ - 1; --i) {
     base_sign_extension_mask |= 1 << i;
   }
 
   const absl::AnyInvocable<absl::Status(int32_t, int32_t&) const>
-      kLeftJustifiedToRightJustified =
-          [base_sign_extension_mask, input_bit_depth](int32_t input,
-                                                      int32_t& output) {
-            // Only apply the sign extension mask when the left-justified value
-            // has '1' in the MSB.
-            const uint32_t sign_extension_mask =
-                (input & 0x80000000) ? base_sign_extension_mask : 0;
-            // Shift the input value to be right-justified.
-            output = static_cast<uint32_t>(input) >> (32 - input_bit_depth) |
-                     sign_extension_mask;
-            return absl::OkStatus();
-          };
+      kLeftJustifiedToRightJustified = [&](int32_t input, int32_t& output) {
+        // Only apply the sign extension mask when the left-justified value
+        // has '1' in the MSB.
+        const uint32_t sign_extension_mask =
+            (input & 0x80000000) ? base_sign_extension_mask : 0;
+        // Shift the input value to be right-justified.
+        output = static_cast<uint32_t>(input) >> (32 - input_pcm_bit_depth_) |
+                 sign_extension_mask;
+        return absl::OkStatus();
+      };
 
   // TODO(b/382197581): Avoid re-allocations of `encoder_input_pcm` and
   //                    `samples_spans`.
@@ -192,9 +230,9 @@ absl::Status FlacEncoder::EncodeAudioFrame(
       absl::MakeConstSpan(samples_spans), encoder_input_pcm,
       kLeftJustifiedToRightJustified));
 
-  LOG_FIRST_N(INFO, 1) << "Encoding " << encoder_input_pcm.size() * 4
-                       << " bytes representing " << num_samples_per_channel
-                       << " x " << num_channels_ << " samples.";
+  ABSL_LOG_FIRST_N(INFO, 1)
+      << "Encoding " << encoder_input_pcm.size() * 4 << " bytes representing "
+      << num_samples_per_channel << " x " << num_channels_ << " samples.";
 
   if (!FLAC__stream_encoder_process_interleaved(
           encoder_, encoder_input_pcm.data(), num_samples_per_channel)) {
@@ -236,12 +274,7 @@ absl::Status FlacEncoder::InitializeEncoder() {
       /*tell_callback=*/nullptr, LibFlacMetadataCallback,
       static_cast<void*>(this));
 
-  if (init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-    return absl::UnknownError(
-        absl::StrCat("Failed to initialize Flac stream: ", init_status));
-  }
-
-  return absl::OkStatus();
+  return FlacStreamEncoderInitStatusToAbslStatus(init_status);
 }
 
 }  // namespace iamf_tools

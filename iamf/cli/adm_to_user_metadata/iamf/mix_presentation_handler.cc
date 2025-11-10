@@ -18,8 +18,8 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "iamf/cli/adm_to_user_metadata/adm/adm_elements.h"
@@ -93,7 +93,6 @@ absl::Status CopyLoudness(const LoudnessMetadata& loudness_metadata,
       return status;
     }
 
-    loudness_info.mutable_anchored_loudness()->set_num_anchored_loudness(1);
     auto* anchor_element =
         loudness_info.mutable_anchored_loudness()->add_anchor_elements();
     anchor_element->set_anchor_element(
@@ -118,7 +117,7 @@ absl::Status SetDefaultLoudnessLayout(
       iamf_tools_cli_proto::LAYOUT_TYPE_LOUDSPEAKERS_SS_CONVENTION);
   const auto& sound_system =
       LookupSoundSystemFromInputLayout(IamfInputLayout::kStereo);
-  CHECK_OK(sound_system);
+  ABSL_CHECK_OK(sound_system);
   loudness_layout->mutable_ss_layout()->set_sound_system(*sound_system);
   return CopyLoudness(loudness_metadata, *layout->mutable_loudness());
 }
@@ -208,8 +207,8 @@ bool IsChannelBasedAndNotStereo(IamfInputLayout input_layout) {
       return false;
   }
   // The above switch is exhaustive.
-  LOG(FATAL) << "Unexpcected value for `IamfInputLayout`: "
-             << static_cast<int>(input_layout);
+  ABSL_LOG(FATAL) << "Unexpcected value for `IamfInputLayout`: "
+                  << static_cast<int>(input_layout);
 }
 
 }  // namespace
@@ -221,7 +220,6 @@ absl::Status MixPresentationHandler::PopulateMixPresentation(
     iamf_tools_cli_proto::MixPresentationObuMetadata&
         mix_presentation_obu_metadata) {
   mix_presentation_obu_metadata.set_mix_presentation_id(mix_presentation_id);
-  mix_presentation_obu_metadata.set_count_label(1);
   mix_presentation_obu_metadata.add_annotations_language("en-us");
   mix_presentation_obu_metadata.add_localized_presentation_annotations(
       "test_mix_pres");
@@ -275,8 +273,6 @@ absl::Status MixPresentationHandler::PopulateMixPresentation(
       }
     }
   }
-
-  mix_presentation_sub_mix.set_num_layouts(num_layouts);
 
   return absl::OkStatus();
 }

@@ -27,9 +27,9 @@
 #include <utility>
 #include <vector>
 
+// [internal] Placeholder for get runfiles header.
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/str_cat.h"
@@ -41,6 +41,7 @@
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
 #include "iamf/cli/demixing_module.h"
+#include "iamf/cli/descriptor_obu_parser.h"
 #include "iamf/cli/obu_processor.h"
 #include "iamf/cli/obu_with_data_generator.h"
 #include "iamf/cli/parameter_block_with_data.h"
@@ -66,7 +67,6 @@
 #include "iamf/obu/decoder_config/opus_decoder_config.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
 #include "iamf/obu/demixing_param_definition.h"
-#include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_base.h"
 #include "iamf/obu/obu_header.h"
@@ -110,10 +110,8 @@ void AddParamDefinition(DecodedUleb128 parameter_id,
 using ::absl_testing::IsOk;
 
 absl::Status CollectObusFromIaSequence(
-    ReadBitBuffer& read_bit_buffer, IASequenceHeaderObu& ia_sequence_header,
-    absl::flat_hash_map<DecodedUleb128, CodecConfigObu>& codec_config_obus,
-    absl::flat_hash_map<DecodedUleb128, AudioElementWithData>& audio_elements,
-    std::list<MixPresentationObu>& mix_presentations,
+    ReadBitBuffer& read_bit_buffer,
+    DescriptorObuParser::ParsedDescriptorObus& parsed_descriptor_obus,
     std::list<AudioFrameWithData>& audio_frames,
     std::list<ParameterBlockWithData>& parameter_blocks) {
   bool insufficient_data = false;
@@ -123,7 +121,7 @@ absl::Status CollectObusFromIaSequence(
 
   bool continue_processing = true;
   int temporal_unit_count = 0;
-  LOG(INFO) << "Starting Temporal Unit OBU processing";
+  ABSL_LOG(INFO) << "Starting Temporal Unit OBU processing";
   while (continue_processing) {
     std::optional<ObuProcessor::OutputTemporalUnit> output_temporal_unit;
     RETURN_IF_NOT_OK(obu_processor->ProcessTemporalUnit(
@@ -137,13 +135,18 @@ absl::Status CollectObusFromIaSequence(
       temporal_unit_count++;
     }
   }
-  LOG(INFO) << "Processed " << temporal_unit_count << " Temporal Unit OBUs";
+  ABSL_LOG(INFO) << "Processed " << temporal_unit_count
+                 << " Temporal Unit OBUs";
 
   // Move the processed data to the output.
-  ia_sequence_header = obu_processor->ia_sequence_header_;
-  codec_config_obus.swap(obu_processor->codec_config_obus_);
-  audio_elements.swap(obu_processor->audio_elements_);
-  mix_presentations.swap(obu_processor->mix_presentations_);
+  parsed_descriptor_obus.ia_sequence_header =
+      std::move(obu_processor->ia_sequence_header_);
+  parsed_descriptor_obus.codec_config_obus =
+      std::move(obu_processor->codec_config_obus_);
+  parsed_descriptor_obus.audio_elements =
+      std::move(obu_processor->audio_elements_);
+  parsed_descriptor_obus.mix_presentation_obus =
+      std::move(obu_processor->mix_presentations_);
   return absl::OkStatus();
 }
 
@@ -219,9 +222,7 @@ void AddFlacCodecConfig(
       {.codec_id = CodecConfig::kCodecIdFlac,
        .num_samples_per_frame = num_samples_per_frame,
        .decoder_config = FlacDecoderConfig(
-           {{{.header = {.last_metadata_block_flag = true,
-                         .block_type = FlacMetaBlockHeader::kFlacStreamInfo,
-                         .metadata_data_block_length = 34},
+           {{{.header = {.block_type = FlacMetaBlockHeader::kFlacStreamInfo},
               .payload = FlacMetaBlockStreamInfo{
                   .minimum_block_size =
                       static_cast<uint16_t>(num_samples_per_frame),
@@ -405,7 +406,6 @@ void AddMixPresentationObuWithConfigurableLayouts(
             {.headphones_rendering_mode =
                  RenderingConfig::kHeadphonesRenderingModeStereo,
              .reserved = 0,
-             .rendering_config_extension_size = 0,
              .rendering_config_extension_bytes = {}},
         .element_mix_gain = common_mix_gain_param_definition,
     });
@@ -497,6 +497,14 @@ std::string GetAndCreateOutputDirectory(absl::string_view suffix) {
   return output_directory;
 }
 
+std::string GetRunfilesPath(absl::string_view path) {
+  return (std::filesystem::current_path() / path).string();
+}
+
+std::string GetRunfilesFile(absl::string_view path, std::string_view filename) {
+  return ((std::filesystem::current_path() / path) / filename).string();
+}
+
 std::vector<uint8_t> SerializeObusExpectOk(
     const std::list<const ObuBase*>& obus, const LebGenerator& leb_generator) {
   using ::absl_testing::IsOk;
@@ -524,7 +532,7 @@ double GetLogSpectralDistance(
     const absl::Span<const InternalSampleType>& second_log_spectrum) {
   const int num_samples = first_log_spectrum.size();
   if (num_samples != second_log_spectrum.size()) {
-    LOG(ERROR) << "Spectrum sizes are not equal.";
+    ABSL_LOG(ERROR) << "Spectrum sizes are not equal.";
     return false;
   }
   double log_spectral_distance = 0.0;
@@ -583,8 +591,8 @@ std::vector<DecodeSpecification> GetDecodeSpecifications(
                   .sound_system(),
               decode_specification.sound_system);
           if (!sound_system_status.ok()) {
-            LOG(ERROR) << "Failed to copy sound system: "
-                       << sound_system_status;
+            ABSL_LOG(ERROR)
+                << "Failed to copy sound system: " << sound_system_status;
             continue;
           }
         }

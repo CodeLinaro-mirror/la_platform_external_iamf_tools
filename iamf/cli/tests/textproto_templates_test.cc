@@ -9,12 +9,10 @@
  * source code in the PATENTS file, you can obtain it at
  * www.aomedia.org/license/patent.
  */
-#include <filesystem>
 #include <string>
 #include <vector>
 
-// [internal] Placeholder for get runfiles header.
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "gmock/gmock.h"
@@ -30,6 +28,9 @@ namespace {
 
 using ::absl_testing::IsOk;
 constexpr absl::string_view kIgnoredOutputPath = "";
+constexpr absl::string_view kTestdataPath = "iamf/cli/testdata/";
+constexpr absl::string_view kTextprotoTemplatesPath =
+    "iamf/cli/textproto_templates/";
 
 struct TextprotoTemplateTestCase {
   absl::string_view textproto_filename;
@@ -43,22 +44,18 @@ TEST_P(TextprotoTemplate, ValidateTextprotos) {
   const TextprotoTemplateTestCase& test_case = GetParam();
 
   // Get the location of test wav files.
-  static const auto input_wav_dir =
-      std::filesystem::current_path() / std::string("iamf/cli/testdata");
+  static const std::string input_wav_dir = GetRunfilesPath(kTestdataPath);
 
   // Get the textproto to test.
-  const auto user_metadata_filename =
-      std::filesystem::current_path() /
-      std::string("iamf/cli/textproto_templates") /
-      test_case.textproto_filename;
+  const std::string user_metadata_filename =
+      GetRunfilesFile(kTextprotoTemplatesPath, test_case.textproto_filename);
   iamf_tools_cli_proto::UserMetadata user_metadata;
-  ParseUserMetadataAssertSuccess(user_metadata_filename.string(),
-                                 user_metadata);
+  ParseUserMetadataAssertSuccess(user_metadata_filename, user_metadata);
 
   // Clear `file_name_prefix`; we only care about the status and not the output
   // files.
   user_metadata.mutable_test_vector_metadata()->clear_file_name_prefix();
-  LOG(INFO) << "Testing with " << test_case.textproto_filename;
+  ABSL_LOG(INFO) << "Testing with " << test_case.textproto_filename;
 
   // Replace the wav filenames.
   ASSERT_EQ(user_metadata.audio_frame_metadata_size(),
@@ -69,112 +66,94 @@ TEST_P(TextprotoTemplate, ValidateTextprotos) {
   }
 
   // Call encoder and check that the encoding was successful.
-  const absl::Status result =
-      iamf_tools::TestMain(user_metadata, input_wav_dir.string().c_str(),
-                           std::string(kIgnoredOutputPath));
+  const absl::Status result = iamf_tools::TestMain(
+      user_metadata, input_wav_dir, std::string(kIgnoredOutputPath));
 
   EXPECT_THAT(result, IsOk()) << "File= " << test_case.textproto_filename;
 }
 
 INSTANTIATE_TEST_SUITE_P(PcmStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"stereo_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"stereo_pcm24bit.textproto",
+                              {"sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(OpusStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"stereo_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"stereo_opus.textproto",
+                              {"sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
-INSTANTIATE_TEST_SUITE_P(Pcm5dot1, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"5dot1_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+INSTANTIATE_TEST_SUITE_P(
+    Pcm5dot1, TextprotoTemplate,
+    testing::Values<TextprotoTemplateTestCase>({"5dot1_pcm24bit.textproto",
+                                                {"Mechanism_5s.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(Opus5dot1, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"5dot1_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"5dot1_opus.textproto", {"Mechanism_5s.wav"}}));
 
-INSTANTIATE_TEST_SUITE_P(Pcm5dot1dot2, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"5dot1dot2_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+INSTANTIATE_TEST_SUITE_P(
+    Pcm5dot1dot2, TextprotoTemplate,
+    testing::Values<TextprotoTemplateTestCase>({"5dot1dot2_pcm24bit.textproto",
+                                                {"Mechanism_5s.wav"}}));
 
-INSTANTIATE_TEST_SUITE_P(Opus5dot1dot2, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"5dot1dot2_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+INSTANTIATE_TEST_SUITE_P(
+    Opus5dot1dot2, TextprotoTemplate,
+    testing::Values<TextprotoTemplateTestCase>({"5dot1dot2_opus.textproto",
+                                                {"Mechanism_5s.wav"}}));
 
-INSTANTIATE_TEST_SUITE_P(Pcm7dot1dot4, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"7dot1dot4_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+INSTANTIATE_TEST_SUITE_P(
+    Pcm7dot1dot4, TextprotoTemplate,
+    testing::Values<TextprotoTemplateTestCase>({"7dot1dot4_pcm24bit.textproto",
+                                                {"Mechanism_5s.wav"}}));
 
-INSTANTIATE_TEST_SUITE_P(Opus7dot1dot4, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"7dot1dot4_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "Mechanism_5s.wav"}}}));
+INSTANTIATE_TEST_SUITE_P(
+    Opus7dot1dot4, TextprotoTemplate,
+    testing::Values<TextprotoTemplateTestCase>({"7dot1dot4_opus.textproto",
+                                                {"Mechanism_5s.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(PcmFoa, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"1OA_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_foa_48khz.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"1OA_pcm24bit.textproto",
+                              {"sawtooth_10000_foa_48khz.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(OpusFoa, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"1OA_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_foa_48khz.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"1OA_opus.textproto",
+                              {"sawtooth_10000_foa_48khz.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(PcmToa, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"3OA_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_8000_toa_48khz.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"3OA_pcm24bit.textproto",
+                              {"sawtooth_8000_toa_48khz.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(OpusToa, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"3OA_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_8000_toa_48khz.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"3OA_opus.textproto",
+                              {"sawtooth_8000_toa_48khz.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(PcmFoaAndStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"1OA_and_stereo_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_foa_48khz.wav",
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"1OA_and_stereo_pcm24bit.textproto",
+                              {"sawtooth_10000_foa_48khz.wav",
+                               "sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(OpusFoaAndStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"1OA_and_stereo_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_10000_foa_48khz.wav",
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"1OA_and_stereo_opus.textproto",
+                              {"sawtooth_10000_foa_48khz.wav",
+                               "sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(PcmToaAndStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"3OA_and_stereo_pcm24bit.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_8000_toa_48khz.wav",
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"3OA_and_stereo_pcm24bit.textproto",
+                              {"sawtooth_8000_toa_48khz.wav",
+                               "sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
 INSTANTIATE_TEST_SUITE_P(OpusToaAndStereo, TextprotoTemplate,
-                         testing::ValuesIn<TextprotoTemplateTestCase>(
-                             {{"3OA_and_stereo_opus.textproto",
-                               std::vector<absl::string_view>{
-                                   "sawtooth_8000_toa_48khz.wav",
-                                   "sawtooth_10000_stereo_48khz_s24le.wav"}}}));
+                         testing::Values<TextprotoTemplateTestCase>(
+                             {"3OA_and_stereo_opus.textproto",
+                              {"sawtooth_8000_toa_48khz.wav",
+                               "sawtooth_10000_stereo_48khz_s24le.wav"}}));
 
 }  // namespace
 }  // namespace iamf_tools

@@ -11,8 +11,6 @@
  */
 #include "iamf/cli/proto_conversion/obu_to_proto/obu_header_metadata_generator.h"
 
-#include "absl/log/check.h"
-#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "iamf/cli/proto/obu_header.pb.h"
@@ -31,7 +29,6 @@ ObuHeaderMetadataGenerator::Generate(const ObuHeader& obu_header) {
   result.set_num_samples_to_trim_at_end(obu_header.num_samples_to_trim_at_end);
   result.set_num_samples_to_trim_at_start(
       obu_header.num_samples_to_trim_at_start);
-  result.set_extension_header_size(obu_header.extension_header_size);
   result.mutable_extension_header_bytes()->resize(
       obu_header.extension_header_size);
   RETURN_IF_NOT_OK(StaticCastSpanIfInRange(

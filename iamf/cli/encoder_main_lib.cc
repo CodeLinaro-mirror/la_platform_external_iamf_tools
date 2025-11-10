@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -51,6 +51,7 @@ namespace iamf_tools {
 
 namespace {
 
+using iamf_tools_cli_proto::ChannelLabelMessage;
 using iamf_tools_cli_proto::ParameterBlockObuMetadata;
 using iamf_tools_cli_proto::UserMetadata;
 
@@ -139,8 +140,17 @@ absl::Status LabeledSamplesToAudioElementData(
     if (!proto_label.ok()) {
       return proto_label.status();
     }
+    ChannelLabelMessage channel_label_message;
+    channel_label_message.set_channel_label(*proto_label);
+    std::string serialized_channel_label_message;
+    if (!channel_label_message.SerializeToString(
+            &serialized_channel_label_message)) {
+      return absl::InternalError(
+          "Failed to serialize a `ChannelLabelMessage` protocol buffer.");
+    }
 
-    audio_element_data[*proto_label] = absl::Span<const double>(samples);
+    audio_element_data[serialized_channel_label_message] =
+        absl::Span<const double>(samples);
   }
   return absl::OkStatus();
 }
@@ -149,7 +159,7 @@ iamf_tools_cli_proto::OutputAudioFormat GetOutputAudioFormat(
     const iamf_tools_cli_proto::OutputAudioFormat output_audio_format,
     const iamf_tools_cli_proto::TestVectorMetadata& test_vector_metadata) {
   if (test_vector_metadata.has_output_wav_file_bit_depth_override()) {
-    LOG(WARNING)
+    ABSL_LOG(WARNING)
         << "`output_wav_file_bit_depth_override` takes no effect. Please "
            "upgrade to `encoder_control_metadata.output_rendered_file_format` "
            "instead."
@@ -189,7 +199,7 @@ absl::Status GenerateTemporalUnitObus(const UserMetadata& user_metadata,
   // slots in the inner maps; we can reuse them.
   api::IamfTemporalUnitData temporal_unit_data;
   while (iamf_encoder.GeneratingTemporalUnits()) {
-    LOG_EVERY_N_SEC(INFO, 5)
+    ABSL_LOG_EVERY_N_SEC(INFO, 5)
         << "\n\n============================= Generating Temporal Units Iter #"
         << temporal_unit_iteration++ << " =============================\n";
 
@@ -213,8 +223,14 @@ absl::Status GenerateTemporalUnitObus(const UserMetadata& user_metadata,
     // Fill in this temporal unit's parameter block metadata.
     for (const auto& metadata :
          time_parameter_block_metadata[input_timestamp]) {
+      std::string serialized_metadata;
+      if (!metadata.SerializeToString(&serialized_metadata)) {
+        return absl::InternalError(
+            "Failed to serialize parameter block metadata.");
+      }
       temporal_unit_data
-          .parameter_block_id_to_metadata[metadata.parameter_id()] = metadata;
+          .parameter_block_id_to_metadata[metadata.parameter_id()] =
+          serialized_metadata;
     }
 
     RETURN_IF_NOT_OK(iamf_encoder.Encode(temporal_unit_data));
@@ -238,8 +254,9 @@ absl::Status GenerateTemporalUnitObus(const UserMetadata& user_metadata,
     RETURN_IF_NOT_OK(
         iamf_encoder.OutputTemporalUnit(unused_temporal_unit_obus));
   }
-  LOG(INFO) << "\n============================= END of Generating Data OBUs"
-            << " =============================\n\n";
+  ABSL_LOG(INFO)
+      << "\n============================= END of Generating Data OBUs"
+      << " =============================\n\n";
 
   return absl::OkStatus();
 }
@@ -268,7 +285,7 @@ absl::Status TestMain(const UserMetadata& input_user_metadata,
       (std::filesystem::path(output_iamf_directory) /
        user_metadata.test_vector_metadata().file_name_prefix())
           .string();
-  LOG(INFO) << "output_wav_file_prefix = " << output_wav_file_prefix;
+  ABSL_LOG(INFO) << "output_wav_file_prefix = " << output_wav_file_prefix;
   RenderingMixPresentationFinalizer::SampleProcessorFactory
       sample_processor_factory =
           [output_wav_file_prefix](DecodedUleb128 mix_presentation_id,
