@@ -18,11 +18,10 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/node_hash_map.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
@@ -108,6 +107,12 @@ class DemixingModule {
     LabelGainMap label_to_output_gain;
   };
 
+  struct ReconstructionConfig {
+    const AudioElementObu* absl_nonnull audio_element_obu;
+    SubstreamIdLabelsMap substream_id_to_labels;
+    LabelGainMap label_to_output_gain;
+  };
+
   /*!\brief Creates a `DemixingModule` for down-mixing and reconstruction.
    *
    * This is most useful from the context of an encoder. For example, to encode
@@ -130,6 +135,17 @@ class DemixingModule {
                                 DownmixingAndReconstructionConfig>&&
           id_to_config_map);
 
+  /*!\brief Creates a map of ID to `ReconstructionConfig`.
+   *
+   * \param audio_elements Audio Elements to source `AudioElementObu`,
+   *       `substream_id_to_labels` and `label_to_output_gain` from.
+   * \return Map of Audio Element ID to `ReconstructionConfig`.
+   */
+  static absl::flat_hash_map<DecodedUleb128, ReconstructionConfig>
+  CreateIdToReconstructionConfig(
+      const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
+          audio_elements);
+
   /*!\brief Initializes for reconstruction (demixing) the input audio elements.
    *
    * This is most useful from the context of a decoder. For example, to decode
@@ -140,12 +156,12 @@ class DemixingModule {
    * information about the channels and the specific down-mixers and demixers
    * needed for that audio element.
    *
-   * \param audio_elements Audio elements.
+   * \param id_to_config_map Map of Audio Element IDs to `ReconstructionConfig`.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
   static absl::StatusOr<DemixingModule> CreateForReconstruction(
-      const absl::flat_hash_map<DecodedUleb128, AudioElementWithData>&
-          audio_elements);
+      const absl::flat_hash_map<DecodedUleb128, ReconstructionConfig>&
+          id_to_config);
 
   /*!\brief Searches the input map for the target samples or demixed samples.
    *
@@ -206,8 +222,8 @@ class DemixingModule {
    * \param down_mixers Output pointer to the list of down-mixers.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status GetDownMixers(DecodedUleb128 audio_element_id,
-                             const std::list<Demixer>*& down_mixers) const;
+  absl::StatusOr<const std::list<Demixer>* absl_nonnull> GetDownMixers(
+      DecodedUleb128 audio_element_id) const;
 
   /*!\brief Gets the demixers associated with an Audio Element ID.
    *
@@ -215,8 +231,8 @@ class DemixingModule {
    * \param demixers Output pointer to the list of demixers.
    * \return `absl::OkStatus()` on success. A specific status on failure.
    */
-  absl::Status GetDemixers(DecodedUleb128 audio_element_id,
-                           const std::list<Demixer>*& demixers) const;
+  absl::StatusOr<const std::list<Demixer>* absl_nonnull> GetDemixers(
+      DecodedUleb128 audio_element_id) const;
 
  private:
   enum class DemixingMode { kDownMixingAndReconstruction, kReconstruction };

@@ -12,17 +12,16 @@
 
 #include "iamf/cli/descriptor_obu_parser.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <list>
 #include <memory>
 #include <utility>
-#include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/types/span.h"
 #include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/obu_with_data_generator.h"
 #include "iamf/common/read_bit_buffer.h"
@@ -52,12 +51,11 @@ absl::Status GetAndStoreCodecConfigObu(
   if (payload_size < kSmallestAcceptedCodecConfigSize) {
     // The OBU is implausibly small. It is likely the source file is corrupted.
     // For maximum compatibility, silently skip over the OBU.
-    LOG(WARNING)
+    ABSL_LOG(WARNING)
         << "Possible bitstream corruption. Skipping over an "
            "implausibly small Codec Config OBU with a payload size of: "
         << payload_size << " bytes.";
-    std::vector<uint8_t> buffer_to_discard(payload_size);
-    return read_bit_buffer.ReadUint8Span(absl::MakeSpan(buffer_to_discard));
+    return read_bit_buffer.IgnoreBytes(payload_size);
   }
 
   absl::StatusOr<CodecConfigObu> codec_config_obu =
@@ -96,7 +94,7 @@ absl::Status GetAndStoreMixPresentationObu(
   if (!mix_presentation_obu.ok()) {
     return mix_presentation_obu.status();
   }
-  LOG(INFO) << "Mix Presentation OBU successfully parsed.";
+  ABSL_LOG(INFO) << "Mix Presentation OBU successfully parsed.";
   mix_presentation_obu->PrintObu();
   mix_presentation_obus.push_back(*std::move(mix_presentation_obu));
   return absl::OkStatus();
@@ -107,16 +105,25 @@ absl::Status GetAndStoreMixPresentationObu(
 absl::Status InsufficientDataReset(ReadBitBuffer& read_bit_buffer,
                                    const int64_t start_position,
                                    bool& insufficient_data) {
-  LOG(INFO) << "Insufficient data to process all descriptor OBUs.";
+  ABSL_LOG(INFO) << "Insufficient data to process all descriptor OBUs.";
   insufficient_data = true;
   RETURN_IF_NOT_OK(read_bit_buffer.Seek(start_position));
-  LOG(INFO) << "Reset the buffer to the beginning.";
+  ABSL_LOG(INFO) << "Reset the buffer to the beginning.";
   return absl::ResourceExhaustedError(
       "Insufficient data to process all descriptor OBUs. Please provide "
       "more data and try again.");
 }
 
 }  // namespace
+
+// For defensive programming, initialize the types wrapped in pointers to
+// empty maps.
+DescriptorObuParser::ParsedDescriptorObus::ParsedDescriptorObus()
+    : codec_config_obus(std::make_unique<
+                        absl::flat_hash_map<DecodedUleb128, CodecConfigObu>>()),
+      audio_elements(
+          std::make_unique<
+              absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>()) {}
 
 absl::StatusOr<DescriptorObuParser::ParsedDescriptorObus>
 DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
@@ -155,7 +162,7 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
         auto error_status = absl::InvalidArgumentError(
             "Descriptor OBUs must not contain a temporal unit OBU when "
             "is_exhaustive_and_exact is true.");
-        LOG(ERROR) << error_status;
+        ABSL_LOG(ERROR) << error_status;
         RETURN_IF_NOT_OK(read_bit_buffer.Seek(global_position_before_all_obus));
         return error_status;
       }
@@ -176,7 +183,7 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
     }
 
     // Now, we know that this is not a temporal unit OBU.
-    if (!read_bit_buffer.CanReadBytes(header_metadata->total_obu_size)) {
+    if (read_bit_buffer.NumBytesAvailable() < header_metadata->total_obu_size) {
       // This is a descriptor OBU for which we don't have enough data.
       return InsufficientDataReset(read_bit_buffer,
                                    global_position_before_all_obus,
@@ -192,7 +199,8 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
     switch (header.obu_type) {
       case kObuIaSequenceHeader: {
         if (processed_ia_header && !header.obu_redundant_copy) {
-          LOG(WARNING) << "Detected an IA Sequence without temporal units.";
+          ABSL_LOG(WARNING)
+              << "Detected an IA Sequence without temporal units.";
           continue_processing = false;
           break;
         }
@@ -201,14 +209,14 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
         if (!ia_sequence_header_obu.ok()) {
           return ia_sequence_header_obu.status();
         }
-        parsed_obus.sequence_header = *std::move(ia_sequence_header_obu);
-        parsed_obus.sequence_header.PrintObu();
+        parsed_obus.ia_sequence_header = *std::move(ia_sequence_header_obu);
+        parsed_obus.ia_sequence_header.PrintObu();
         processed_ia_header = true;
         break;
       }
       case kObuIaCodecConfig: {
         RETURN_IF_NOT_OK(GetAndStoreCodecConfigObu(
-            header, payload_size, parsed_obus.codec_config_obus,
+            header, payload_size, *parsed_obus.codec_config_obus,
             read_bit_buffer));
         break;
       }
@@ -234,11 +242,10 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
         // now, ignore any reserved OBUs by skipping over their bits in the
         // buffer.
         continue_processing = true;
-        LOG(INFO) << "Detected a reserved OBU while parsing Descriptor OBUs. "
-                  << "Safely ignoring it.";
-        std::vector<uint8_t> buffer_to_discard(payload_size);
-        RETURN_IF_NOT_OK(
-            read_bit_buffer.ReadUint8Span(absl::MakeSpan(buffer_to_discard)));
+        ABSL_LOG(INFO)
+            << "Detected a reserved OBU while parsing Descriptor OBUs. "
+            << "Safely ignoring it.";
+        RETURN_IF_NOT_OK(read_bit_buffer.IgnoreBytes(payload_size));
         break;
       }
       default:
@@ -248,7 +255,7 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
     }
     if (!continue_processing) {
       // Rewind the position to before the last header was read.
-      LOG(INFO) << "position_before_header: " << position_before_header;
+      ABSL_LOG(INFO) << "position_before_header: " << position_before_header;
       RETURN_IF_NOT_OK(read_bit_buffer.Seek(position_before_header));
     }
     if (!processed_ia_header) {
@@ -265,11 +272,13 @@ DescriptorObuParser::ProcessDescriptorObus(bool is_exhaustive_and_exact,
   if (!audio_element_obu_map.empty()) {
     auto audio_elements_with_data =
         ObuWithDataGenerator::GenerateAudioElementsWithData(
-            parsed_obus.codec_config_obus, audio_element_obu_map);
+            *parsed_obus.codec_config_obus, audio_element_obu_map);
     if (!audio_elements_with_data.ok()) {
       return audio_elements_with_data.status();
     }
-    parsed_obus.audio_elements_with_data = std::move(*audio_elements_with_data);
+    parsed_obus.audio_elements = std::make_unique<
+        absl::flat_hash_map<DecodedUleb128, AudioElementWithData>>(
+        *std::move(audio_elements_with_data));
   }
   return parsed_obus;
 }

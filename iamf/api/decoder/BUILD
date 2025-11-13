@@ -9,8 +9,7 @@ cc_library(
     ],
     visibility = [
         "//iamf/api/decoder/tests:__pkg__",
-        "//iamf/api/internal_utils:__pkg__",
-        "//iamf/cli/internal/decoder:__pkg__",
+        "//iamf/cli:__subpackages__",
         "//iamf/include/iamf_tools:__pkg__",
     ],
     deps = [
@@ -18,7 +17,6 @@ cc_library(
         "//iamf/api/conversion:mix_presentation_conversion",
         "//iamf/api/conversion:profile_conversion",
         "//iamf/cli:obu_processor",
-        "//iamf/cli:rendering_mix_presentation_finalizer",
         "//iamf/common:read_bit_buffer",
         "//iamf/common/utils:macros",
         "//iamf/common/utils:numeric_utils",
@@ -28,11 +26,11 @@ cc_library(
         "//iamf/obu:ia_sequence_header",
         "//iamf/obu:mix_presentation",
         "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/types:span",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/memory",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/types:span",
     ],
 )
 

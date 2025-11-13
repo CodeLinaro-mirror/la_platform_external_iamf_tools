@@ -13,7 +13,7 @@ cc_test(
         "//iamf/obu:mix_presentation",
         "//iamf/obu:obu_header",
         "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -33,8 +33,32 @@ cc_test(
         "//iamf/cli/user_metadata_builder:iamf_input_layout",
         "//iamf/include/iamf_tools:iamf_encoder_factory",
         "//iamf/obu:types",
-        "@com_google_absl//absl/status:status_matchers",
+        "@abseil-cpp//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "iamf_encoder_factory_fuzz_test",
+    srcs = ["iamf_encoder_factory_fuzz_test.cc"],
+    args = [
+        "--fuzztest_rss_limit_mb=8092",
+    ],
+    data = [
+        "//iamf/cli/testdata:test_vectors",
+    ],
+    target_compatible_with = [
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        "@com_google_fuzztest//fuzztest",
+        "@abseil-cpp//absl/strings:string_view",
+        "//iamf/cli/proto:user_metadata_cc_proto",
+        "//iamf/cli/tests:cli_test_utils",
+        "//iamf/include/iamf_tools:iamf_encoder_factory",
+        "@com_google_protobuf//:protobuf",
+        # [internal] Placeholder for fine-grained protobuf dependency: "io",
     ],
 )

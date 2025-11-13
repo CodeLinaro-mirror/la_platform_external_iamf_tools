@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -197,10 +197,10 @@ absl::Status AacEncoder::InitializeEncoder() {
 AacEncoder::~AacEncoder() { aacEncClose(&encoder_); }
 
 absl::Status AacEncoder::EncodeAudioFrame(
-    int input_bit_depth, const std::vector<std::vector<int32_t>>& samples,
+    const std::vector<std::vector<int32_t>>& samples,
     std::unique_ptr<AudioFrameWithData> partial_audio_frame_with_data) {
   if (!encoder_) {
-    LOG(ERROR) << "Expected `encoder_` to be initialized.";
+    ABSL_LOG(ERROR) << "Expected `encoder_` to be initialized.";
   }
   RETURN_IF_NOT_OK(ValidateNotFinalized());
   RETURN_IF_NOT_OK(ValidateInputSamples(samples));
@@ -211,10 +211,10 @@ absl::Status AacEncoder::EncodeAudioFrame(
                                            "Failed to get encoder info."));
 
   // Convert input to the array that will be passed to `aacEncEncode`.
-  if (input_bit_depth != GetFdkAacBitDepth()) {
+  if (input_pcm_bit_depth_ != GetFdkAacBitDepth()) {
     auto error_message =
         absl::StrCat("Expected AAC to be ", GetFdkAacBitDepth(), " bits, got ",
-                     input_bit_depth);
+                     input_pcm_bit_depth_);
     return absl::InvalidArgumentError(error_message);
   }
 
@@ -230,8 +230,8 @@ absl::Status AacEncoder::EncodeAudioFrame(
       // Convert all frames to INT_PCM samples for input for `fdk_aac` (usually
       // 16-bit).
       RETURN_IF_NOT_OK(WritePcmSample(
-          static_cast<uint32_t>(samples[c][t]), input_bit_depth, big_endian,
-          reinterpret_cast<uint8_t*>(encoder_input_pcm.data()),
+          static_cast<uint32_t>(samples[c][t]), input_pcm_bit_depth_,
+          big_endian, reinterpret_cast<uint8_t*>(encoder_input_pcm.data()),
           write_position));
     }
   }
@@ -288,16 +288,16 @@ absl::Status AacEncoder::EncodeAudioFrame(
   finalized_audio_frames_.emplace_back(
       std::move(*partial_audio_frame_with_data));
 
-  LOG_FIRST_N(INFO, 1) << "Encoded " << num_samples_per_channel << " samples * "
-                       << num_channels_ << " channels using "
-                       << out_args.numOutBytes << " bytes";
+  ABSL_LOG_FIRST_N(INFO, 1)
+      << "Encoded " << num_samples_per_channel << " samples * " << num_channels_
+      << " channels using " << out_args.numOutBytes << " bytes";
   return absl::OkStatus();
 }
 
 absl::Status AacEncoder::SetNumberOfSamplesToDelayAtStart(
     bool /*validate_codec_delay*/) {
   if (!encoder_) {
-    LOG(ERROR) << "Expected `encoder_` to be initialized.";
+    ABSL_LOG(ERROR) << "Expected `encoder_` to be initialized.";
   }
 
   // Validate the configuration.
