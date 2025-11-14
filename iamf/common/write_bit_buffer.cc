@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -167,6 +167,10 @@ absl::Status WriteBitBuffer::WriteSigned16(int16_t data) {
   return WriteUnsignedLiteral(static_cast<uint32_t>(data) & 0xffff, 16);
 }
 
+absl::Status WriteBitBuffer::WriteBoolean(bool data) {
+  return WriteUnsignedLiteral(static_cast<uint32_t>(data), 1);
+}
+
 // Writes a null terminated C-style string to the buffer - including the null.
 absl::Status WriteBitBuffer::WriteString(const std::string& data) {
   if (data.size() > kIamfMaxStringSize - 1) {  // -1 for the NULL terminator.
@@ -259,7 +263,7 @@ absl::Status WriteBitBuffer::FlushAndWriteToFile(
   }
 
   if (bit_offset_ > 0) {
-    LOG_EVERY_POW_2(INFO) << "Flushing " << bit_offset_ / 8 << " bytes";
+    ABSL_LOG_EVERY_POW_2(INFO) << "Flushing " << bit_offset_ / 8 << " bytes";
   }
   Reset();
   return absl::OkStatus();

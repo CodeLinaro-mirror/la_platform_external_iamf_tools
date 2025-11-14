@@ -8,6 +8,33 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Deprecated
+
+-   Deprecate `MixPresentationObuMetadata::count_label`, in favor of calculating
+    the size from related elements.
+-   Deprecate `MixPresentationObuMetadata::info_type_size`, in favor of
+    calculating the size from related elements.
+-   Deprecate `MixPresentationObuMetadata::rendering_config_extension_size`, in
+    favor of calculating the size from related elements.
+-   Deprecate `FlacMetaBlockHeader::last_metadata_block_flag` and
+    `metadata_data_block_length` in favor of automatically determining the
+    related values.
+
+### Fixed
+
+-   Fix a bug where the encoder would fail to finalize loudness under certain
+    circumstances.
+-   Improve spec compliance, when decoding streams with unknown parameter
+    blocks.
+-   Improve CPU/memory efficiency when decoding streams with multiple layouts
+    and/or mix presentations.
+
+### Changed
+
+-   Changed encoder API to take in serialized protos. The previous API was buggy
+    due to directly taking in C++ proto classes, which is
+    [strongly discouraged](https://protobuf.dev/support/cross-version-runtime-guarantee/).
+
 ## [2.0.0] - 2025-08-18
 
 ### Added

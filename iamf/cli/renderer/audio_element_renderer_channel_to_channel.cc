@@ -15,13 +15,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
@@ -111,6 +114,26 @@ absl::StatusOr<absl::string_view> LookupInputKeyFromLoudspeakerLayout(
                      "Input key for `LoudspeakerLayout`");
 }
 
+void PrintGainsForDebugging(
+    const std::vector<ChannelLabel::Label>& channel_labels_for_debugging,
+    const std::vector<std::vector<double>>& gains) {
+  auto fmt = std::setw(7);
+  std::stringstream ss;
+  for (const auto& label : channel_labels_for_debugging) {
+    ss << fmt << absl::StrCat(label);
+  }
+  ABSL_LOG_FIRST_N(INFO, 5) << ss.str();
+  for (size_t i = 0; i < gains.front().size(); i++) {
+    ss.str({});
+    ss.clear();
+    ss << std::setprecision(3);
+    for (size_t j = 0; j < gains.size(); j++) {
+      ss << fmt << gains.at(j).at(i);
+    }
+    ABSL_LOG_FIRST_N(INFO, 5) << ss.str();
+  }
+}
+
 }  // namespace
 
 std::unique_ptr<AudioElementRendererChannelToChannel>
@@ -118,7 +141,7 @@ AudioElementRendererChannelToChannel::CreateFromScalableChannelLayoutConfig(
     const ScalableChannelLayoutConfig& scalable_channel_layout_config,
     const Layout& playback_layout, size_t num_samples_per_frame) {
   if (scalable_channel_layout_config.channel_audio_layer_configs.empty()) {
-    LOG(ERROR) << "No channel audio layer configs provided.";
+    ABSL_LOG(ERROR) << "No channel audio layer configs provided.";
     return nullptr;
   }
   const auto& highest_channel_audio_layer_config =
@@ -128,7 +151,7 @@ AudioElementRendererChannelToChannel::CreateFromScalableChannelLayoutConfig(
           highest_channel_audio_layer_config.loudspeaker_layout,
           highest_channel_audio_layer_config.expanded_loudspeaker_layout);
   if (!ordered_labels.ok()) {
-    LOG(ERROR) << ordered_labels.status();
+    ABSL_LOG(ERROR) << ordered_labels.status();
     return nullptr;
   }
 
@@ -136,19 +159,19 @@ AudioElementRendererChannelToChannel::CreateFromScalableChannelLayoutConfig(
       highest_channel_audio_layer_config.loudspeaker_layout,
       highest_channel_audio_layer_config.expanded_loudspeaker_layout);
   if (!input_key.ok()) {
-    LOG(ERROR) << input_key.status();
+    ABSL_LOG(ERROR) << input_key.status();
     return nullptr;
   }
   const auto& output_key =
       renderer_utils::LookupOutputKeyFromPlaybackLayout(playback_layout);
   if (!output_key.ok()) {
-    LOG(ERROR) << output_key.status();
+    ABSL_LOG(ERROR) << output_key.status();
     return nullptr;
   }
 
   const auto& gains = LookupPrecomputedGains(*input_key, *output_key);
   if (!gains.ok()) {
-    LOG(ERROR) << gains.status();
+    ABSL_LOG(ERROR) << gains.status();
     return nullptr;
   }
 
@@ -166,11 +189,24 @@ AudioElementRendererChannelToChannel::CreateFromScalableChannelLayoutConfig(
 
 absl::Status AudioElementRendererChannelToChannel::RenderSamples(
     absl::Span<const absl::Span<const InternalSampleType>> samples_to_render) {
+  // When the demixing parameters are in the bitstream, recompute for every
+  // frame and do not store the result in the map.
+  // TODO(b/292174366): Find a better solution and strictly follow the spec for
+  //                    which renderer to use.
+  auto newly_computed_gains = MaybeComputeDynamicGains(
+      current_labeled_frame_->demixing_params, input_key_, output_key_);
+  if (newly_computed_gains.has_value() && ABSL_VLOG_IS_ON(1)) {
+    PrintGainsForDebugging(ordered_labels_, *newly_computed_gains);
+  }
+
+  // Dynamic gains may not be relevant, signalled, or known. Fallback to the
+  // precomputed gains, to allow rendering to proceed.
+  const std::vector<std::vector<double>>& gains_to_use =
+      newly_computed_gains.has_value() ? *newly_computed_gains : gains_;
+
   // Render the samples.
-  RETURN_IF_NOT_OK(RenderChannelLayoutToLoudspeakers(
-      samples_to_render, current_labeled_frame_->demixing_params,
-      ordered_labels_, input_key_, output_key_, gains_, rendered_samples_));
-  return absl::OkStatus();
+  return RenderChannelLayoutToLoudspeakers(samples_to_render, gains_to_use,
+                                           rendered_samples_);
 }
 
 }  // namespace iamf_tools

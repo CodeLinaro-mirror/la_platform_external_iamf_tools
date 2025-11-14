@@ -4,12 +4,21 @@ load("@rules_cc//cc:cc_test.bzl", "cc_test")
 cc_test(
     name = "iamf_decoder_fuzz_test",
     srcs = ["iamf_decoder_fuzz_test.cc"],
+    args = [
+        "--fuzztest_rss_limit_mb=8092",
+    ],
+    data = [
+        "//iamf/cli/testdata:fuzz_test_iamf",
+    ],
+    shard_count = 2,
     target_compatible_with = [
         "@platforms//os:linux",
     ],
     deps = [
         "//iamf/api/decoder:iamf_decoder",
+        "//iamf/cli/tests:cli_test_utils",
         "//iamf/include/iamf_tools:iamf_tools_api_types",
+        "@abseil-cpp//absl/strings:string_view",
         "@com_google_fuzztest//fuzztest",
         "@com_google_googletest//:gtest_main",
     ],
@@ -34,8 +43,8 @@ cc_test(
         "//iamf/obu:obu_header",
         "//iamf/obu:temporal_delimiter",
         "//iamf/obu:types",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/types:span",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )

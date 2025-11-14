@@ -15,7 +15,7 @@
 #include <memory>
 #include <vector>
 
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -91,10 +91,11 @@ DecodedUleb128 ParamDefinition::GetSubblockDuration(int subblock_index) const {
 
 absl::Status ParamDefinition::SetSubblockDuration(int subblock_index,
                                                   DecodedUleb128 duration) {
-  if (subblock_index > subblock_durations_.size()) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Subblock index greater than `subblock_durations_.size()`= ",
-        subblock_durations_.size()));
+  if (subblock_index >= subblock_durations_.size() || subblock_index < 0) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Subblock index ", subblock_index,
+                     " is out of bounds. `subblock_durations_.size()`= ",
+                     subblock_durations_.size()));
   }
 
   subblock_durations_[subblock_index] = duration;
@@ -158,24 +159,24 @@ absl::Status ParamDefinition::ReadAndValidate(ReadBitBuffer& rb) {
 }
 
 void ParamDefinition::Print() const {
-  LOG(INFO) << "  parameter_type= "
-            << (type_.has_value() ? absl::StrCat(*type_) : "NONE");
-  LOG(INFO) << "  parameter_id= " << parameter_id_;
-  LOG(INFO) << "  parameter_rate= " << parameter_rate_;
-  LOG(INFO) << "  param_definition_mode= "
-            << absl::StrCat(param_definition_mode_);
-  LOG(INFO) << "  reserved= " << absl::StrCat(reserved_);
+  ABSL_LOG(INFO) << "  parameter_type= "
+                 << (type_.has_value() ? absl::StrCat(*type_) : "NONE");
+  ABSL_LOG(INFO) << "  parameter_id= " << parameter_id_;
+  ABSL_LOG(INFO) << "  parameter_rate= " << parameter_rate_;
+  ABSL_LOG(INFO) << "  param_definition_mode= "
+                 << absl::StrCat(param_definition_mode_);
+  ABSL_LOG(INFO) << "  reserved= " << absl::StrCat(reserved_);
   if (param_definition_mode_ == 0) {
-    LOG(INFO) << "  duration= " << duration_;
-    LOG(INFO) << "  constant_subblock_duration= "
-              << constant_subblock_duration_;
-    LOG(INFO) << "  num_subblocks= " << GetNumSubblocks();
+    ABSL_LOG(INFO) << "  duration= " << duration_;
+    ABSL_LOG(INFO) << "  constant_subblock_duration= "
+                   << constant_subblock_duration_;
+    ABSL_LOG(INFO) << "  num_subblocks= " << GetNumSubblocks();
 
     // Subblock durations.
     if (constant_subblock_duration_ == 0) {
       for (int k = 0; k < GetNumSubblocks(); k++) {
-        LOG(INFO) << "  subblock_durations[" << k
-                  << "]= " << GetSubblockDuration(k);
+        ABSL_LOG(INFO) << "  subblock_durations[" << k
+                       << "]= " << GetSubblockDuration(k);
       }
     }
   }
@@ -201,6 +202,12 @@ absl::Status ParamDefinition::Validate() const {
     if (duration_ == 0) {
       status = absl::InvalidArgumentError(absl::StrCat(
           "Duration should not be zero. Parameter ID = ", parameter_id));
+    }
+    if (constant_subblock_duration_ > duration_) {
+      status = absl::InvalidArgumentError(absl::StrCat(
+          "Constant subblock duration should not be greater than duration. "
+          "Parameter ID = ",
+          parameter_id));
     }
 
     // Check if the `subblock_durations` is included.
@@ -261,9 +268,9 @@ std::unique_ptr<ParameterData> MixGainParamDefinition::CreateParameterData()
 }
 
 void MixGainParamDefinition::Print() const {
-  LOG(INFO) << "MixGainParamDefinition:";
+  ABSL_LOG(INFO) << "MixGainParamDefinition:";
   ParamDefinition::Print();
-  LOG(INFO) << "  default_mix_gain= " << default_mix_gain_;
+  ABSL_LOG(INFO) << "  default_mix_gain= " << default_mix_gain_;
 }
 
 absl::Status ReconGainParamDefinition::ValidateAndWrite(
@@ -300,17 +307,17 @@ std::unique_ptr<ParameterData> ReconGainParamDefinition::CreateParameterData()
 }
 
 void ReconGainParamDefinition::Print() const {
-  LOG(INFO) << "ReconGainParamDefinition:";
+  ABSL_LOG(INFO) << "ReconGainParamDefinition:";
   ParamDefinition::Print();
-  LOG(INFO) << "  audio_element_id= " << audio_element_id_;
+  ABSL_LOG(INFO) << "  audio_element_id= " << audio_element_id_;
 
   for (int i = 0; i < aux_data_.size(); i++) {
-    LOG(INFO) << "  // recon_gain_is_present_flags[" << i
-              << "]= " << absl::StrCat(aux_data_[i].recon_gain_is_present_flag);
+    ABSL_LOG(INFO) << "  // recon_gain_is_present_flags[" << i << "]= "
+                   << absl::StrCat(aux_data_[i].recon_gain_is_present_flag);
     const auto& channel_numbers = aux_data_[i].channel_numbers_for_layer;
-    LOG(INFO) << "  // channel_numbers_for_layer[" << i
-              << "]= " << channel_numbers.surround << "." << channel_numbers.lfe
-              << "." << channel_numbers.height;
+    ABSL_LOG(INFO) << "  // channel_numbers_for_layer[" << i
+                   << "]= " << channel_numbers.surround << "."
+                   << channel_numbers.lfe << "." << channel_numbers.height;
   }
 }
 
@@ -318,10 +325,7 @@ absl::Status ExtendedParamDefinition::ValidateAndWrite(
     WriteBitBuffer& wb) const {
   // This class does not write the base class's data, i.e. it doesn't call
   // `ParamDefinition::ValidateAndWrite(wb)`.
-  RETURN_IF_NOT_OK(wb.WriteUleb128(param_definition_size_));
-  RETURN_IF_NOT_OK(ValidateContainerSizeEqual("param_definition_bytes_",
-                                              param_definition_bytes_,
-                                              param_definition_size_));
+  RETURN_IF_NOT_OK(wb.WriteUleb128(param_definition_bytes_.size()));
   RETURN_IF_NOT_OK(
       wb.WriteUint8Span(absl::MakeConstSpan(param_definition_bytes_)));
 
@@ -331,8 +335,9 @@ absl::Status ExtendedParamDefinition::ValidateAndWrite(
 absl::Status ExtendedParamDefinition::ReadAndValidate(ReadBitBuffer& rb) {
   // This class does not read the base class's data, i.e. it doesn't call
   // `ParamDefinition::ReadAndWrite(wb)`.
-  RETURN_IF_NOT_OK(rb.ReadULeb128(param_definition_size_));
-  param_definition_bytes_.resize(param_definition_size_);
+  DecodedUleb128 param_definition_size;
+  RETURN_IF_NOT_OK(rb.ReadULeb128(param_definition_size));
+  param_definition_bytes_.resize(param_definition_size);
   RETURN_IF_NOT_OK(rb.ReadUint8Span(absl::MakeSpan(param_definition_bytes_)));
 
   return absl::OkStatus();
@@ -344,11 +349,12 @@ std::unique_ptr<ParameterData> ExtendedParamDefinition::CreateParameterData()
 }
 
 void ExtendedParamDefinition::Print() const {
-  LOG(INFO) << "ExtendedParamDefinition:";
+  ABSL_LOG(INFO) << "ExtendedParamDefinition:";
   // This class does not read the base class's data, i.e. it doesn't call
   // `ParamDefinition::Print()`.
-  LOG(INFO) << "  param_definition_size= " << param_definition_size_;
-  LOG(INFO) << "  // Skipped printing param_definition_bytes";
+  ABSL_LOG(INFO) << "  param_definition_size= "
+                 << param_definition_bytes_.size();
+  ABSL_LOG(INFO) << "  // Skipped printing param_definition_bytes";
 }
 
 }  // namespace iamf_tools

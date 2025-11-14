@@ -15,12 +15,13 @@
 #include <utility>
 #include <variant>
 
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/decoder_config/aac_decoder_config.h"
 #include "iamf/obu/decoder_config/flac_decoder_config.h"
@@ -35,11 +36,24 @@ namespace iamf_tools {
 namespace {
 
 absl::Status ValidateNumSamplesPerFrame(uint32_t num_samples_per_frame) {
-  if (num_samples_per_frame == 0) {
-    return absl::InvalidArgumentError(
-        "Number of samples per frame must be non-zero.");
-  }
-  return absl::OkStatus();
+  // The spec only explicitly forbids a frame size of zero, with no upper bound.
+  //
+  // For practical purpsoes, it is reasonable to restrict the upper bound to
+  // prevent excessive memory usage. Underlyng codecs or their implementations
+  // usually have conservative limits.
+  //
+  // - AAC: 1024 samples per frame.
+  // - FLAC: 65,535 samples per frame.
+  // - Opus: 60 ms frames (at 48 kHz).
+  //
+  // LPCM has no limit under the IAMF spec. Here we pick a large limit that
+  // would support frames up to 1 second at 96 kHz. Which is both a longer
+  // duration and a higher sample rate than we would typically expect.
+  constexpr uint32_t kMinPracticalFrameSize = 1;
+  return ValidateInRange(
+      num_samples_per_frame,
+      {kMinPracticalFrameSize, CodecConfigObu::kMaxPracticalFrameSize},
+      "Number of samples per frame");
 }
 
 absl::Status OverrideAudioRollDistance(CodecConfig::CodecId codec_id,
@@ -88,7 +102,7 @@ absl::Status SetSampleRatesAndBitDepths(
       input_sample_rate = opus_decoder_config.GetInputSampleRate();
       bit_depth_to_measure_loudness =
           OpusDecoderConfig::GetBitDepthToMeasureLoudness();
-      return absl::OkStatus();
+      break;
     }
     case kCodecIdLpcm: {
       const auto& lpcm_decoder_config =
@@ -98,7 +112,7 @@ absl::Status SetSampleRatesAndBitDepths(
       input_sample_rate = output_sample_rate;
       RETURN_IF_NOT_OK(lpcm_decoder_config.GetBitDepthToMeasureLoudness(
           bit_depth_to_measure_loudness));
-      return absl::OkStatus();
+      break;
     }
     case kCodecIdAacLc:
       RETURN_IF_NOT_OK(std::get<AacDecoderConfig>(decoder_config)
@@ -106,7 +120,7 @@ absl::Status SetSampleRatesAndBitDepths(
       input_sample_rate = output_sample_rate;
       bit_depth_to_measure_loudness =
           AacDecoderConfig::GetBitDepthToMeasureLoudness();
-      return absl::OkStatus();
+      break;
     case kCodecIdFlac: {
       const auto& flac_decoder_config =
           std::get<FlacDecoderConfig>(decoder_config);
@@ -115,13 +129,16 @@ absl::Status SetSampleRatesAndBitDepths(
       input_sample_rate = output_sample_rate;
       RETURN_IF_NOT_OK(flac_decoder_config.GetBitDepthToMeasureLoudness(
           bit_depth_to_measure_loudness));
-
-      return absl::OkStatus();
+      break;
     }
     default:
       return absl::InvalidArgumentError(
           absl::StrCat("Unknown codec_id: ", codec_id));
   }
+
+  // For safety, check that this is never zero. But usually the decoder configs
+  // themselves would have rejected zero.
+  return ValidateNotEqual(output_sample_rate, uint32_t{0}, "Sample rate");
 }
 
 absl::Status InitializeCodecConfigAndMetadata(
@@ -214,6 +231,8 @@ absl::StatusOr<CodecConfigObu> CodecConfigObu::Create(
     const ObuHeader& header, DecodedUleb128 codec_config_id,
     const CodecConfig& input_codec_config,
     bool automatically_override_roll_distance) {
+  RETURN_IF_NOT_OK(
+      ValidateNumSamplesPerFrame(input_codec_config.num_samples_per_frame));
   // Copy the codec config, it may be modified to correct the roll distance.
   CodecConfig codec_config = input_codec_config;
   uint32_t output_sample_rate = 0;
@@ -290,12 +309,13 @@ absl::Status CodecConfigObu::ReadAndValidatePayloadDerived(
 }
 
 void CodecConfigObu::PrintObu() const {
-  VLOG(1) << "Codec Config OBU:";
-  VLOG(1) << "  codec_config_id= " << codec_config_id_;
-  VLOG(1) << "  codec_config:";
-  VLOG(1) << "    codec_id= " << codec_config_.codec_id;
-  VLOG(1) << "    num_samples_per_frame= " << GetNumSamplesPerFrame();
-  VLOG(1) << "    audio_roll_distance= " << codec_config_.audio_roll_distance;
+  ABSL_VLOG(1) << "Codec Config OBU:";
+  ABSL_VLOG(1) << "  codec_config_id= " << codec_config_id_;
+  ABSL_VLOG(1) << "  codec_config:";
+  ABSL_VLOG(1) << "    codec_id= " << codec_config_.codec_id;
+  ABSL_VLOG(1) << "    num_samples_per_frame= " << GetNumSamplesPerFrame();
+  ABSL_VLOG(1) << "    audio_roll_distance= "
+               << codec_config_.audio_roll_distance;
 
   // Print the `decoder_config_`. This is codec specific.
   switch (codec_config_.codec_id) {
@@ -313,14 +333,14 @@ void CodecConfigObu::PrintObu() const {
       std::get<AacDecoderConfig>(codec_config_.decoder_config).Print();
       break;
     default:
-      LOG(ERROR) << "Unknown codec_id: " << codec_config_.codec_id;
+      ABSL_LOG(ERROR) << "Unknown codec_id: " << codec_config_.codec_id;
       break;
   }
 
-  VLOG(1) << "  // input_sample_rate_= " << input_sample_rate_;
-  VLOG(1) << "  // output_sample_rate_= " << output_sample_rate_;
-  VLOG(1) << "  // bit_depth_to_measure_loudness_= "
-          << absl::StrCat(bit_depth_to_measure_loudness_);
+  ABSL_VLOG(1) << "  // input_sample_rate_= " << input_sample_rate_;
+  ABSL_VLOG(1) << "  // output_sample_rate_= " << output_sample_rate_;
+  ABSL_VLOG(1) << "  // bit_depth_to_measure_loudness_= "
+               << absl::StrCat(bit_depth_to_measure_loudness_);
 }
 
 absl::Status CodecConfigObu::SetCodecDelay(uint16_t codec_delay) {
@@ -342,7 +362,7 @@ absl::Status CodecConfigObu::SetCodecDelay(uint16_t codec_delay) {
       return absl::OkStatus();
     }
   }
-  LOG(FATAL) << "Unknown codec_id: " << codec_config_.codec_id;
+  ABSL_LOG(FATAL) << "Unknown codec_id: " << codec_config_.codec_id;
 }
 
 bool CodecConfigObu::IsLossless() const {

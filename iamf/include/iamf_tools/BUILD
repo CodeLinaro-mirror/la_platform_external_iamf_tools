@@ -6,12 +6,15 @@ cc_library(
     srcs = ["iamf_decoder_factory.cc"],
     hdrs = ["iamf_decoder_factory.h"],
     visibility = [
+        "//iamf/api/internal_utils:__pkg__",
+        "//iamf/cli:__pkg__",
         "//iamf/include/iamf_tools/tests:__pkg__",
     ],
     deps = [
         ":iamf_decoder_interface",
         ":iamf_tools_api_types",
         "//iamf/api/decoder:iamf_decoder",
+        "@abseil-cpp//absl/log:absl_log",
     ],
 )
 
@@ -20,9 +23,11 @@ cc_library(
     hdrs = ["iamf_decoder_interface.h"],
     visibility = [
         "//iamf/api/decoder:__pkg__",
+        "//iamf/api/internal_utils:__pkg__",
+        "//iamf/cli:__pkg__",
     ],
     deps = [
-        "//iamf/include/iamf_tools:iamf_tools_api_types",
+        ":iamf_tools_api_types",
     ],
 )
 
@@ -35,6 +40,7 @@ cc_library(
         "//iamf/include/iamf_tools/tests:__pkg__",
     ],
     deps = [
+        ":iamf_encoder_interface",
         "//iamf/cli:iamf_components",
         "//iamf/cli:iamf_encoder",
         "//iamf/cli:obu_sequencer_base",
@@ -43,10 +49,9 @@ cc_library(
         "//iamf/cli/proto:temporal_delimiter_cc_proto",
         "//iamf/cli/proto:user_metadata_cc_proto",
         "//iamf/cli/proto_conversion:proto_utils",
-        "//iamf/include/iamf_tools:iamf_encoder_interface",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:string_view",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings:string_view",
     ],
 )
 
@@ -56,11 +61,10 @@ cc_library(
     visibility = [
         "//iamf/api:__subpackages__",
         "//iamf/cli:__pkg__",
-        "//iamf/cli/tests:__pkg__",
     ],
     deps = [
         ":iamf_tools_encoder_api_types",
-        "@com_google_absl//absl/status",
+        "@abseil-cpp//absl/status",
     ],
 )
 
@@ -70,7 +74,7 @@ cc_library(
     hdrs = ["iamf_tools_api_types.h"],
     visibility = [
         "//iamf/api:__subpackages__",
-        "//iamf/cli/internal/decoder:__subpackages__",
+        "//iamf/cli:__subpackages__",
         "//iamf/include/iamf_tools/tests:__pkg__",
     ],
 )
@@ -84,10 +88,8 @@ cc_library(
         "//iamf/cli/tests:__pkg__",
     ],
     deps = [
-        "//iamf/cli/proto:audio_frame_cc_proto",
-        "//iamf/cli/proto:parameter_block_cc_proto",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/types:span",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/types:span",
     ],
 )
 

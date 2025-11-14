@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
@@ -53,68 +53,89 @@ size_t GetNumDemixingMatrixElements(const AmbisonicsProjectionConfig& config) {
 }
 
 void LogChannelBased(const ScalableChannelLayoutConfig& channel_config) {
-  VLOG(1) << "  scalable_channel_layout_config:";
-  VLOG(1) << "    num_layers= " << absl::StrCat(channel_config.num_layers);
-  VLOG(1) << "    reserved= " << absl::StrCat(channel_config.reserved);
-  for (int i = 0; i < channel_config.num_layers; ++i) {
-    VLOG(1) << "    channel_audio_layer_configs[" << i << "]:";
+  ABSL_VLOG(1) << "  scalable_channel_layout_config:";
+  ABSL_VLOG(1) << "    num_layers= "
+               << absl::StrCat(channel_config.GetNumLayers());
+  ABSL_VLOG(1) << "    reserved= " << absl::StrCat(channel_config.reserved);
+  for (int i = 0; i < channel_config.GetNumLayers(); ++i) {
+    ABSL_VLOG(1) << "    channel_audio_layer_configs[" << i << "]:";
     const auto& channel_audio_layer_config =
         channel_config.channel_audio_layer_configs[i];
-    VLOG(1) << "      loudspeaker_layout= "
-            << absl::StrCat(channel_audio_layer_config.loudspeaker_layout);
-    VLOG(1) << "      output_gain_is_present_flag= "
-            << absl::StrCat(
-                   channel_audio_layer_config.output_gain_is_present_flag);
-    VLOG(1) << "      recon_gain_is_present_flag= "
-            << absl::StrCat(
-                   channel_audio_layer_config.recon_gain_is_present_flag);
-    VLOG(1) << "      reserved= "
-            << absl::StrCat(channel_audio_layer_config.reserved_a);
-    VLOG(1) << "      substream_count= "
-            << absl::StrCat(channel_audio_layer_config.substream_count);
-    VLOG(1) << "      coupled_substream_count= "
-            << absl::StrCat(channel_audio_layer_config.coupled_substream_count);
+    ABSL_VLOG(1) << "      loudspeaker_layout= "
+                 << absl::StrCat(channel_audio_layer_config.loudspeaker_layout);
+    ABSL_VLOG(1) << "      output_gain_is_present_flag= "
+                 << absl::StrCat(
+                        channel_audio_layer_config.output_gain_is_present_flag);
+    ABSL_VLOG(1) << "      recon_gain_is_present_flag= "
+                 << absl::StrCat(
+                        channel_audio_layer_config.recon_gain_is_present_flag);
+    ABSL_VLOG(1) << "      reserved= "
+                 << absl::StrCat(channel_audio_layer_config.reserved_a);
+    ABSL_VLOG(1) << "      substream_count= "
+                 << absl::StrCat(channel_audio_layer_config.substream_count);
+    ABSL_VLOG(1) << "      coupled_substream_count= "
+                 << absl::StrCat(
+                        channel_audio_layer_config.coupled_substream_count);
     if (channel_audio_layer_config.output_gain_is_present_flag == 1) {
-      VLOG(1) << "      output_gain_flag= "
-              << absl::StrCat(channel_audio_layer_config.output_gain_flag);
-      VLOG(1) << "      reserved= "
-              << absl::StrCat(channel_audio_layer_config.reserved_b);
-      VLOG(1) << "      output_gain= "
-              << channel_audio_layer_config.output_gain;
+      ABSL_VLOG(1) << "      output_gain_flag= "
+                   << absl::StrCat(channel_audio_layer_config.output_gain_flag);
+      ABSL_VLOG(1) << "      reserved= "
+                   << absl::StrCat(channel_audio_layer_config.reserved_b);
+      ABSL_VLOG(1) << "      output_gain= "
+                   << channel_audio_layer_config.output_gain;
     }
     if (channel_audio_layer_config.expanded_loudspeaker_layout.has_value()) {
-      VLOG(1) << "      expanded_loudspeaker_layout= "
-              << absl::StrCat(
-                     *channel_audio_layer_config.expanded_loudspeaker_layout);
+      ABSL_VLOG(1) << "      expanded_loudspeaker_layout= "
+                   << absl::StrCat(*channel_audio_layer_config
+                                        .expanded_loudspeaker_layout);
     } else {
-      VLOG(1) << "      expanded_loudspeaker_layout= Not present.";
+      ABSL_VLOG(1) << "      expanded_loudspeaker_layout= Not present.";
     }
   }
 }
 
+absl::Status ValidateNumParameters(size_t num_parameters) {
+  // Section 3.6 of IAMF specification says that: "Parsers SHALL support any
+  // value of num_parameters."
+  //
+  // In practice IAMF defines only a small number of parameter types,
+  // forbids them from being duplicate, and only permits certain types in Audio
+  // Elements.
+  //
+  // To reduce the risk of allocating massive amounts of memory, we limit the
+  // number of parameters.
+  if (num_parameters > AudioElementObu::kMaxNumParameters) {
+    return absl::UnimplementedError(absl::StrCat(
+        "Number of parameters exceeds the maximum supported by the decoder: ",
+        num_parameters));
+  }
+  return absl::OkStatus();
+}
+
 void LogAmbisonicsMonoConfig(const AmbisonicsMonoConfig& mono_config) {
-  VLOG(1) << "  ambisonics_mono_config:";
-  VLOG(1) << "    output_channel_count:"
-          << absl::StrCat(mono_config.output_channel_count);
-  VLOG(1) << "    substream_count:"
-          << absl::StrCat(mono_config.substream_count);
+  ABSL_VLOG(1) << "  ambisonics_mono_config:";
+  ABSL_VLOG(1) << "    output_channel_count:"
+               << absl::StrCat(mono_config.output_channel_count);
+  ABSL_VLOG(1) << "    substream_count:"
+               << absl::StrCat(mono_config.substream_count);
   std::stringstream channel_mapping_stream;
   for (int c = 0; c < mono_config.output_channel_count; c++) {
     channel_mapping_stream << absl::StrCat(mono_config.channel_mapping[c])
                            << ", ";
   }
-  VLOG(1) << "    channel_mapping: [ " << channel_mapping_stream.str() << "]";
+  ABSL_VLOG(1) << "    channel_mapping: [ " << channel_mapping_stream.str()
+               << "]";
 }
 
 void LogAmbisonicsProjectionConfig(
     const AmbisonicsProjectionConfig& projection_config) {
-  VLOG(1) << "  ambisonics_projection_config:";
-  VLOG(1) << "    output_channel_count:"
-          << absl::StrCat(projection_config.output_channel_count);
-  VLOG(1) << "    substream_count:"
-          << absl::StrCat(projection_config.substream_count);
-  VLOG(1) << "    coupled_substream_count:"
-          << absl::StrCat(projection_config.coupled_substream_count);
+  ABSL_VLOG(1) << "  ambisonics_projection_config:";
+  ABSL_VLOG(1) << "    output_channel_count:"
+               << absl::StrCat(projection_config.output_channel_count);
+  ABSL_VLOG(1) << "    substream_count:"
+               << absl::StrCat(projection_config.substream_count);
+  ABSL_VLOG(1) << "    coupled_substream_count:"
+               << absl::StrCat(projection_config.coupled_substream_count);
   std::string demixing_matrix_string;
   for (int i = 0; i < (projection_config.substream_count +
                        projection_config.coupled_substream_count) *
@@ -123,13 +144,13 @@ void LogAmbisonicsProjectionConfig(
     absl::StrAppend(&demixing_matrix_string,
                     projection_config.demixing_matrix[i], ",");
   }
-  VLOG(1) << "    demixing_matrix: [ " << demixing_matrix_string << "]";
+  ABSL_VLOG(1) << "    demixing_matrix: [ " << demixing_matrix_string << "]";
 }
 
 void LogSceneBased(const AmbisonicsConfig& ambisonics_config) {
-  VLOG(1) << "  ambisonics_config:";
-  VLOG(1) << "    ambisonics_mode= "
-          << absl::StrCat(ambisonics_config.ambisonics_mode);
+  ABSL_VLOG(1) << "  ambisonics_config:";
+  ABSL_VLOG(1) << "    ambisonics_mode= "
+               << absl::StrCat(ambisonics_config.ambisonics_mode);
   if (ambisonics_config.ambisonics_mode ==
       AmbisonicsConfig::kAmbisonicsModeMono) {
     LogAmbisonicsMonoConfig(
@@ -202,7 +223,7 @@ absl::Status ValidateAndWriteScalableChannelLayout(
   RETURN_IF_NOT_OK(layout.Validate(num_substreams));
 
   // Write the main portion of the `ScalableChannelLayoutConfig`.
-  RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(layout.num_layers, 3));
+  RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(layout.GetNumLayers(), 3));
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(layout.reserved, 5));
 
   // Loop to write the `channel_audio_layer_configs` array.
@@ -218,10 +239,12 @@ absl::Status ReadAndValidateScalableChannelLayout(
     ScalableChannelLayoutConfig& layout, const DecodedUleb128 num_substreams,
     ReadBitBuffer& rb) {
   // Read the main portion of the `ScalableChannelLayoutConfig`.
-  RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(3, layout.num_layers));
+  uint8_t num_layers;
+  RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(3, num_layers));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(5, layout.reserved));
 
-  for (int i = 0; i < layout.num_layers; ++i) {
+  layout.channel_audio_layer_configs.reserve(num_layers);
+  for (int i = 0; i < num_layers; ++i) {
     ChannelAudioLayerConfig layer_config;
     RETURN_IF_NOT_OK(layer_config.Read(rb));
     layout.channel_audio_layer_configs.push_back(layer_config);
@@ -395,13 +418,13 @@ absl::Status AudioElementParam::ReadAndValidate(uint32_t audio_element_id,
 
 absl::Status ChannelAudioLayerConfig::Write(WriteBitBuffer& wb) const {
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(loudspeaker_layout, 4));
-  RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(output_gain_is_present_flag, 1));
-  RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(recon_gain_is_present_flag, 1));
+  RETURN_IF_NOT_OK(wb.WriteBoolean(output_gain_is_present_flag));
+  RETURN_IF_NOT_OK(wb.WriteBoolean(recon_gain_is_present_flag));
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(reserved_a, 2));
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(substream_count, 8));
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(coupled_substream_count, 8));
 
-  if (output_gain_is_present_flag == 1) {
+  if (output_gain_is_present_flag) {
     RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(output_gain_flag, 6));
     RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(reserved_b, 2));
     RETURN_IF_NOT_OK(wb.WriteSigned16(output_gain));
@@ -421,13 +444,13 @@ absl::Status ChannelAudioLayerConfig::Read(ReadBitBuffer& rb) {
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(4, loudspeaker_layout_uint8));
   loudspeaker_layout = static_cast<ChannelAudioLayerConfig::LoudspeakerLayout>(
       loudspeaker_layout_uint8);
-  RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(1, output_gain_is_present_flag));
-  RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(1, recon_gain_is_present_flag));
+  RETURN_IF_NOT_OK(rb.ReadBoolean(output_gain_is_present_flag));
+  RETURN_IF_NOT_OK(rb.ReadBoolean(recon_gain_is_present_flag));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(2, reserved_a));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, substream_count));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, coupled_substream_count));
 
-  if (output_gain_is_present_flag == 1) {
+  if (output_gain_is_present_flag) {
     RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(6, output_gain_flag));
     RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(2, reserved_b));
     RETURN_IF_NOT_OK(rb.ReadSigned16(output_gain));
@@ -447,12 +470,10 @@ absl::Status ChannelAudioLayerConfig::Read(ReadBitBuffer& rb) {
 
 absl::Status ScalableChannelLayoutConfig::Validate(
     DecodedUleb128 num_substreams_in_audio_element) const {
-  if (num_layers == 0 || num_layers > 6) {
+  if (GetNumLayers() == 0 || GetNumLayers() > 6) {
     return absl::InvalidArgumentError(
-        absl::StrCat("Expected `num_layers` in [1, 6]; got ", num_layers));
+        absl::StrCat("Expected `num_layers` in [1, 6]; got ", GetNumLayers()));
   }
-  RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
-      "channel_audio_layer_configs", channel_audio_layer_configs, num_layers));
 
   // Determine whether any binaural layouts are found and the total number of
   // substreams.
@@ -474,7 +495,7 @@ absl::Status ScalableChannelLayoutConfig::Validate(
         "the `num_substreams` in the OBU.");
   }
 
-  if (has_binaural_layout && num_layers != 1) {
+  if (has_binaural_layout && GetNumLayers() != 1) {
     return absl::InvalidArgumentError(
         "There must be exactly 1 layer if there is a binaural layout.");
   }
@@ -625,8 +646,6 @@ absl::Status AudioElementObu::InitializeScalableChannelLayout(
 
   ScalableChannelLayoutConfig config;
   RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
-      "ScalableChannelLayoutConfig.num_layers", num_layers, config.num_layers));
-  RETURN_IF_NOT_OK(StaticCastIfInRange<uint32_t, uint8_t>(
       "ScalableChannelLayoutConfig.reserved", reserved, config.reserved));
   config.channel_audio_layer_configs.resize(num_layers);
   config_ = config;
@@ -694,26 +713,24 @@ absl::Status AudioElementObu::InitializeAmbisonicsProjection(
   return absl::OkStatus();
 }
 
-void AudioElementObu::InitializeExtensionConfig(
-    const DecodedUleb128 audio_element_config_size) {
-  config_ =
-      ExtensionConfig{.audio_element_config_size = audio_element_config_size};
+void AudioElementObu::InitializeExtensionConfig() {
+  config_ = ExtensionConfig{};
 }
 
 void AudioElementObu::PrintObu() const {
-  VLOG(1) << "Audio Element OBU:";
-  VLOG(1) << "  audio_element_id= " << audio_element_id_;
-  VLOG(1) << "  audio_element_type= " << absl::StrCat(audio_element_type_);
-  VLOG(1) << "  reserved= " << absl::StrCat(reserved_);
-  VLOG(1) << "  codec_config_id= " << codec_config_id_;
-  VLOG(1) << "  num_substreams= " << GetNumSubstreams();
+  ABSL_VLOG(1) << "Audio Element OBU:";
+  ABSL_VLOG(1) << "  audio_element_id= " << audio_element_id_;
+  ABSL_VLOG(1) << "  audio_element_type= " << absl::StrCat(audio_element_type_);
+  ABSL_VLOG(1) << "  reserved= " << absl::StrCat(reserved_);
+  ABSL_VLOG(1) << "  codec_config_id= " << codec_config_id_;
+  ABSL_VLOG(1) << "  num_substreams= " << GetNumSubstreams();
   for (int i = 0; i < GetNumSubstreams(); ++i) {
     const auto& substream_id = audio_substream_ids_[i];
-    VLOG(1) << "  audio_substream_ids[" << i << "]= " << substream_id;
+    ABSL_VLOG(1) << "  audio_substream_ids[" << i << "]= " << substream_id;
   }
-  VLOG(1) << "  num_parameters= " << GetNumParameters();
+  ABSL_VLOG(1) << "  num_parameters= " << GetNumParameters();
   for (int i = 0; i < GetNumParameters(); ++i) {
-    VLOG(1) << "  params[" << i << "]";
+    ABSL_VLOG(1) << "  params[" << i << "]";
     std::visit([](const auto& param_definition) { param_definition.Print(); },
                audio_element_params_[i].param_definition);
   }
@@ -739,6 +756,7 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
     RETURN_IF_NOT_OK(wb.WriteUleb128(audio_substream_id));
   }
 
+  RETURN_IF_NOT_OK(ValidateNumParameters(GetNumParameters()));
   RETURN_IF_NOT_OK(wb.WriteUleb128(GetNumParameters()));
 
   // Loop to write the parameter portion of the obu.
@@ -759,11 +777,7 @@ absl::Status AudioElementObu::ValidateAndWritePayload(
     default: {
       const auto& extension_config = std::get<ExtensionConfig>(config_);
       RETURN_IF_NOT_OK(
-          wb.WriteUleb128(extension_config.audio_element_config_size));
-      RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
-          "audio_element_config_bytes",
-          extension_config.audio_element_config_bytes,
-          extension_config.audio_element_config_size));
+          wb.WriteUleb128(extension_config.audio_element_config_bytes.size()));
       RETURN_IF_NOT_OK(wb.WriteUint8Span(
           absl::MakeConstSpan(extension_config.audio_element_config_bytes)));
 
@@ -794,6 +808,7 @@ absl::Status AudioElementObu::ReadAndValidatePayloadDerived(
 
   DecodedUleb128 num_parameters;
   RETURN_IF_NOT_OK(rb.ReadULeb128(num_parameters));
+  RETURN_IF_NOT_OK(ValidateNumParameters(num_parameters));
 
   // Loop to read the parameter portion of the obu.
   audio_element_params_.reserve(num_parameters);
@@ -817,18 +832,13 @@ absl::Status AudioElementObu::ReadAndValidatePayloadDerived(
           std::get<AmbisonicsConfig>(config_), GetNumSubstreams(), rb);
     default: {
       ExtensionConfig extension_config;
-      RETURN_IF_NOT_OK(
-          rb.ReadULeb128(extension_config.audio_element_config_size));
-      for (int i = 0; i < extension_config.audio_element_config_size; ++i) {
+      DecodedUleb128 audio_element_config_size;
+      RETURN_IF_NOT_OK(rb.ReadULeb128(audio_element_config_size));
+      for (int i = 0; i < audio_element_config_size; ++i) {
         uint8_t config_bytes;
         RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, config_bytes));
         extension_config.audio_element_config_bytes.push_back(config_bytes);
       }
-
-      RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
-          "audio_element_config_bytes",
-          extension_config.audio_element_config_bytes,
-          extension_config.audio_element_config_size));
 
       return absl::OkStatus();
     }
