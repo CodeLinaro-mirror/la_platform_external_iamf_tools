@@ -11,22 +11,19 @@
  */
 #include "iamf/cli/renderer/loudspeakers_renderer.h"
 
-#include <cstddef>
 #include <cstdint>
-#include <iomanip>
-#include <sstream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "iamf/cli/channel_label.h"
 #include "iamf/cli/renderer/precomputed_gains.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/map_utils.h"
@@ -39,10 +36,13 @@ namespace iamf_tools {
 
 namespace {
 
-absl::Status ComputeGains(absl::string_view input_layout_string,
-                          absl::string_view output_layout_string,
-                          const DownMixingParams& down_mixing_params,
-                          std::vector<std::vector<double>>& gains) {
+// TODO(b/382197581): Reduce the number of allocations, this function allocates
+//                    a new vector on every call. Callsites never cache it and
+//                    will call every frame.
+std::optional<std::vector<std::vector<double>>> ComputeGains(
+    absl::string_view input_layout_string,
+    absl::string_view output_layout_string,
+    const DownMixingParams& down_mixing_params) {
   const auto alpha = down_mixing_params.alpha;
   const auto beta = down_mixing_params.beta;
   const auto gamma = down_mixing_params.gamma;
@@ -50,112 +50,73 @@ absl::Status ComputeGains(absl::string_view input_layout_string,
   const auto w = down_mixing_params.w;
   // TODO(b/292174366): Strictly follow IAMF spec logic of when to use demixers
   //                    vs. libear renderer.
-  LOG_FIRST_N(INFO, 5)
+  ABSL_LOG_FIRST_N(INFO, 5)
       << "Rendering  may be buggy or not follow the spec "
          "recommendations. Computing gains based on demixing params: "
       << input_layout_string << " --> " << output_layout_string;
   if (input_layout_string == "4+7+0" && output_layout_string == "3.1.2") {
     // Values checked; fixed.
-    gains = {{1, 0, 0, 0, 0, 0},
-             {0, 1, 0, 0, 0, 0},
-             {0, 0, 1, 0, 0, 0},
-             {0, 0, 0, 1, 0, 0},
-             // Lss7
-             {alpha * delta, 0, 0, 0, alpha * w * delta, 0},
-             // Rss7
-             {0, alpha * delta, 0, 0, 0, alpha * w * delta},
-             {beta * delta, 0, 0, 0, beta * w * delta, 0},
-             {0, beta * delta, 0, 0, 0, beta * w * delta},
-             {0, 0, 0, 0, 1, 0},
-             {0, 0, 0, 0, 0, 1},
-             {0, 0, 0, 0, gamma, 0},
-             {0, 0, 0, 0, 0, gamma}};
+    return std::vector<std::vector<double>>{
+        {1, 0, 0, 0, 0, 0},
+        {0, 1, 0, 0, 0, 0},
+        {0, 0, 1, 0, 0, 0},
+        {0, 0, 0, 1, 0, 0},
+        // Lss7
+        {alpha * delta, 0, 0, 0, alpha * w * delta, 0},
+        // Rss7
+        {0, alpha * delta, 0, 0, 0, alpha * w * delta},
+        {beta * delta, 0, 0, 0, beta * w * delta, 0},
+        {0, beta * delta, 0, 0, 0, beta * w * delta},
+        {0, 0, 0, 0, 1, 0},
+        {0, 0, 0, 0, 0, 1},
+        {0, 0, 0, 0, gamma, 0},
+        {0, 0, 0, 0, 0, gamma}};
   } else if (input_layout_string == "4+7+0" &&
              output_layout_string == "7.1.2") {
-    // Just drop the last two channels.
-    gains = {
-        {1, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 1, 0, 0, 0, 0, 0, 0, 0, 0},
-        {0, 0, 1, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 1, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 1, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0, 0, 1, 0, 0, 0}, {0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
-        {0, 0, 0, 0, 0, 0, 0, 0, 1, 0}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+    // clang-format off
+    return std::vector<std::vector<double>>{
+    /*       L, R, C, LFE, Lss, Rss, Lrs, Rrs,   Ltf,   Rtf */
+    /*  L*/ {1, 0, 0,   0,   0,   0,   0,   0,     0,     0},
+    /*  R*/ {0, 1, 0,   0,   0,   0,   0,   0,     0,     0},
+    /*  C*/ {0, 0, 1,   0,   0,   0,   0,   0,     0,     0},
+    /*LFE*/ {0, 0, 0,   1,   0,   0,   0,   0,     0,     0},
+    /*Lss*/ {0, 0, 0,   0,   1,   0,   0,   0,     0,     0},
+    /*Rss*/ {0, 0, 0,   0,   0,   1,   0,   0,     0,     0},
+    /*Lrs*/ {0, 0, 0,   0,   0,   0,   1,   0,     0,     0},
+    /*Rrs*/ {0, 0, 0,   0,   0,   0,   0,   1,     0,     0},
+    /*Ltf*/ {0, 0, 0,   0,   0,   0,   0,   0,     1,     0},
+    /*Rtf*/ {0, 0, 0,   0,   0,   0,   0,   0,     0,     1},
+    /*Ltb*/ {0, 0, 0,   0,   0,   0,   0,   0, gamma,     0},
+    /*Rtb*/ {0, 0, 0,   0,   0,   0,   0,   0,     0, gamma},
     };
+    // clang-format on
   } else {
-    return absl::UnknownError(absl::StrCat(
-        "The encoder did not implement matrices for ", input_layout_string,
-        " to ", output_layout_string, " yet."));
+    // Ok, gain matrices are not defined or implemented. But it is reasonable
+    // for the caller to try to use the precomputed gains.
+    ABSL_LOG(WARNING) << "The encoder did not implement matrices for "
+                      << input_layout_string << " to " << output_layout_string
+                      << " yet.";
+
+    return std::nullopt;
   }
-  return absl::OkStatus();
 }
 
-absl::Status LayoutStringHasHeightChannels(absl::string_view layout_string,
-                                           bool& result) {
+bool LayoutStringHasHeightChannels(absl::string_view layout_string) {
   // TODO(b/292174366): Fill in all possible layouts or determine this in a
   //                    better way.
   if (layout_string == "4+7+0" || layout_string == "7.1.2" ||
       layout_string == "4+5+0" || layout_string == "2+5+0" ||
       layout_string == "3.1.2") {
-    result = true;
-    return absl::OkStatus();
+    return true;
   } else if (layout_string == "0+7+0" || layout_string == "0+5+0" ||
              layout_string == "0+2+0" || layout_string == "0+1+0") {
-    result = false;
-    return absl::OkStatus();
+    return false;
+
   } else {
-    return absl::UnknownError(
-        absl::StrCat("Unknown if ", layout_string, " has height channels"));
+    ABSL_LOG(WARNING) << "Unknown if " << layout_string
+                      << " has height channels.";
+    return false;
   }
-}
-
-absl::Status ComputeChannelLayoutToLoudspeakersGains(
-    const std::vector<ChannelLabel::Label>& channel_labels,
-    const DownMixingParams& down_mixing_params,
-    absl::string_view input_layout_string,
-    absl::string_view output_layout_string,
-    std::vector<std::vector<double>>& gains) {
-  gains.clear();
-  if (!down_mixing_params.in_bitstream) {
-    // There is no DownMixingParamDefinition, which is fine. Do not fill the
-    // gains and let the caller use default precomputed gains.
-    return absl::OkStatus();
-  }
-
-  // TODO(b/292174366): Remove hacks. Updates logic of when to use demixers vs
-  //                    libear renderer.
-  bool input_layout_has_height_channels;
-  RETURN_IF_NOT_OK(LayoutStringHasHeightChannels(
-      input_layout_string, input_layout_has_height_channels));
-  bool playback_has_height_channels;
-  RETURN_IF_NOT_OK(LayoutStringHasHeightChannels(output_layout_string,
-                                                 playback_has_height_channels));
-  if (!playback_has_height_channels && input_layout_has_height_channels) {
-    return absl::OkStatus();
-  }
-
-  // The bitstream tells use how to compute the gains. Use those.
-  RETURN_IF_NOT_OK(ComputeGains(input_layout_string, output_layout_string,
-                                down_mixing_params, gains));
-
-  // Examine the computed gains.
-  LOG_FIRST_N(INFO, 5) << "Computed gains:";
-  auto fmt = std::setw(7);
-  std::stringstream ss;
-  for (const auto& label : channel_labels) {
-    ss << fmt << absl::StrCat(label);
-  }
-  LOG_FIRST_N(INFO, 5) << ss.str();
-  for (size_t i = 0; i < gains.front().size(); i++) {
-    ss.str({});
-    ss.clear();
-    ss << std::setprecision(3);
-    for (size_t j = 0; j < gains.size(); j++) {
-      ss << fmt << gains.at(j).at(i);
-    }
-    LOG_FIRST_N(INFO, 5) << ss.str();
-  }
-
-  return absl::OkStatus();
 }
 
 double Q15ToSignedDouble(const int16_t input) {
@@ -166,7 +127,7 @@ void ProjectSamplesToRender(
     absl::Span<const absl::Span<const InternalSampleType>> input_samples,
     const int16_t* demixing_matrix, const int num_output_channels,
     std::vector<std::vector<InternalSampleType>>& projected_samples) {
-  CHECK_NE(demixing_matrix, nullptr);
+  ABSL_CHECK_NE(demixing_matrix, nullptr);
   const auto num_in_channels = input_samples.size();
   const auto num_ticks = input_samples.empty() ? 0 : input_samples[0].size();
   projected_samples.resize(num_output_channels);
@@ -250,25 +211,36 @@ absl::StatusOr<std::vector<std::vector<double>>> LookupPrecomputedGains(
                      absl::StrCat(input_key_debug_message, " and output_key"));
 }
 
+std::optional<std::vector<std::vector<double>>> MaybeComputeDynamicGains(
+    const DownMixingParams& down_mixing_params,
+    absl::string_view input_layout_string,
+    absl::string_view output_layout_string) {
+  if (!down_mixing_params.in_bitstream) {
+    // There are no dynamic gains in the bitstream, use the precomputed gains.
+    return std::nullopt;
+  }
+
+  // TODO(b/292174366): Remove hacks. Updates logic of when to use demixers vs
+  //                    libear renderer.
+  const bool input_layout_has_height_channels =
+      LayoutStringHasHeightChannels(input_layout_string);
+  const bool playback_has_height_channels =
+      LayoutStringHasHeightChannels(output_layout_string);
+  if (!playback_has_height_channels && input_layout_has_height_channels) {
+    // The spec says to use the precomputed gains.
+    return std::nullopt;
+  }
+
+  // The bitstream tells us how to compute the gains. Use those.
+  return ComputeGains(input_layout_string, output_layout_string,
+                      down_mixing_params);
+}
+
 absl::Status RenderChannelLayoutToLoudspeakers(
     absl::Span<const absl::Span<const InternalSampleType>> input_samples,
-    const DownMixingParams& down_mixing_params,
-    const std::vector<ChannelLabel::Label>& channel_labels,
-    absl::string_view input_key, absl::string_view output_key,
-    const std::vector<std::vector<double>>& precomputed_gains,
+    const std::vector<std::vector<double>>& gains,
     std::vector<std::vector<InternalSampleType>>& rendered_samples) {
-  // When the demixing parameters are in the bitstream, recompute for every
-  // frame and do not store the result in the map.
-  // TODO(b/292174366): Find a better solution and strictly follow the spec for
-  //                    which renderer to use.
-  std::vector<std::vector<double>> newly_computed_gains;
-  RETURN_IF_NOT_OK(ComputeChannelLayoutToLoudspeakersGains(
-      channel_labels, down_mixing_params, input_key, output_key,
-      newly_computed_gains));
-  const std::vector<std::vector<double>>& gains_to_use =
-      newly_computed_gains.empty() ? precomputed_gains : newly_computed_gains;
-
-  RenderSamplesUsingGains(input_samples, gains_to_use,
+  RenderSamplesUsingGains(input_samples, gains,
                           /*demixing_matrix=*/nullptr, rendered_samples);
   return absl::OkStatus();
 }

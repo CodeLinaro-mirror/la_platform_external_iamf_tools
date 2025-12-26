@@ -18,7 +18,6 @@
 #include <optional>
 #include <vector>
 
-#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
@@ -209,7 +208,7 @@ class MixGainParamDefinition : public ParamDefinition {
   friend bool operator==(const MixGainParamDefinition& lhs,
                          const MixGainParamDefinition& rhs) = default;
 
-  int16_t default_mix_gain_;
+  int16_t default_mix_gain_ = 0;
 };
 
 struct ChannelNumbers {
@@ -333,8 +332,9 @@ class ExtendedParamDefinition : public ParamDefinition {
   friend bool operator==(const ExtendedParamDefinition& lhs,
                          const ExtendedParamDefinition& rhs) = default;
 
-  // Size and vector of the bytes the OBU parser should ignore.
-  DecodedUleb128 param_definition_size_ = 0;
+  // `param_definition_size_` is inferred from  the size of
+  // `param_definition_bytes_`.
+  // Vector of the bytes the OBU parser should ignore.
   std::vector<uint8_t> param_definition_bytes_ = {};
 };
 

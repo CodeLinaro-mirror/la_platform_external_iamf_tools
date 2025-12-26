@@ -26,11 +26,12 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
-#include "absl/log/vlog_is_on.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
+#include "absl/log/absl_vlog_is_on.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -49,6 +50,7 @@
 #include "iamf/cli/proto/codec_config.pb.h"
 #include "iamf/cli/proto/test_vector_metadata.pb.h"
 #include "iamf/cli/proto_conversion/channel_label_utils.h"
+#include "iamf/cli/proto_conversion/codec_config_utils.h"
 #include "iamf/cli/substream_frames.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/obu/audio_frame.h"
@@ -74,11 +76,17 @@ absl::Status InitializeEncoder(
     case kCodecIdLpcm:
       encoder = std::make_unique<LpcmEncoder>(codec_config, num_channels);
       break;
-    case kCodecIdOpus:
-      encoder = std::make_unique<OpusEncoder>(
+    case kCodecIdOpus: {
+      auto opus_encoder_settings = CreateOpusEncoderSettings(
           codec_config_metadata.decoder_config_opus().opus_encoder_metadata(),
-          codec_config, num_channels, substream_id);
+          num_channels, substream_id);
+      if (!opus_encoder_settings.ok()) {
+        return opus_encoder_settings.status();
+      }
+      encoder = std::make_unique<OpusEncoder>(*opus_encoder_settings,
+                                              codec_config, num_channels);
       break;
+    }
     case kCodecIdAacLc:
       encoder = std::make_unique<AacEncoder>(
           codec_config_metadata.decoder_config_aac().aac_encoder_metadata(),
@@ -259,14 +267,15 @@ absl::Status DownMixSamples(const DecodedUleb128 audio_element_id,
                             DownMixingParams& down_mixing_params) {
   RETURN_IF_NOT_OK(parameters_manager.GetDownMixingParameters(
       audio_element_id, down_mixing_params));
-  if (VLOG_IS_ON(1)) {
-    LOG_FIRST_N(INFO, 10) << "Using alpha=" << down_mixing_params.alpha
-                          << " beta=" << down_mixing_params.beta
-                          << " gamma=" << down_mixing_params.gamma
-                          << " delta=" << down_mixing_params.delta
-                          << " w_idx_offset=" << down_mixing_params.w_idx_offset
-                          << " w_idx_used=" << down_mixing_params.w_idx_used
-                          << " w=" << down_mixing_params.w;
+  if (ABSL_VLOG_IS_ON(1)) {
+    ABSL_LOG_FIRST_N(INFO, 10)
+        << "Using alpha=" << down_mixing_params.alpha
+        << " beta=" << down_mixing_params.beta
+        << " gamma=" << down_mixing_params.gamma
+        << " delta=" << down_mixing_params.delta
+        << " w_idx_offset=" << down_mixing_params.w_idx_offset
+        << " w_idx_used=" << down_mixing_params.w_idx_used
+        << " w=" << down_mixing_params.w;
   }
 
   // Down-mix OBU-aligned samples from input channels to substreams. May
@@ -391,12 +400,6 @@ absl::Status MaybeEncodeFramesForAudioElement(
   // Get some common information about this stream.
   const size_t num_samples_per_frame =
       static_cast<size_t>(codec_config.GetNumSamplesPerFrame());
-  // TODO(b/310906409): Lossy codecs do not use PCM for internal
-  //                    representation of data. We may need to measure loudness
-  //                    at a different bit-depth than the input when AAC is
-  //                    updated to support higher bit-depths.
-  const int encoder_input_pcm_bit_depth =
-      static_cast<int>(codec_config.GetBitDepthToMeasureLoudness());
 
   const uint32_t encoder_input_sample_rate = codec_config.GetInputSampleRate();
   const uint32_t decoder_output_sample_rate =
@@ -456,11 +459,12 @@ absl::Status MaybeEncodeFramesForAudioElement(
       // Encode.
       if (frame_to_encode.front().size() < num_samples_per_frame) {
         // Wait until there is a whole frame of samples to encode.
-        LOG(INFO) << "Waiting for a complete frame;"
-                  << " current frame size= " << frame_to_encode.front().size();
+        ABSL_LOG(INFO) << "Waiting for a complete frame;"
+                       << " current frame size= "
+                       << frame_to_encode.front().size();
 
         // All frames corresponding to the same Audio Element should be skipped.
-        CHECK(!encoded_timestamp.has_value());
+        ABSL_CHECK(!encoded_timestamp.has_value());
         continue;
       }
 
@@ -480,7 +484,7 @@ absl::Status MaybeEncodeFramesForAudioElement(
       if (encoded_timestamp.has_value()) {
         // All frames corresponding to the same Audio Element should have
         // the same start timestamp.
-        CHECK_EQ(*encoded_timestamp, start_timestamp);
+        ABSL_CHECK_EQ(*encoded_timestamp, start_timestamp);
       }
 
       auto partial_audio_frame_with_data =
@@ -505,7 +509,7 @@ absl::Status MaybeEncodeFramesForAudioElement(
 
       RETURN_IF_NOT_OK(
           substream_id_to_encoder.at(substream_id)
-              ->EncodeAudioFrame(encoder_input_pcm_bit_depth, frame_to_encode,
+              ->EncodeAudioFrame(frame_to_encode,
                                  std::move(partial_audio_frame_with_data)));
       substream_data.frames_in_obu.PopFront();
       substream_data.frames_to_encode.PopFront();
@@ -596,8 +600,8 @@ absl::Status ValidateAndApplyUserTrimming(
     const bool is_last_frame,
     AudioFrameGenerator::TrimmingState& trimming_state,
     AudioFrameWithData& audio_frame) {
-  CHECK_NE(audio_frame.audio_element_with_data, nullptr);
-  CHECK_NE(audio_frame.audio_element_with_data->codec_config, nullptr);
+  ABSL_CHECK_NE(audio_frame.audio_element_with_data, nullptr);
+  ABSL_CHECK_NE(audio_frame.audio_element_with_data->codec_config, nullptr);
   const uint32_t num_samples_in_frame =
       audio_frame.audio_element_with_data->codec_config
           ->GetNumSamplesPerFrame();
@@ -719,12 +723,14 @@ absl::Status AudioFrameGenerator::Initialize() {
 
     // Validate that a `DemixingParamDefinition` is available if down-mixing
     // is needed.
-    const std::list<Demixer>* down_mixers = nullptr;
-    RETURN_IF_NOT_OK(
-        demixing_module_.GetDownMixers(audio_element_id, down_mixers));
+    absl::StatusOr<const std::list<Demixer>*> down_mixers =
+        demixing_module_.GetDownMixers(audio_element_id);
+    if (!down_mixers.ok()) {
+      return down_mixers.status();
+    }
     if (!parameters_manager_.DemixingParamDefinitionAvailable(
             audio_element_id) &&
-        !down_mixers->empty()) {
+        !(*down_mixers)->empty()) {
       return absl::InvalidArgumentError(
           "Must include `DemixingParamDefinition` in the Audio Element if "
           "down-mixers are required to produce audio substreams");
@@ -775,7 +781,7 @@ absl::Status AudioFrameGenerator::AddSamples(
     absl::Span<const InternalSampleType> samples) {
   absl::MutexLock lock(&mutex_);
   if (state_ != kTakingSamples) {
-    LOG_FIRST_N(WARNING, 3)
+    ABSL_LOG_FIRST_N(WARNING, 3)
         << "Calling `AddSamples()` after `Finalize()` has no effect.";
     return absl::OkStatus();
   }

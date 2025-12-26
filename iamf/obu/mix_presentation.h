@@ -43,8 +43,8 @@ struct RenderingConfig {
                          const RenderingConfig& rhs) = default;
   HeadphonesRenderingMode headphones_rendering_mode;  // 2 bits.
   uint8_t reserved;                                   // 6 bits.
-  DecodedUleb128 rendering_config_extension_size;
-  // Length `rendering_config_extension_size`.
+  // `rendering_config_extension_size` is inferred from the length of
+  // `rendering_config_extension_bytes`.
   std::vector<uint8_t> rendering_config_extension_bytes;
 };
 
@@ -101,8 +101,7 @@ struct LayoutExtension {
   friend bool operator==(const LayoutExtension& lhs,
                          const LayoutExtension& rhs) = default;
 
-  DecodedUleb128 info_type_size = 0;
-  // Length `info_type_size`.
+  // `info_type_size` is implicit based on the size of `info_type_bytes`
   std::vector<uint8_t> info_type_bytes;
 };
 

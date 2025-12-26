@@ -23,15 +23,14 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "iamf/cli/audio_element_with_data.h"
 #include "iamf/cli/audio_frame_with_data.h"
+#include "iamf/cli/descriptor_obu_parser.h"
 #include "iamf/cli/iamf_components.h"
 #include "iamf/cli/loudness_calculator_factory_base.h"
 #include "iamf/cli/obu_processor.h"
@@ -53,7 +52,6 @@
 #include "iamf/include/iamf_tools/iamf_tools_encoder_api_types.h"
 #include "iamf/obu/arbitrary_obu.h"
 #include "iamf/obu/audio_frame.h"
-#include "iamf/obu/codec_config.h"
 #include "iamf/obu/ia_sequence_header.h"
 #include "iamf/obu/mix_presentation.h"
 #include "iamf/obu/obu_base.h"
@@ -69,12 +67,15 @@ using ::absl::MakeConstSpan;
 using ::absl_testing::IsOk;
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
+using ::iamf_tools_cli_proto::ChannelLabelMessage;
 using ::iamf_tools_cli_proto::UserMetadata;
 using ::testing::_;
 using ::testing::Contains;
 using ::testing::Not;
 using ::testing::NotNull;
+using ::testing::Pointee;
 using ::testing::Return;
+using ::testing::SizeIs;
 
 constexpr DecodedUleb128 kCodecConfigId = 200;
 constexpr DecodedUleb128 kAudioElementId = 300;
@@ -94,9 +95,9 @@ constexpr auto kExpectedPrimaryProfile = ProfileVersion::kIamfSimpleProfile;
 const auto kOmitOutputWavFiles =
     RenderingMixPresentationFinalizer::ProduceNoSampleProcessors;
 
-constexpr std::array<InternalSampleType, 8> kZeroSamples = {0.0, 0.0, 0.0, 0.0,
-                                                            0.0, 0.0, 0.0, 0.0};
-// A convenient view when multiple `kZeroSamples` are used in a coupled
+constexpr std::array<InternalSampleType, 8> kEightZeroSamples = {
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+// A convenient view when multiple `kEightZeroSamples` are used in a coupled
 // substream.
 constexpr std::array<uint8_t, 32> kEightCoupled16BitPcmSamples = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -151,7 +152,6 @@ void AddMixPresentation(UserMetadata& user_metadata) {
   ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(
       R"pb(
         mix_presentation_id: 42
-        count_label: 0
         sub_mixes {
           audio_elements {
             audio_element_id: 300
@@ -228,8 +228,9 @@ void AddAudioFrame(UserMetadata& user_metadata) {
         samples_to_trim_at_end_includes_padding: false
         samples_to_trim_at_start_includes_codec_delay: false
         audio_element_id: 300
-        channel_ids: [ 0, 1 ]
-        channel_labels: [ "L2", "R2" ]
+        channel_metadatas:
+        [ { channel_id: 0 channel_label: CHANNEL_LABEL_L_2 }
+          , { channel_id: 1 channel_label: CHANNEL_LABEL_R_2 }]
       )pb",
       user_metadata.add_audio_frame_metadata()));
 }
@@ -260,10 +261,18 @@ void AddParameterBlockAtTimestamp(InternalTimestamp start_timestamp,
 api::IamfTemporalUnitData MakeStereoTemporalUnitData(
     absl::Span<const double> samples) {
   using enum ::iamf_tools_cli_proto::ChannelLabel;
+  ChannelLabelMessage left_label;
+  left_label.set_channel_label(CHANNEL_LABEL_L_2);
+  std::string left_label_serialized;
+  left_label.SerializeToString(&left_label_serialized);
+  ChannelLabelMessage right_label;
+  right_label.set_channel_label(CHANNEL_LABEL_R_2);
+  std::string right_label_serialized;
+  right_label.SerializeToString(&right_label_serialized);
   return api::IamfTemporalUnitData{
-      .audio_element_id_to_data = {
-          {kAudioElementId,
-           {{CHANNEL_LABEL_L_2, samples}, {CHANNEL_LABEL_R_2, samples}}}}};
+      .audio_element_id_to_data = {{kAudioElementId,
+                                    {{left_label_serialized, samples},
+                                     {right_label_serialized, samples}}}}};
 }
 
 std::string GetFirstSubmixFirstLayoutExpectedPath(
@@ -371,8 +380,8 @@ TEST_F(IamfEncoderTest, CreateGeneratesDescriptorObus) {
   EXPECT_FALSE(get_descriptors_obus_are_finalized);
   EXPECT_EQ(obu_processor->ia_sequence_header_.GetPrimaryProfile(),
             kExpectedPrimaryProfile);
-  EXPECT_EQ(obu_processor->codec_config_obus_.size(), 1);
-  EXPECT_EQ(obu_processor->audio_elements_.size(), 1);
+  EXPECT_THAT(obu_processor->codec_config_obus_, Pointee(SizeIs(1)));
+  EXPECT_THAT(obu_processor->audio_elements_, Pointee(SizeIs(1)));
   EXPECT_EQ(obu_processor->mix_presentations_.size(), 1);
   // Also, check the equivalent in the deprecated getters.
   EXPECT_EQ(iamf_encoder.GetAudioElements().size(), 1);
@@ -423,7 +432,7 @@ TEST_F(IamfEncoderTest,
   auto iamf_encoder = CreateExpectOk();
   // Push the first temporal unit.
   EXPECT_THAT(iamf_encoder.Encode(
-                  MakeStereoTemporalUnitData(MakeConstSpan(kZeroSamples))),
+                  MakeStereoTemporalUnitData(MakeConstSpan(kEightZeroSamples))),
               IsOk());
   const AudioFrameObu kExpectedAudioFrame(
       ObuHeader(), kStereoSubstreamId,
@@ -491,10 +500,14 @@ TEST_F(IamfEncoderTest, GenerateDataObusTwoIterationsSucceeds) {
   bool continue_processing = true;
   int iteration = 0;
   auto temporal_unit_data =
-      MakeStereoTemporalUnitData(MakeConstSpan(kZeroSamples));
+      MakeStereoTemporalUnitData(MakeConstSpan(kEightZeroSamples));
   while (iamf_encoder.GeneratingTemporalUnits()) {
+    std::string serialized_metadata;
+    ASSERT_TRUE(
+        user_metadata_.parameter_block_metadata(iteration).SerializeToString(
+            &serialized_metadata));
     temporal_unit_data.parameter_block_id_to_metadata[kParameterBlockId] =
-        user_metadata_.parameter_block_metadata(iteration);
+        serialized_metadata;
     EXPECT_THAT(iamf_encoder.Encode(temporal_unit_data), IsOk());
 
     // Signal stopping adding samples at the second iteration.
@@ -543,30 +556,30 @@ TEST_F(IamfEncoderTest, SafeToUseAfterMove) {
   // Use many parts of the API, to make sure the move did not break anything.
   EXPECT_TRUE(iamf_encoder.GeneratingTemporalUnits());
   auto temporal_unit_data =
-      MakeStereoTemporalUnitData(MakeConstSpan(kZeroSamples));
+      MakeStereoTemporalUnitData(MakeConstSpan(kEightZeroSamples));
+  std::string serialized_metadata;
+  ASSERT_TRUE(user_metadata_.parameter_block_metadata(0).SerializeToString(
+      &serialized_metadata));
   temporal_unit_data.parameter_block_id_to_metadata.emplace(
-      kParameterBlockId, user_metadata_.parameter_block_metadata(0));
+      kParameterBlockId, serialized_metadata);
   EXPECT_THAT(iamf_encoder.Encode(temporal_unit_data), IsOk());
   EXPECT_THAT(iamf_encoder.FinalizeEncode(), IsOk());
   EXPECT_THAT(iamf_encoder.OutputTemporalUnit(output_obus), IsOk());
   EXPECT_THAT(rb->PushBytes(MakeConstSpan(output_obus)), IsOk());
 
   // Collect the full IA Sequence.
-  IASequenceHeaderObu ia_sequence_header;
-  absl::flat_hash_map<DecodedUleb128, CodecConfigObu> codec_config_obus;
-  absl::flat_hash_map<DecodedUleb128, AudioElementWithData> audio_elements;
-  std::list<MixPresentationObu> mix_presentations;
+  DescriptorObuParser::ParsedDescriptorObus parsed_obus;
   std::list<AudioFrameWithData> audio_frames;
   std::list<ParameterBlockWithData> parameter_blocks;
-  EXPECT_THAT(CollectObusFromIaSequence(
-                  *rb, ia_sequence_header, codec_config_obus, audio_elements,
-                  mix_presentations, audio_frames, parameter_blocks),
+  EXPECT_THAT(CollectObusFromIaSequence(*rb, parsed_obus, audio_frames,
+                                        parameter_blocks),
               IsOk());
   // Check that the OBUs look reasonable.
-  EXPECT_EQ(ia_sequence_header.GetPrimaryProfile(), kExpectedPrimaryProfile);
-  EXPECT_EQ(codec_config_obus.size(), 1);
-  EXPECT_EQ(audio_elements.size(), 1);
-  EXPECT_EQ(mix_presentations.size(), 1);
+  EXPECT_EQ(parsed_obus.ia_sequence_header.GetPrimaryProfile(),
+            kExpectedPrimaryProfile);
+  EXPECT_THAT(parsed_obus.codec_config_obus, Pointee(SizeIs(1)));
+  EXPECT_THAT(parsed_obus.audio_elements, Pointee(SizeIs(1)));
+  EXPECT_EQ(parsed_obus.mix_presentation_obus.size(), 1);
   EXPECT_EQ(audio_frames.size(), 1);
   EXPECT_EQ(parameter_blocks.size(), 1);
 }
@@ -626,7 +639,7 @@ GetLoudnessCalculatorWhichReturnsIntegratedLoudness(
   ON_CALL(*mock_loudness_calculator, QueryLoudness())
       .WillByDefault(Return(kArbitraryLoudnessInfo));
   EXPECT_CALL(*mock_loudness_calculator_factory,
-              CreateLoudnessCalculator(_, _, _, _))
+              CreateLoudnessCalculator(_, _, _))
       .WillOnce(Return(std::move(mock_loudness_calculator)));
   return mock_loudness_calculator_factory;
 }
@@ -642,7 +655,7 @@ void ExpectFirstLayoutIntegratedLoudnessIs(
             expected_integrated_loudness);
 }
 
-TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterAlignedOrTrivialIaSequence) {
+TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterTrivialIaSequence) {
   SetupDescriptorObus();
   renderer_factory_ = std::make_unique<RendererFactory>();
   constexpr int16_t kIntegratedLoudness = 999;
@@ -662,6 +675,35 @@ TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterAlignedOrTrivialIaSequence) {
   EXPECT_TRUE(obus_are_finalized);
 }
 
+TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterAlignedIaSequence) {
+  SetupDescriptorObus();
+  AddAudioFrame(user_metadata_);
+  renderer_factory_ = std::make_unique<RendererFactory>();
+  constexpr int16_t kIntegratedLoudness = 999;
+  loudness_calculator_factory_ =
+      GetLoudnessCalculatorWhichReturnsIntegratedLoudness(kIntegratedLoudness);
+  auto iamf_encoder = CreateExpectOk();
+  // Make stereo data with frame-aligned data.
+  EXPECT_THAT(iamf_encoder.Encode(
+                  MakeStereoTemporalUnitData(MakeConstSpan(kEightZeroSamples))),
+              IsOk());
+  std::vector<uint8_t> unused_output_obus;
+  EXPECT_THAT(iamf_encoder.FinalizeEncode(), IsOk());
+  EXPECT_TRUE(iamf_encoder.GeneratingTemporalUnits());
+
+  // Outputting the final temporal unit of an aligned IA Sequence.
+  EXPECT_THAT(iamf_encoder.OutputTemporalUnit(unused_output_obus), IsOk());
+
+  // Now that no temporal units remain, the descriptors are reported as
+  // finalized.
+  EXPECT_FALSE(iamf_encoder.GeneratingTemporalUnits());
+  bool obus_are_finalized = false;
+  ExpectFirstLayoutIntegratedLoudnessIs(
+      iamf_encoder.GetMixPresentationObus(obus_are_finalized),
+      kIntegratedLoudness);
+  EXPECT_TRUE(obus_are_finalized);
+}
+
 TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterFinalOutputTemporalUnit) {
   SetupDescriptorObus();
   AddAudioFrame(user_metadata_);
@@ -672,7 +714,7 @@ TEST_F(IamfEncoderTest, LoudnessIsFinalizedAfterFinalOutputTemporalUnit) {
   auto iamf_encoder = CreateExpectOk();
   // Make stereo data with a single sample for each channel, to force a
   // non-frame aligned IA sequence.
-  constexpr auto kOneSample = MakeConstSpan(kZeroSamples).first(1);
+  constexpr auto kOneSample = MakeConstSpan(kEightZeroSamples).first(1);
   EXPECT_THAT(iamf_encoder.Encode(MakeStereoTemporalUnitData(kOneSample)),
               IsOk());
   EXPECT_THAT(iamf_encoder.FinalizeEncode(), IsOk());
@@ -746,7 +788,7 @@ TEST_F(IamfEncoderTest, GetDescriptorObusHasFilledInLoudness) {
   ON_CALL(*mock_loudness_calculator, QueryLoudness())
       .WillByDefault(Return(kArbitraryLoudnessInfo));
   EXPECT_CALL(*mock_loudness_calculator_factory,
-              CreateLoudnessCalculator(_, _, _, _))
+              CreateLoudnessCalculator(_, _, _))
       .WillOnce(Return(std::move(mock_loudness_calculator)));
   loudness_calculator_factory_ = std::move(mock_loudness_calculator_factory);
   auto iamf_encoder = CreateExpectOk();

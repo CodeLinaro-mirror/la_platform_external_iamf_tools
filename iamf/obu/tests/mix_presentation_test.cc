@@ -86,7 +86,6 @@ class MixPresentationObuTest : public ObuTestBase, public testing::Test {
                       {.headphones_rendering_mode =
                            RenderingConfig::kHeadphonesRenderingModeStereo,
                        .reserved = 0,
-                       .rendering_config_extension_size = 0,
                        .rendering_config_extension_bytes = {}},
               }},
               .layouts = {{.loudness_layout =
@@ -407,8 +406,7 @@ TEST_F(MixPresentationObuTest,
 
 TEST_F(MixPresentationObuTest, ExtensionLayoutZero) {
   sub_mixes_[0].layouts[0].loudness.info_type = 0x04;
-  sub_mixes_[0].layouts[0].loudness.layout_extension = {.info_type_size = 0,
-                                                        .info_type_bytes{}};
+  sub_mixes_[0].layouts[0].loudness.layout_extension = {.info_type_bytes{}};
 
   expected_header_ = {kObuIaMixPresentation << 3, 46};
   expected_payload_ = {
@@ -433,14 +431,12 @@ TEST_F(MixPresentationObuTest, ExtensionLayoutZero) {
 TEST_F(MixPresentationObuTest, NonMinimalLebGeneratorAffectsAllLeb128s) {
   // Initialize a test has several `DecodedUleb128` explicitly in the bitstream.
   sub_mixes_[0].layouts[0].loudness.info_type = 0x04;
-  sub_mixes_[0].layouts[0].loudness.layout_extension = {.info_type_size = 0,
-                                                        .info_type_bytes{}};
+  sub_mixes_[0].layouts[0].loudness.layout_extension = {.info_type_bytes{}};
 
   sub_mixes_[0].audio_elements[0].rendering_config = {
       .headphones_rendering_mode =
           RenderingConfig::kHeadphonesRenderingModeStereo,
       .reserved = 0,
-      .rendering_config_extension_size = 2,
       .rendering_config_extension_bytes = {'e', 'x'}};
 
   leb_generator_ =
@@ -494,7 +490,7 @@ TEST_F(MixPresentationObuTest, NonMinimalLebGeneratorAffectsAllLeb128s) {
 TEST_F(MixPresentationObuTest, ExtensionLayoutNonZero) {
   sub_mixes_[0].layouts[0].loudness.info_type = 0x04;
   sub_mixes_[0].layouts[0].loudness.layout_extension = {
-      .info_type_size = 5, .info_type_bytes{'e', 'x', 't', 'r', 'a'}};
+      .info_type_bytes{'e', 'x', 't', 'r', 'a'}};
 
   expected_header_ = {kObuIaMixPresentation << 3, 51};
   expected_payload_ = {
@@ -592,7 +588,6 @@ TEST_F(MixPresentationObuTest, BinauralRenderingConfig) {
       .headphones_rendering_mode =
           RenderingConfig::kHeadphonesRenderingModeStereo,
       .reserved = 0,
-      .rendering_config_extension_size = 0,
       .rendering_config_extension_bytes = {}};
 
   expected_header_ = {kObuIaMixPresentation << 3, 47};
@@ -622,7 +617,6 @@ TEST_F(
       .headphones_rendering_mode =
           RenderingConfig::kHeadphonesRenderingModeStereo,
       .reserved = (1 << 6),
-      .rendering_config_extension_size = 0,
       .rendering_config_extension_bytes = {}};
 
   InitExpectOk();
@@ -646,7 +640,6 @@ TEST_F(MixPresentationObuTest, RenderingConfigExtension) {
       .headphones_rendering_mode =
           RenderingConfig::kHeadphonesRenderingModeStereo,
       .reserved = 0,
-      .rendering_config_extension_size = 2,
       .rendering_config_extension_bytes = {'e', 'x'}};
 
   expected_header_ = {kObuIaMixPresentation << 3, 49};
@@ -678,7 +671,6 @@ TEST_F(MixPresentationObuTest, MultipleSubmixesAndLayouts) {
                {.headphones_rendering_mode =
                     RenderingConfig::kHeadphonesRenderingModeBinaural,
                 .reserved = 0,
-                .rendering_config_extension_size = 0,
                 .rendering_config_extension_bytes = {}},
        }},
        .layouts = {

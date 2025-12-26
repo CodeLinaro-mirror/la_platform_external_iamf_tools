@@ -38,7 +38,6 @@ class FlacEncoderTest : public EncoderTestBase, public testing::Test {
   FlacEncoderTest() {
     flac_encoder_metadata_.set_compression_level(0);
     num_samples_per_frame_ = 16;
-    input_sample_size_ = 32;
   }
 
   ~FlacEncoderTest() = default;
@@ -60,9 +59,7 @@ class FlacEncoderTest : public EncoderTestBase, public testing::Test {
   }
 
   FlacDecoderConfig flac_decoder_config_ = {
-      {{.header = {.last_metadata_block_flag = true,
-                   .block_type = FlacMetaBlockHeader::kFlacStreamInfo,
-                   .metadata_data_block_length = 34},
+      {{.header = {.block_type = FlacMetaBlockHeader::kFlacStreamInfo},
         .payload = FlacMetaBlockStreamInfo{.minimum_block_size = 16,
                                            .maximum_block_size = 16,
                                            .sample_rate = 48000,

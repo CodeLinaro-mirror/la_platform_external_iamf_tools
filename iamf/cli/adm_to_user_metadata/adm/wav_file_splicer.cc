@@ -25,8 +25,8 @@
 #include <utility>
 #include <vector>
 
-#include "absl/log/check.h"
-#include "absl/log/log.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -203,14 +203,20 @@ absl::Status SpliceWavSegment(std::istream& input_stream,
   return absl::OkStatus();
 }
 
+absl::StatusOr<size_t> CalculateTotalSamplesPerChannel(
+    size_t data_chunk_size, size_t total_channel_size) {
+  if (data_chunk_size % total_channel_size != 0) {
+    return absl::InvalidArgumentError(
+        "Data chunk size is not a multiple of the total channel size.");
+  }
+  return data_chunk_size / total_channel_size;
+}
+
 // Calculates the total duration of the wav file.
-double CalculateTotalDuration(const size_t& data_chunk_size,
-                              const FormatInfoChunk& wav_file_fmt,
-                              const size_t& total_channel_size) {
-  const auto& total_samples_per_channel = data_chunk_size / total_channel_size;
-  double total_duration = static_cast<double>(total_samples_per_channel) /
-                          static_cast<double>(wav_file_fmt.samples_per_sec);
-  return total_duration;
+double CalculateTotalDuration(size_t total_samples_per_channel,
+                              uint32_t samples_per_sec) {
+  return static_cast<double>(total_samples_per_channel) /
+         static_cast<double>(samples_per_sec);
 }
 
 // Computes the duration in seconds.
@@ -245,7 +251,7 @@ std::vector<int> GetLfeChannelIDs(
       if (lfe_ids.size() < kMaxLfeChannelsAllowed) {
         lfe_ids.push_back(index + 1);
       } else {
-        LOG(WARNING)
+        ABSL_LOG(WARNING)
             << "The number of LFE channels exceeds the allowed limit. Only the "
                "first "
             << kMaxLfeChannelsAllowed
@@ -319,11 +325,13 @@ absl::Status ConvertFromObjectsTo3OA(
   const int32_t total_channels = wav_file_fmt.num_channels;
   const size_t total_channel_size =
       static_cast<size_t>(bytes_per_sample) * wav_file_fmt.num_channels;
-  const size_t data_chunk_size = data_chunk_info.size;
-  const auto total_duration =
-      CalculateTotalDuration(data_chunk_size, wav_file_fmt, total_channel_size);
-  const size_t total_samples =
-      total_duration * static_cast<size_t>(wav_file_fmt.samples_per_sec);
+  const auto total_samples_per_channel =
+      CalculateTotalSamplesPerChannel(data_chunk_info.size, total_channel_size);
+  if (!total_samples_per_channel.ok()) {
+    return total_samples_per_channel.status();
+  }
+  const double total_duration = CalculateTotalDuration(
+      *total_samples_per_channel, wav_file_fmt.samples_per_sec);
 
   // Initialize vectors required to hold intermediate values.
   std::vector<size_t> audio_block_indices(total_channels, 0);
@@ -334,7 +342,7 @@ absl::Status ConvertFromObjectsTo3OA(
   double total_processed_duration = 0.0;
   // Holds the number of samples left over from the previous segment due to
   // rounding error.
-  float leftover_sample_duration = 0.0f;
+  double leftover_sample_duration = 0.0f;
   int num_samples_count = 0;
 
   // Initialize segment duration for all channels with the corresponding first
@@ -377,7 +385,7 @@ absl::Status ConvertFromObjectsTo3OA(
     } else if (*min_duration < kErrorTolerance) {
       break;
     } else {
-      CHECK_GE(*min_duration, -kErrorTolerance)
+      ABSL_CHECK_GE(*min_duration, -kErrorTolerance)
           << "Minimum duration should not be negative";
     }
 
@@ -394,7 +402,7 @@ absl::Status ConvertFromObjectsTo3OA(
       // Compute the length of audio samples corresponding to the current
       // segment duration. The samples excluded due the rounding error at each
       // segment is accounted in the next segment.
-      const float this_seg_length =
+      const double this_seg_length =
           (this_seg_duration * wav_file_fmt.samples_per_sec) +
           leftover_sample_duration;
       // Length of the processed audio segment. Samples are rounded off for the
@@ -404,7 +412,7 @@ absl::Status ConvertFromObjectsTo3OA(
 
       num_samples_count += processed_seg_length;
 
-      CHECK_LE(processed_seg_length, total_samples)
+      ABSL_CHECK_LE(processed_seg_length, *total_samples_per_channel)
           << "Samples in segment should not be greater than actual samples in "
              "the wav file";
 
@@ -422,8 +430,10 @@ absl::Status ConvertFromObjectsTo3OA(
                             audio_block_indices);
   }
 
-  CHECK_LE(fabs(total_processed_duration - total_duration), kErrorTolerance);
-  CHECK_LE(fabs(num_samples_count - total_samples), kErrorTolerance);
+  ABSL_CHECK_LE(fabs(total_processed_duration - total_duration),
+                kErrorTolerance);
+  ABSL_CHECK_LE(fabs(num_samples_count - *total_samples_per_channel),
+                kErrorTolerance);
 
   // Delete the temporary files.
   if (!std::filesystem::remove(input_file)) {
@@ -527,7 +537,7 @@ absl::Status SeparateLfeAndConvertTo3OA(
                                    data_chunk_info);
   }
 
-  CHECK_LT(lfe_count, num_channels);
+  ABSL_CHECK_LT(lfe_count, num_channels);
   const int non_lfe_count = num_channels - lfe_count;
   const auto& non_lfe_file_path =
       (output_file_path / non_lfe_file_name).string();
@@ -675,7 +685,7 @@ absl::Status SpliceWavFilesFromAdm(
           *audio_object_index_to_wav_writer[audio_object_index]));
     }
   } else {
-    CHECK_EQ(adm_file_type, kAdmFileTypeDolby);
+    ABSL_CHECK_EQ(adm_file_type, kAdmFileTypeDolby);
     using enum iamf_tools::ProfileVersion;
     if (profile_version == kIamfBaseProfile) {
       // For base profile version, convert the channel beds and audio objects
@@ -684,8 +694,8 @@ absl::Status SpliceWavFilesFromAdm(
           output_file_path, file_prefix, reader.adm_, reader.format_info_,
           input_stream, data_chunk_info.value()));
     } else {
-      CHECK_EQ(static_cast<int>(profile_version),
-               static_cast<int>(kIamfBaseEnhancedProfile));
+      ABSL_CHECK_EQ(static_cast<int>(profile_version),
+                    static_cast<int>(kIamfBaseEnhancedProfile));
       // For base enhanced profile version, convert the LFE channel(s) (if
       // present) to separate wav file(s) and the remaining channels to 3OA (16
       // channels) to facilitate IAMF encoding.
