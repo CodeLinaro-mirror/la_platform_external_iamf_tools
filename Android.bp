@@ -44,7 +44,7 @@ cc_library_static {
     // (rather than using include folders inside dependencies), so we add the roots
     // of these dependencies here.
     include_dirs: [
-        "external/aac",
+        "external/aac/cpp",
         "external/abseil-cpp",
         "external/flac",
         "external/libopus",
